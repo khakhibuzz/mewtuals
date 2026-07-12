@@ -12,6 +12,10 @@
 
 # testing
 /coverage
+/.playwright-cli/
+
+# superseded visual QA capture
+/artifacts/mutuals-desktop.png
 
 # next.js
 /.next/
