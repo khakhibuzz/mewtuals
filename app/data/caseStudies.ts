@@ -151,59 +151,59 @@ export const caseStudies: readonly CaseStudy[] = [
     id: "study-03",
     number: "03",
     illustrative: true,
-    opportunityType: "Spend management × compliance expertise",
-    title: "Remove the next operational blocker",
+    opportunityType: "Consumer brand × manufacturing access",
+    title: "Unlock the next production run",
     thesis:
-      "A spend platform can identify when a growing customer is blocked by vendor approval or certification and route help before the operational delay becomes churn.",
+      "When a growing consumer brand is too large for small-batch production but too early for a major factory commitment, the right manufacturer can turn proven demand into dependable supply.",
     equation: {
-      need: "A blocked vendor workflow",
-      asset: "trusted compliance expertise",
-      moment: "the approval moment",
-      whyNow: "an approaching deadline",
-      test: "one scoped compliance intervention",
+      need: "A constrained production run",
+      asset: "quality-controlled manufacturing capacity",
+      moment: "the reorder threshold",
+      whyNow: "proven customer demand",
+      test: "one bounded production batch",
     },
     situation:
-      "Customers use a spend tool successfully but repeatedly stall when security reviews, vendor onboarding, or certification work begins.",
+      "A consumer brand has repeat demand but cannot secure a production partner at the volume, quality, and lead time it can responsibly commit to.",
     signal:
-      "Support and product data show repeated questions immediately before a vendor is approved or a larger contract can proceed.",
+      "Reorders are arriving faster than the current supplier can fulfil, while the next factory tier asks for volumes the company cannot yet justify.",
     hiddenLeverage:
-      "The spend platform sees the operational moment and has customer trust; the compliance partner has expertise but usually arrives too late.",
+      "The brand brings validated demand and a focused product line; a specialist manufacturer has suitable capacity and wants credible emerging-brand volume.",
     counterpart:
-      "A compliance platform or specialist advisor with a bounded onboarding offer and clear professional limits.",
+      "A quality-controlled manufacturer with compatible materials, transparent lead times, and capacity for a limited first run.",
     valueExchange: {
       representedCompany:
-        "The spend product reduces a customer blocker and improves retention.",
+        "The brand gains dependable supply without making a premature long-term commitment.",
       counterpart:
-        "The compliance partner receives high-intent work.",
+        "The manufacturer gains a qualified new account with visible demand and a staged path to volume.",
       customer:
-        "The customer moves an existing purchase or contract forward.",
+        "Customers receive the product with more predictable availability and quality.",
     },
     test:
-      "Ten opted-in customers with the same approval blocker receive a fixed-scope diagnostic and next-step plan.",
+      "One bounded batch with agreed specifications, inspection criteria, lead time, payment milestones, and no exclusivity.",
     firstApproach:
-      "We can identify ten customers already delayed by the same approval problem. Can you offer one bounded diagnostic with transparent scope, price, and handoff so we can measure whether it shortens approval time?",
+      "This brand has repeat demand but needs a responsible bridge between small-batch supply and a major factory commitment. Would you scope one bounded run against an agreed quality and lead-time standard?",
     executionSteps: [
-      "Classify the repeated blocker",
-      "Approve disclosures and scope",
-      "Run ten diagnostics",
-      "Compare approval time and support load",
+      "Confirm demand, specifications, and target economics",
+      "Validate capacity, materials, and quality controls",
+      "Contract one bounded production batch",
+      "Review yield, lead time, landed cost, and reorder evidence",
     ],
     successMeasures: [
-      "Time to approved vendor",
-      "Diagnostic-to-engagement rate",
-      "Support tickets avoided",
-      "Customer satisfaction",
-      "Disclosed referral economics",
+      "Accepted units",
+      "On-time production",
+      "Landed unit cost",
+      "Defect rate",
+      "Reorder readiness",
     ],
     risks: [
-      "Regulated advice",
-      "Opaque referral fees",
-      "Conflicted recommendations",
-      "Sensitive company documents",
-      "Poorly bounded delivery",
+      "Quality variance",
+      "Unclear tooling or material ownership",
+      "Working-capital pressure",
+      "Lead-time slippage",
+      "Premature exclusivity",
     ],
     decisionGate:
-      "The client approves referral disclosure, professional boundaries, data access, commercial terms, and the list of eligible customers.",
+      "Both companies approve the specifications, inspection standard, payment milestones, delivery window, ownership terms, and continuation threshold.",
   },
   {
     id: "study-04",

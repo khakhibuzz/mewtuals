@@ -4,7 +4,7 @@ import { caseStudies } from "../app/data/caseStudies";
 const archetypes = [
   "Support automation × product analytics",
   "Wellness commerce × local service touchpoint",
-  "Spend management × compliance expertise",
+  "Consumer brand × manufacturing access",
   "Developer tooling × implementation channel",
   "Mobility demand × hospitality distribution",
 ] as const;
@@ -26,6 +26,7 @@ describe("caseStudies", () => {
       archetypes,
     );
     expect(caseStudies.every(({ illustrative }) => illustrative)).toBe(true);
+    expect(JSON.stringify(caseStudies).toLowerCase()).not.toContain("compliance");
   });
 
   it("contains the complete card and deep-dive content contract", () => {
