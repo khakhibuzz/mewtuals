@@ -16,6 +16,7 @@ export const metadata: Metadata = {
   title: "Mutuals — External partnerships for early-stage companies",
   description:
     "Mutuals identifies the highest-value partnership worth pursuing, structures the exchange, and advances it to a decision-ready pilot.",
+  icons: { icon: "/favicon.svg" },
 };
 
 export default function RootLayout({

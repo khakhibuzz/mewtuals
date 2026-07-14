@@ -39,6 +39,10 @@ test("server-renders the complete Mutuals landing page", async () => {
     html,
     /<meta name="description" content="Mutuals identifies the highest-value partnership worth pursuing, structures the exchange, and advances it to a decision-ready pilot\."\/?>/,
   );
+  assert.match(
+    html,
+    /<link(?=[^>]*\brel=["']icon["'])(?=[^>]*\bhref=["']\/favicon\.svg["'])[^>]*>/i,
+  );
 
   for (const id of ["top", "how-it-works", "for-startups", "about", "apply"]) {
     assert.match(html, new RegExp(`id=["']${id}["']`));
