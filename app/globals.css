@@ -151,6 +151,15 @@ main {
   align-self: center;
 }
 
+.hero-eyebrow {
+  margin: 0 0 clamp(24px, 2.6vw, 40px);
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 520;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .hero h1 {
   max-width: 830px;
   margin: 0;
@@ -164,6 +173,14 @@ main {
 .hero h1 strong {
   color: var(--ink);
   font-weight: 540;
+}
+
+.hero-support {
+  max-width: 670px;
+  margin: clamp(28px, 3vw, 44px) 0 0;
+  color: var(--ink-soft);
+  font-size: clamp(1rem, 1.2vw, 1.16rem);
+  line-height: 1.65;
 }
 
 .hero-actions {
@@ -207,22 +224,6 @@ main {
   cursor: pointer;
   font-size: 0.84rem;
   line-height: 1.6;
-}
-
-.discipline-line {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-  margin: clamp(58px, 7vw, 100px) 0 0;
-  color: var(--ink);
-  font-size: 0.8rem;
-}
-
-.discipline-line::before {
-  width: 18px;
-  height: 1px;
-  background: var(--ink);
-  content: "";
 }
 
 .hero-graph {
@@ -950,11 +951,6 @@ main {
   .hero-actions {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .discipline-line {
-    align-items: flex-start;
-    line-height: 1.5;
   }
 
   .hero-graph {

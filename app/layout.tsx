@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Mutuals — Company representation",
+  title: "Mutuals — External partnerships for early-stage companies",
   description:
-    "Mutuals represents a company’s interests, discovers non-obvious revenue paths, initiates the right conversations, and advances them until a human decision is required.",
+    "Mutuals identifies the highest-value partnership worth pursuing, structures the exchange, and advances it to a decision-ready pilot.",
 };
 
 export default function RootLayout({

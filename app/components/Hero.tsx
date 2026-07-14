@@ -2,22 +2,24 @@ export function Hero() {
   return (
     <section className="hero" id="top">
       <div className="hero-copy">
+        <p className="hero-eyebrow">Your external partnerships function.</p>
         <h1>
-          Mutuals represents a company’s interests, discovers non-obvious revenue
-          paths, initiates the right conversations, and advances them until{" "}
-          <strong>a human decision is required.</strong>
+          One partnership can change a company. {" "}
+          <strong>We find the right one.</strong>
         </h1>
+        <p className="hero-support">
+          Mutuals researches your company, identifies where another organisation
+          can unlock growth, and advances the relationship from hypothesis to
+          pilot.
+        </p>
         <div className="hero-actions">
           <a className="primary-button" href="#apply">
-            Represent my company
+            Find my next partnership
           </a>
           <a className="text-link" href="#how-it-works">
-            See how an opportunity moves
+            See how it works
           </a>
         </div>
-        <p className="discipline-line">
-          One company at a time. One opportunity until it moves.
-        </p>
       </div>
 
       <figure className="hero-graph">

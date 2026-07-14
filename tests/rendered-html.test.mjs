@@ -23,9 +23,22 @@ test("server-renders the complete Mutuals landing page", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Mutuals — Company representation<\/title>/i);
-  assert.match(html, /Mutuals represents a company’s interests/);
-  assert.match(html, /a human decision is required\./);
+  assert.match(
+    html,
+    /<title>Mutuals — External partnerships for early-stage companies<\/title>/,
+  );
+  assert.match(html, />Your external partnerships function\.<\/p>/);
+  assert.match(html, /One partnership can change a company\./);
+  assert.match(html, />We find the right one\.<\/strong>/);
+  assert.match(
+    html,
+    />Mutuals researches your company, identifies where another organisation can unlock growth, and advances the relationship from hypothesis to pilot\.<\/p>/,
+  );
+  assert.match(html, /href="#apply">Find my next partnership<\/a>/);
+  assert.match(
+    html,
+    /<meta name="description" content="Mutuals identifies the highest-value partnership worth pursuing, structures the exchange, and advances it to a decision-ready pilot\."\/?>/,
+  );
 
   for (const id of ["top", "how-it-works", "for-startups", "about", "apply"]) {
     assert.match(html, new RegExp(`id=["']${id}["']`));
