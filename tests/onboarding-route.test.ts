@@ -21,6 +21,12 @@ describe("protected onboarding adapters", () => {
     expect(
       resolveProtectedPage(session, "/onboarding/source", "/onboarding/source"),
     ).toEqual({ userId: "user" });
+    expect(resolveProtectedPage(null, "/dashboard", "/dashboard")).toEqual({
+      redirectTo: "/login",
+    });
+    expect(
+      resolveProtectedPage(session, "/dashboard", "/onboarding/profile"),
+    ).toEqual({ redirectTo: "/onboarding/profile" });
   });
 
   it("returns a stable field-error shape and never accepts a client user id", async () => {

@@ -5,6 +5,24 @@ const optionalTrimmedString = z.preprocess(
   z.string().trim().min(1).optional(),
 );
 
+const adminEmailsSchema = optionalTrimmedString.transform((value, context) => {
+  if (!value) return [];
+
+  const emails: string[] = [];
+  for (const candidate of value.split(",")) {
+    const parsed = z.string().trim().toLowerCase().email().safeParse(candidate);
+    if (!parsed.success) {
+      context.addIssue({
+        code: "custom",
+        message: "ADMIN_EMAILS must be a comma-separated list of valid emails.",
+      });
+      return z.NEVER;
+    }
+    if (!emails.includes(parsed.data)) emails.push(parsed.data);
+  }
+  return emails;
+});
+
 const serverEnvironmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("production"),
   SESSION_SECRET: z
@@ -12,7 +30,7 @@ const serverEnvironmentSchema = z.object({
     .min(32, "SESSION_SECRET must contain at least 32 characters."),
   RESEND_API_KEY: optionalTrimmedString,
   EMAIL_FROM: optionalTrimmedString,
-  ADMIN_EMAILS: optionalTrimmedString,
+  ADMIN_EMAILS: adminEmailsSchema,
   MEWTUALS_DEV_AUTH: z
     .enum(["true", "false"])
     .default("false")
@@ -47,10 +65,7 @@ export function readServerEnvironment(
     sessionSecret: value.SESSION_SECRET,
     resendApiKey: value.RESEND_API_KEY,
     emailFrom: value.EMAIL_FROM,
-    adminEmails: (value.ADMIN_EMAILS ?? "")
-      .split(",")
-      .map((email) => email.trim().toLowerCase())
-      .filter(Boolean),
+    adminEmails: value.ADMIN_EMAILS,
     developmentAuthEnabled: value.MEWTUALS_DEV_AUTH,
     googleClientId: value.GOOGLE_CLIENT_ID,
     googleClientSecret: value.GOOGLE_CLIENT_SECRET,

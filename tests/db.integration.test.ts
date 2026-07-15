@@ -14,8 +14,16 @@ import * as verifyRoute from "../app/auth/verify/route";
 import { closeDb, getDb, type MewtualsDatabase } from "../db/client";
 import { createAuthRepository } from "../db/repositories/auth-repository";
 import { createOnboardingRepository } from "../db/repositories/onboarding-repository";
+import { createVerificationRepository } from "../db/repositories/verification-repository";
 import * as databaseSchema from "../db/schema";
-import { magicLinks, onboardingDrafts, profiles, sessions, users } from "../db/schema";
+import {
+  magicLinks,
+  onboardingDrafts,
+  profiles,
+  sessions,
+  users,
+  verificationReviews,
+} from "../db/schema";
 
 const localEnvironment = resolve(process.cwd(), ".env.local");
 if (existsSync(localEnvironment)) loadEnvFile(localEnvironment);
@@ -29,6 +37,7 @@ const sessionSecret =
 const db = getDb();
 const repository = createAuthRepository(db);
 const onboardingRepository = createOnboardingRepository(db);
+const verificationRepository = createVerificationRepository(db);
 const verificationRoute = verifyRoute as {
   GET(request: Request): Promise<Response>;
   POST?: (request: Request) => Promise<Response>;
@@ -751,5 +760,177 @@ describe("PostgreSQL authentication repository", () => {
       organisationSubtype: "startup",
       primaryUrl: "https://mewtuals.com/",
     });
+  });
+
+  it("moves a pending profile and its verification audit atomically", async () => {
+    const email = `${emailPrefix}-verification-audit@example.test`;
+    const [user] = await db.insert(users).values({ email }).returning();
+    expect(user).toBeDefined();
+    const submittedAt = new Date("2034-01-01T09:00:00.000Z");
+    const [profile] = await db
+      .insert(profiles)
+      .values({
+        userId: user!.id,
+        name: "Verification Audit",
+        organisationName: "Verification Audit",
+        identityKind: "organisation",
+        organisationSubtype: "brand",
+        creatorSubtype: null,
+        domain: "audit.example",
+        primaryUrl: "https://audit.example/",
+        websiteUrl: "https://audit.example/",
+        status: "pending",
+        submittedAt,
+      })
+      .returning();
+    expect(profile).toBeDefined();
+
+    const reviewedAt = new Date("2034-01-01T10:00:00.000Z");
+    const result = await verificationRepository.transitionPending({
+      profileId: profile!.id,
+      reviewerEmail: "admin@example.com",
+      decision: "waitlisted",
+      notes: "Needs a stronger current fit.",
+      reviewedAt,
+    });
+
+    expect(result).toMatchObject({
+      applied: true,
+      profile: { status: "waitlisted", verifiedAt: null },
+      review: {
+        reviewerEmail: "admin@example.com",
+        decision: "waitlisted",
+        notes: "Needs a stronger current fit.",
+        reviewedAt,
+      },
+    });
+    expect(
+      await db
+        .select()
+        .from(verificationReviews)
+        .where(eq(verificationReviews.profileId, profile!.id)),
+    ).toHaveLength(1);
+    expect(
+      (await verificationRepository.listPending()).some(
+        (candidate) => candidate.id === profile!.id,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows exactly one verification decision across two overlapping database connections", async () => {
+    const email = `${emailPrefix}-verification-race@example.test`;
+    const [user] = await db.insert(users).values({ email }).returning();
+    expect(user).toBeDefined();
+    const [profile] = await db
+      .insert(profiles)
+      .values({
+        userId: user!.id,
+        name: "Verification Race",
+        organisationName: "Verification Race",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        domain: "race.example",
+        primaryUrl: "https://race.example/",
+        websiteUrl: "https://race.example/",
+        status: "pending",
+        submittedAt: new Date("2035-01-01T09:00:00.000Z"),
+      })
+      .returning();
+    expect(profile).toBeDefined();
+
+    const connectionPrefix = `verification-race-${testRun.slice(0, 8)}`;
+    const independentDatabases = [
+      createIndependentDatabase(`${connectionPrefix}-a`),
+      createIndependentDatabase(`${connectionPrefix}-b`),
+    ];
+
+    try {
+      const activeNames = await Promise.all(
+        independentDatabases.map(async ({ database }) => {
+          const [session] = await database.execute<{ applicationName: string }>(
+            sql`select current_setting('application_name') as "applicationName"`,
+          );
+          return session?.applicationName;
+        }),
+      );
+      expect(activeNames).toEqual(
+        independentDatabases.map(({ applicationName }) => applicationName),
+      );
+      const first = createVerificationRepository(
+        independentDatabases[0].database,
+      );
+      const second = createVerificationRepository(
+        independentDatabases[1].database,
+      );
+      let attemptsPromise:
+        | Promise<
+            [
+              Awaited<ReturnType<typeof first.transitionPending>>,
+              Awaited<ReturnType<typeof second.transitionPending>>,
+            ]
+          >
+        | undefined;
+
+      await db.transaction(async (transaction) => {
+        await transaction
+          .select({ id: profiles.id })
+          .from(profiles)
+          .where(eq(profiles.id, profile!.id))
+          .for("update");
+
+        attemptsPromise = Promise.all([
+          first.transitionPending({
+            profileId: profile!.id,
+            reviewerEmail: "first-admin@example.com",
+            decision: "verified",
+            notes: "First decision",
+            reviewedAt: new Date("2035-01-01T10:00:00.000Z"),
+          }),
+          second.transitionPending({
+            profileId: profile!.id,
+            reviewerEmail: "second-admin@example.com",
+            decision: "waitlisted",
+            notes: "Second decision",
+            reviewedAt: new Date("2035-01-01T10:00:01.000Z"),
+          }),
+        ]);
+
+        expect(
+          await waitForLockWaiters(transaction, [
+            independentDatabases[0].applicationName,
+            independentDatabases[1].applicationName,
+          ]),
+        ).toEqual(
+          independentDatabases.map(({ applicationName }) => applicationName).sort(),
+        );
+      });
+
+      if (!attemptsPromise) {
+        throw new Error("Verification decisions did not start.");
+      }
+      const attempts = await attemptsPromise;
+      expect(attempts.filter((attempt) => attempt.applied)).toHaveLength(1);
+      expect(attempts.filter((attempt) => !attempt.applied)).toHaveLength(1);
+
+      const [persistedProfile] = await db
+        .select({ status: profiles.status })
+        .from(profiles)
+        .where(eq(profiles.id, profile!.id));
+      const reviews = await db
+        .select({
+          decision: verificationReviews.decision,
+          reviewerEmail: verificationReviews.reviewerEmail,
+        })
+        .from(verificationReviews)
+        .where(eq(verificationReviews.profileId, profile!.id));
+      expect(reviews).toHaveLength(1);
+      expect(reviews[0]?.decision).toBe(persistedProfile?.status);
+      expect(reviews[0]?.reviewerEmail).toMatch(
+        /^(first|second)-admin@example\.com$/,
+      );
+    } finally {
+      await closeIndependentDatabases(independentDatabases);
+    }
   });
 });
