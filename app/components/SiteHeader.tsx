@@ -28,7 +28,7 @@ export function SiteHeader() {
 
   return (
     <header className="site-header">
-      <span className="wordmark">Mutuals</span>
+      <span className="wordmark">Mewtuals</span>
       <button
         aria-controls="primary-navigation"
         aria-expanded={isOpen}

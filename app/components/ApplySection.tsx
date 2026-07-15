@@ -100,7 +100,7 @@ export function ApplySection({
     <section className="apply-section site-section" id="apply">
       <div className="apply-intro">
         <p className="section-label">Apply</p>
-        <h2>Put Mutuals on your company’s side.</h2>
+        <h2>Put Mewtuals on your company’s side.</h2>
         <p>No deck required. We start with the company itself.</p>
       </div>
 

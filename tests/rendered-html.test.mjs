@@ -17,7 +17,7 @@ async function render() {
   );
 }
 
-test("server-renders the complete Mutuals landing page", async () => {
+test("server-renders the complete Mewtuals landing page", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
@@ -25,19 +25,41 @@ test("server-renders the complete Mutuals landing page", async () => {
   const html = await response.text();
   assert.match(
     html,
-    /<title>Mutuals — External partnerships for early-stage companies<\/title>/,
+    /<title>Mewtuals — Partnerships for internet-native companies<\/title>/,
   );
-  assert.match(html, />Your external partnerships function\.<\/p>/);
+  assert.match(html, /class="wordmark">Mewtuals<\/span>/);
+  assert.match(
+    html,
+    />The external partnerships function for internet-native companies\.<\/p>/,
+  );
   assert.match(html, /One partnership can change a company\./);
   assert.match(html, />We find the right one\.<\/strong>/);
   assert.match(
     html,
-    />Mutuals researches your company, identifies where another organisation can unlock growth, and advances the relationship from hypothesis to pilot\.<\/p>/,
+    />Mewtuals researches your company, identifies where another organisation can unlock growth, and advances the relationship from hypothesis to pilot\.<\/p>/,
   );
+  assert.match(html, />Built for companies that move at internet speed\.<\/h2>/);
+  assert.match(
+    html,
+    />AI startups, creator-economy companies, and consumer brands already live where reputation, distribution, and demand move quickly\. We learn the company as it is now, then advance the relationships that can support its next step\.<\/p>/,
+  );
+  assert.match(html, />Less corporate theatre\. More useful movement\.<\/p>/);
+  assert.match(html, />Less corporate in tone\. Exacting in practice\.<\/h2>/);
+  assert.match(
+    html,
+    />Mewtuals represents internet-native companies with the same seriousness as a traditional partnerships firm—without the theatre, jargon, or distance\.<\/p>/,
+  );
+  assert.match(
+    html,
+    />We map complementary needs, assets, timing, trust, and customer touchpoints, then carry the work until a decision belongs with the people responsible for it\.<\/p>/,
+  );
+  assert.match(html, />The Mewtuals map<\/span>/);
+  assert.match(html, /aria-label="How Mewtuals changes the business map"/);
+  assert.match(html, />Put Mewtuals on your company’s side\.<\/h2>/);
   assert.match(html, /href="#apply">Find my next partnership<\/a>/);
   assert.match(
     html,
-    /<meta name="description" content="Mutuals identifies the highest-value partnership worth pursuing, structures the exchange, and advances it to a decision-ready pilot\."\/?>/,
+    /<meta name="description" content="Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands\."\/?>/,
   );
   assert.match(
     html,
@@ -56,5 +78,10 @@ test("server-renders the complete Mutuals landing page", async () => {
     assert.match(html, new RegExp(`>${label}<`));
   }
 
+  assert.doesNotMatch(html, /<title>Mutuals —/);
+  assert.doesNotMatch(html, /class="wordmark">Mutuals<\/span>/);
+  assert.doesNotMatch(html, /Your external partnerships function\./);
+  assert.doesNotMatch(html, /A startup begins as a small living idea\./);
+  assert.doesNotMatch(html, /Competition explains how value is divided\./);
   assert.doesNotMatch(html, /codex-preview|Codex is working|react-loading-skeleton/i);
 });

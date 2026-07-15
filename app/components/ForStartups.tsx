@@ -3,18 +3,16 @@ export function ForStartups() {
     <section className="startups-section site-section" id="for-startups">
       <p className="section-label">For startups</p>
       <div className="startups-layout">
-        <h2>
-          A startup begins as a small living idea. Then execution asks it to become
-          a company.
-        </h2>
+        <h2>Built for companies that move at internet speed.</h2>
         <div className="startups-copy">
           <p>
-            We learn the company as it is now—its product, customers, constraints,
-            leverage, and immediate need—then advance the relationships that can
-            support its next step toward the vision.
+            AI startups, creator-economy companies, and consumer brands already
+            live where reputation, distribution, and demand move quickly. We learn
+            the company as it is now, then advance the relationships that can
+            support its next step.
           </p>
           <p className="startups-principle">
-            The need changes. The company stays the client.
+            Less corporate theatre. More useful movement.
           </p>
         </div>
       </div>

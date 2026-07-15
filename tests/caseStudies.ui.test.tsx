@@ -43,7 +43,7 @@ describe("CaseStudies", () => {
       "Proposed counterpart",
       "Value exchanged",
       "Smallest two-sided test",
-      "Mutuals’ first approach",
+      "Mewtuals’ first approach",
       "30-day execution",
       "Success measures",
       "Risks and trust constraints",

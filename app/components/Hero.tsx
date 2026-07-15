@@ -2,13 +2,15 @@ export function Hero() {
   return (
     <section className="hero" id="top">
       <div className="hero-copy">
-        <p className="hero-eyebrow">Your external partnerships function.</p>
+        <p className="hero-eyebrow">
+          The external partnerships function for internet-native companies.
+        </p>
         <h1>
           One partnership can change a company. {" "}
           <strong>We find the right one.</strong>
         </h1>
         <p className="hero-support">
-          Mutuals researches your company, identifies where another organisation
+          Mewtuals researches your company, identifies where another organisation
           can unlock growth, and advances the relationship from hypothesis to
           pilot.
         </p>

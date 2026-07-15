@@ -108,7 +108,7 @@ export function CaseStudyDialog({
 
         <section className="case-dialog-grid case-dialog-grid-wide">
           <DetailBlock heading="Smallest two-sided test" text={study.test} />
-          <DetailBlock heading="Mutuals’ first approach" quote text={study.firstApproach} />
+          <DetailBlock heading="Mewtuals’ first approach" quote text={study.firstApproach} />
         </section>
 
         <section className="case-dialog-section">

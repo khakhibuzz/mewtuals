@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Mutuals — External partnerships for early-stage companies",
+  title: "Mewtuals — Partnerships for internet-native companies",
   description:
-    "Mutuals identifies the highest-value partnership worth pursuing, structures the exchange, and advances it to a decision-ready pilot.",
+    "Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands.",
   icons: { icon: "/favicon.svg" },
 };
 
