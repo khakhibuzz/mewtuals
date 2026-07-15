@@ -1,9 +1,12 @@
+import type { OpenToInterest } from "../app/domain/signal";
 import type { NewOpportunity } from "./types";
 
 export type OpportunitySeed = Omit<
   NewOpportunity,
-  "id" | "createdAt" | "updatedAt"
->;
+  "id" | "createdAt" | "updatedAt" | "openToTags"
+> & {
+  openToTags: OpenToInterest[];
+};
 
 export const opportunitySeedData = [
   {
@@ -16,7 +19,11 @@ export const opportunitySeedData = [
     eligibleIdentityKinds: ["organisation", "creator"],
     eligibleOrganisationSubtypes: ["company", "brand"],
     eligibleCreatorSubtypes: ["creator", "podcaster", "publication"],
-    openToTags: ["sponsored_content", "audience_access", "product_collaboration"],
+    openToTags: [
+      "creator_collaborations",
+      "brand_collaborations",
+      "product_reviews",
+    ],
     active: true,
   },
   {
@@ -29,7 +36,7 @@ export const opportunitySeedData = [
     eligibleIdentityKinds: ["organisation"],
     eligibleOrganisationSubtypes: ["company", "brand"],
     eligibleCreatorSubtypes: [],
-    openToTags: ["co_marketing", "bundled_offer", "shared_distribution"],
+    openToTags: ["brand_collaborations", "co_marketing"],
     active: true,
   },
   {
@@ -47,7 +54,7 @@ export const opportunitySeedData = [
       "publication",
       "media_operator",
     ],
-    openToTags: ["guest_exchange", "co_created_series", "audience_exchange"],
+    openToTags: ["podcasts", "creator_collaborations"],
     active: true,
   },
   {
@@ -60,7 +67,7 @@ export const opportunitySeedData = [
     eligibleIdentityKinds: ["organisation"],
     eligibleOrganisationSubtypes: ["startup", "distribution_partner"],
     eligibleCreatorSubtypes: [],
-    openToTags: ["channel_pilot", "customer_access", "embedded_distribution"],
+    openToTags: ["distribution_partnerships"],
     active: true,
   },
 ] satisfies OpportunitySeed[];

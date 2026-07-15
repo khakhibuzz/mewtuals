@@ -1,6 +1,8 @@
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
+import { openToInterests } from "../app/domain/signal";
+
 import {
   availabilityEnum,
   creatorSubtypeEnum,
@@ -20,6 +22,7 @@ import {
   verificationDecisionEnum,
   verificationReviews,
 } from "../db/schema";
+import { opportunitySeedData } from "../db/seed-data";
 
 const configFor = (table: Parameters<typeof getTableConfig>[0]) =>
   getTableConfig(table);
@@ -158,6 +161,18 @@ describe("Mewtuals PostgreSQL schema", () => {
         "eligible_creator_subtypes",
       ]),
     );
+  });
+
+  it("keeps every seeded opportunity inside the shared signal vocabulary", () => {
+    const allowedInterests = new Set<string>(openToInterests);
+
+    expect(opportunitySeedData).toHaveLength(4);
+    for (const opportunity of opportunitySeedData) {
+      expect(opportunity.openToTags.length).toBeGreaterThan(0);
+      expect(
+        opportunity.openToTags.every((tag) => allowedInterests.has(tag)),
+      ).toBe(true);
+    }
   });
 
   it("uses cascading foreign keys for owned product records", () => {

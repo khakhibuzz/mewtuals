@@ -8,9 +8,11 @@ import {
   type ParticipantIdentity,
 } from "./identity";
 import {
+  openToInterestSchema,
   signalSchema,
   type OpenToInterest,
   type PartnershipSignal,
+  type PartnershipSignalInput,
 } from "./signal";
 
 export const partnershipDirections = [
@@ -31,7 +33,7 @@ export const opportunityCandidateSchema = z.object({
   eligibleIdentityKinds: z.array(identityKindSchema).min(1),
   eligibleOrganisationSubtypes: z.array(organisationSubtypeSchema),
   eligibleCreatorSubtypes: z.array(creatorSubtypeSchema),
-  openToTags: z.array(z.string().trim().min(1)).min(1),
+  openToTags: z.array(openToInterestSchema).min(1),
   active: z.boolean().default(true),
 });
 
@@ -78,7 +80,7 @@ const buildFitSummary = (matchedInterests: OpenToInterest[]) =>
 
 export const curateOpportunities = (
   rawIdentity: ParticipantIdentity,
-  rawSignal: PartnershipSignal,
+  rawSignal: PartnershipSignalInput,
   rawOpportunities: readonly OpportunityCandidate[],
 ): CuratedOpportunity[] => {
   const identity = identitySchema.parse(rawIdentity);

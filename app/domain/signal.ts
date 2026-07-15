@@ -41,4 +41,5 @@ export const signalSchema = z.object({
 
 export type Availability = z.infer<typeof availabilitySchema>;
 export type OpenToInterest = z.infer<typeof openToInterestSchema>;
-export type PartnershipSignal = z.infer<typeof signalSchema>;
+export type PartnershipSignalInput = z.input<typeof signalSchema>;
+export type PartnershipSignal = z.output<typeof signalSchema>;

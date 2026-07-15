@@ -23,6 +23,12 @@ describe("public profile sources", () => {
     expect(normalizePublicUrl("https://example.com./profile")).toBe(
       "https://example.com/profile",
     );
+    expect(normalizePublicUrl("https://münich.com/profile")).toBe(
+      "https://xn--mnich-kva.com/profile",
+    );
+    expect(normalizePublicUrl("https://8.8.8.8/profile")).toBe(
+      "https://8.8.8.8/profile",
+    );
   });
 
   it.each([
@@ -43,6 +49,10 @@ describe("public profile sources", () => {
     "http://[::ffff:127.0.0.1]/profile",
     "http://[::ffff:10.20.30.40]/profile",
     "http://[::ffff:169.254.169.254]/profile",
+    "https://foo..com/profile",
+    "https://-bad.com/profile",
+    "https://bad-.com/profile",
+    "https://bad_host.com/profile",
     "http://intranet/profile",
     "not a URL",
   ])("rejects unsafe or malformed source %s", (source) => {
@@ -118,6 +128,42 @@ describe("editable profile draft generation", () => {
 
     expect(draft.name).toBe("Keshav Garg");
     expect(draft.organisationName).toBe("Mewtuals Labs");
+  });
+
+  it.each([
+    ["non-string", 42],
+    ["empty", "   "],
+    ["control-only", "\u0000\u0001"],
+    ["embedded control", "Signal\nStudio"],
+    ["unreasonably long", "a".repeat(121)],
+  ])("rejects a %s supplied name before draft generation", (_, name) => {
+    const input = {
+      identity: { kind: "organisation", subtype: "brand" },
+      source: {
+        kind: "organisation",
+        websiteUrl: "https://example.com/",
+      },
+      displayName: name,
+    };
+
+    expect(() =>
+      generateProfileDraft(
+        input as unknown as Parameters<typeof generateProfileDraft>[0],
+      ),
+    ).toThrow();
+  });
+
+  it("validates supplied organisation names through the same boundary", () => {
+    expect(() =>
+      generateProfileDraft({
+        identity: { kind: "organisation", subtype: "brand" },
+        source: {
+          kind: "organisation",
+          websiteUrl: "https://example.com/",
+        },
+        organisationName: " ",
+      }),
+    ).toThrow();
   });
 
   it("derives a creator name from the supplied profile handle", () => {

@@ -10,7 +10,7 @@ const privateHostnameSuffixes = [
   ".localhost",
 ];
 
-const isPrivateIpv4 = (hostname: string) => {
+const parseIpv4 = (hostname: string) => {
   const octets = hostname.split(".").map(Number);
 
   if (
@@ -19,6 +19,16 @@ const isPrivateIpv4 = (hostname: string) => {
       (octet) => !Number.isInteger(octet) || octet < 0 || octet > 255,
     )
   ) {
+    return null;
+  }
+
+  return octets;
+};
+
+const isPrivateIpv4 = (hostname: string) => {
+  const octets = parseIpv4(hostname);
+
+  if (!octets) {
     return false;
   }
 
@@ -106,6 +116,19 @@ const isPrivateIpv6 = (hostname: string) => {
   return ipv4 ? isPrivateIpv4(ipv4) : false;
 };
 
+const isValidDnsHostname = (hostname: string) => {
+  if (hostname.length > 253) {
+    return false;
+  }
+
+  return hostname.split(".").every(
+    (label) =>
+      label.length > 0 &&
+      label.length <= 63 &&
+      /^[a-z\d](?:[a-z\d-]*[a-z\d])?$/i.test(label),
+  );
+};
+
 const assertPublicHostname = (hostname: string) => {
   const isIpv6 = hostname.startsWith("[");
   const normalized = hostname
@@ -116,11 +139,13 @@ const assertPublicHostname = (hostname: string) => {
     normalized === "localhost" ||
     (!normalized.includes(".") && !normalized.includes(":")) ||
     privateHostnameSuffixes.some((suffix) => normalized.endsWith(suffix));
+  const isIpAddress = parseIpv4(normalized) !== null || normalized.includes(":");
 
   if (
     isPrivateName ||
     isPrivateIpv4(normalized) ||
-    isPrivateIpv6(normalized)
+    isPrivateIpv6(normalized) ||
+    (!isIpAddress && !isValidDnsHostname(normalized))
   ) {
     throw new Error("Source URL must use a public host");
   }
@@ -199,6 +224,25 @@ export const profileSourceSchema = z.discriminatedUnion("kind", [
 
 export type ProfileSource = z.infer<typeof profileSourceSchema>;
 
+export const profileNameSchema = z
+  .string()
+  .trim()
+  .min(1, "Name is required")
+  .max(120, "Name must be 120 characters or fewer")
+  .refine((name) => !/\p{Cc}/u.test(name), {
+    message: "Name must not contain control characters",
+  })
+  .refine((name) => /[\p{L}\p{N}\p{P}\p{S}]/u.test(name), {
+    message: "Name must contain visible characters",
+  });
+
+export const generateProfileDraftInputSchema = z.object({
+  identity: identitySchema,
+  source: profileSourceSchema,
+  displayName: profileNameSchema.optional(),
+  organisationName: profileNameSchema.optional(),
+});
+
 export type ProfileDraft = {
   name: string;
   organisationName: string | null;
@@ -218,12 +262,9 @@ export type ProfileDraft = {
   socialUrl: string | null;
 };
 
-export type GenerateProfileDraftInput = {
-  identity: ParticipantIdentity;
-  source: ProfileSource;
-  displayName?: string;
-  organisationName?: string;
-};
+export type GenerateProfileDraftInput = z.input<
+  typeof generateProfileDraftInputSchema
+>;
 
 const canonicalDomain = (url: string) =>
   new URL(url).hostname.toLowerCase().replace(/^www\./, "");
@@ -255,13 +296,13 @@ const nameFromProfileUrl = (url: string) => {
   return pathName || nameFromDomain(canonicalDomain(url));
 };
 
-const suppliedName = (value?: string) => value?.trim() || undefined;
+const suppliedName = (value?: string) => value || undefined;
 
 export const generateProfileDraft = (
   rawInput: GenerateProfileDraftInput,
 ): ProfileDraft => {
-  const identity = identitySchema.parse(rawInput.identity);
-  const source = profileSourceSchema.parse(rawInput.source);
+  const input = generateProfileDraftInputSchema.parse(rawInput);
+  const { identity, source } = input;
 
   if (identity.kind !== source.kind) {
     throw new Error("Identity and profile source kinds must match");
@@ -270,10 +311,10 @@ export const generateProfileDraft = (
   if (identity.kind === "organisation" && source.kind === "organisation") {
     const domain = canonicalDomain(source.websiteUrl);
     const organisationName =
-      suppliedName(rawInput.organisationName) || nameFromDomain(domain);
+      suppliedName(input.organisationName) || nameFromDomain(domain);
 
     return {
-      name: suppliedName(rawInput.displayName) || organisationName,
+      name: suppliedName(input.displayName) || organisationName,
       organisationName,
       identityKind: identity.kind,
       organisationSubtype: identity.subtype,
@@ -289,8 +330,8 @@ export const generateProfileDraft = (
   if (identity.kind === "creator" && source.kind === "creator") {
     return {
       name:
-        suppliedName(rawInput.displayName) || nameFromProfileUrl(source.primaryUrl),
-      organisationName: suppliedName(rawInput.organisationName) ?? null,
+        suppliedName(input.displayName) || nameFromProfileUrl(source.primaryUrl),
+      organisationName: suppliedName(input.organisationName) ?? null,
       identityKind: identity.kind,
       organisationSubtype: null,
       creatorSubtype: identity.subtype,

@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   curateOpportunities,
+  opportunityCandidateSchema,
   partnershipDirectionSchema,
   type OpportunityCandidate,
 } from "../app/domain/matching";
 import { signalSchema } from "../app/domain/signal";
+import { opportunitySeedData } from "../db/seed-data";
 
 const opportunities = [
   {
@@ -90,6 +92,15 @@ describe("signals", () => {
 });
 
 describe("curated opportunity fit", () => {
+  it("rejects catalogue tags outside the member signal vocabulary", () => {
+    expect(() =>
+      opportunityCandidateSchema.parse({
+        ...opportunities[0],
+        openToTags: ["unsupported_internal_tag"],
+      }),
+    ).toThrow();
+  });
+
   it("supports all four partnership directions", () => {
     expect(
       opportunities.map((opportunity) =>
@@ -163,4 +174,38 @@ describe("curated opportunity fit", () => {
       "candidate-3",
     ]);
   });
+
+  it.each([
+    [
+      "brand_creator",
+      { kind: "organisation", subtype: "brand" },
+      "creator_collaborations",
+    ],
+    [
+      "brand_brand",
+      { kind: "organisation", subtype: "brand" },
+      "co_marketing",
+    ],
+    [
+      "creator_creator",
+      { kind: "creator", subtype: "creator" },
+      "podcasts",
+    ],
+    [
+      "startup_distribution_partner",
+      { kind: "organisation", subtype: "startup" },
+      "distribution_partnerships",
+    ],
+  ] as const)(
+    "makes the seeded %s direction reachable from an allowed signal",
+    (direction, identity, interest) => {
+      expect(
+        curateOpportunities(
+          identity,
+          { availability: "open_now", openTo: [interest] },
+          opportunitySeedData,
+        ).map((pick) => pick.direction),
+      ).toContain(direction);
+    },
+  );
 });
