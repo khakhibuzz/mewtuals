@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 
 import { closeDb, getDb } from "../db/client.ts";
+import { loadLocalEnvironment } from "./load-local-env.mjs";
+
+loadLocalEnvironment();
 
 const migrationsFolder = resolve(
   dirname(fileURLToPath(import.meta.url)),

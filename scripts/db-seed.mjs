@@ -1,6 +1,9 @@
 import { closeDb, getDb } from "../db/client.ts";
 import { opportunitySeedData } from "../db/seed-data.ts";
 import { opportunities } from "../db/schema.ts";
+import { loadLocalEnvironment } from "./load-local-env.mjs";
+
+loadLocalEnvironment();
 
 try {
   const db = getDb();
