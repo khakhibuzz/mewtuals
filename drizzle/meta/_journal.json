@@ -1,5 +1,13 @@
 {
   "version": "7",
-  "dialect": "sqlite",
-  "entries": []
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1784117204789,
+      "tag": "0000_wakeful_black_knight",
+      "breakpoints": true
+    }
+  ]
 }
