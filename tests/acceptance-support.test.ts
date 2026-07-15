@@ -25,6 +25,7 @@ describe("acceptance environment safety", () => {
       "${DATABASE_URL",
     );
     expect(packageJson.scripts["dev:4000"]).toContain("vinext dev --port 4000");
+    expect(packageJson.scripts.lint).toContain("--ignore-pattern .worktrees");
   });
 
   it("checks local PostgreSQL status against the primary database", () => {

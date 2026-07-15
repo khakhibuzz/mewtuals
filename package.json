@@ -17,7 +17,7 @@
     "test:e2e": "playwright test tests/e2e/product-v1.spec.ts",
     "test:watch": "vitest",
     "test:render": "npm run build && node --test tests/rendered-html.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .worktrees",
     "db:start": "node scripts/local-postgres.mjs start",
     "db:stop": "node scripts/local-postgres.mjs stop",
     "db:status": "node scripts/local-postgres.mjs status",
