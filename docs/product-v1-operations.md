@@ -17,7 +17,8 @@ cp .env.example .env.local
 Populate `.env.local` without committing it:
 
 ```dotenv
-DATABASE_URL=postgresql://127.0.0.1:55432/mewtuals
+DATABASE_URL=postgresql://<local-user>@127.0.0.1:55432/mewtuals
+NODE_ENV=development
 SESSION_SECRET=<at-least-32-random-characters>
 RESEND_API_KEY=
 EMAIL_FROM=
@@ -27,7 +28,9 @@ GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 ```
 
-Generate `SESSION_SECRET` with `openssl rand -base64 48`. A secret must contain
+Replace `<local-user>` with the output of `whoami`; Vinext's worker runtime
+cannot infer the local PostgreSQL role. Generate `SESSION_SECRET` with
+`openssl rand -base64 48`. A secret must contain
 at least 32 characters. Rotating it invalidates outstanding magic links and
 sessions, so treat rotation as a deliberate sign-out event.
 
@@ -82,6 +85,7 @@ files:
 
 | Variable | Requirement |
 | --- | --- |
+| `NODE_ENV` | `production` in the deployed runtime. Local dev scripts set `development` explicitly. |
 | `DATABASE_URL` | Managed PostgreSQL connection URL. Prefer the provider's pooled/serverless URL for the deployed runtime. |
 | `SESSION_SECRET` | Stable high-entropy value of at least 32 characters. |
 | `RESEND_API_KEY` | Required for production magic-link delivery. |

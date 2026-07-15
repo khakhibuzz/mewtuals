@@ -33,7 +33,8 @@ Use these development values as a starting point. Keep the placeholders blank
 until the corresponding integration is configured.
 
 ```dotenv
-DATABASE_URL=postgresql://127.0.0.1:55432/mewtuals
+DATABASE_URL=postgresql://<local-user>@127.0.0.1:55432/mewtuals
+NODE_ENV=development
 SESSION_SECRET=<at-least-32-random-characters>
 RESEND_API_KEY=
 EMAIL_FROM=
@@ -44,7 +45,8 @@ GOOGLE_CLIENT_SECRET=
 ```
 
 Generate a session secret with `openssl rand -base64 48`, then start and prepare
-the project-local database:
+the project-local database. Replace `<local-user>` with the output of `whoami`;
+Vinext's worker runtime cannot infer the local PostgreSQL role:
 
 ```bash
 npm run db:setup

@@ -1,5 +1,6 @@
-# Local example: DATABASE_URL=postgresql://127.0.0.1:55432/mewtuals
+# Local example: DATABASE_URL=postgresql://<local-user>@127.0.0.1:55432/mewtuals
 DATABASE_URL=
+NODE_ENV=development
 SESSION_SECRET=
 RESEND_API_KEY=
 EMAIL_FROM=

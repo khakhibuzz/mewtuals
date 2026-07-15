@@ -16,6 +16,7 @@ describe("acceptance environment safety", () => {
     const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
       scripts: Record<string, string>;
     };
+    const environmentExample = readFileSync(".env.example", "utf8");
 
     expect(packageJson.scripts["db:setup"]).toBe("npm run db:setup:local");
     expect(packageJson.scripts["db:setup:local"]).toContain(
@@ -25,7 +26,11 @@ describe("acceptance environment safety", () => {
       "${DATABASE_URL",
     );
     expect(packageJson.scripts["dev:4000"]).toContain("vinext dev --port 4000");
+    expect(packageJson.scripts["dev:4000"]).toContain("NODE_ENV=development");
     expect(packageJson.scripts.lint).toContain("--ignore-pattern .worktrees");
+    expect(environmentExample).toContain(
+      "postgresql://<local-user>@127.0.0.1:55432/mewtuals",
+    );
   });
 
   it("checks local PostgreSQL status against the primary database", () => {
