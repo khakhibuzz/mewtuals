@@ -2,8 +2,9 @@
 
 import { FormEvent, useState } from "react";
 
+import { FormSubmissionAlert } from "./FormSubmissionAlert";
 import styles from "./product.module.css";
-import { continueTo, postForm } from "./form-client";
+import { useProductSubmission } from "./useProductSubmission";
 
 type ProfileDraftView = {
   name: string;
@@ -26,25 +27,23 @@ export function ProfileConfirmForm({
   const [organisationName, setOrganisationName] = useState(draft.organisationName);
   const [domain, setDomain] = useState(draft.domain);
   const [confirmed, setConfirmed] = useState(false);
-  const [errors, setErrors] = useState(initialErrors);
-  const [submitting, setSubmitting] = useState(false);
+  const {
+    clearFieldError,
+    fieldErrors: errors,
+    generalError,
+    sessionExpired,
+    submit: submitForm,
+    submitting,
+  } = useProductSubmission(initialErrors);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSubmitting(true);
-    const { result } = await postForm("/api/onboarding/profile", {
+    await submitForm("/api/onboarding/profile", {
       name,
       organisationName,
       domain,
       confirmed,
     });
-    setSubmitting(false);
-    if (result.errors) {
-      setErrors(result.errors);
-      return;
-    }
-    const destination = result.nextPath ?? result.redirectTo;
-    if (destination) continueTo(destination);
   }
 
   const textField = (
@@ -61,7 +60,10 @@ export function ProfileConfirmForm({
         className={styles.input}
         id={field}
         value={value}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={(event) => {
+          setValue(event.target.value);
+          clearFieldError(field);
+        }}
         aria-invalid={Boolean(errors[field])}
         aria-describedby={errors[field] ? `${field}-error` : undefined}
         required={field !== "organisationName"}
@@ -94,7 +96,10 @@ export function ProfileConfirmForm({
         <input
           type="checkbox"
           checked={confirmed}
-          onChange={(event) => setConfirmed(event.target.checked)}
+          onChange={(event) => {
+            setConfirmed(event.target.checked);
+            clearFieldError("confirmed");
+          }}
           aria-describedby={errors.confirmed ? "confirmed-error" : undefined}
           required
         />
@@ -105,6 +110,10 @@ export function ProfileConfirmForm({
           {errors.confirmed}
         </p>
       ) : null}
+      <FormSubmissionAlert
+        message={generalError}
+        sessionExpired={sessionExpired}
+      />
       <button className={styles.button} type="submit" disabled={submitting}>
         {submitting ? "Confirming…" : "Confirm profile"}
       </button>

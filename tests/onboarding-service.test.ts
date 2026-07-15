@@ -18,6 +18,7 @@ function createMemoryRepository() {
       return { draft, profile };
     },
     async saveIdentity(_userId, identity) {
+      if (draft || profile) return { applied: false, state: { draft, profile } };
       draft = {
         userId,
         ...identity,
@@ -30,15 +31,24 @@ function createMemoryRepository() {
         generatedDomain: null,
         primaryUrl: null,
       };
-      profile = null;
-      return draft;
+      return { applied: true, value: draft };
     },
-    async saveSource(_userId, source) {
-      if (!draft) throw new Error("Identity is required");
+    async saveSource(_userId, { expectedIdentityKind, source }) {
+      if (
+        profile ||
+        !draft ||
+        draft.identityKind !== expectedIdentityKind ||
+        draft.primaryUrl
+      ) {
+        return { applied: false, state: { draft, profile } };
+      }
       draft = { ...draft, ...source };
-      return draft;
+      return { applied: true, value: draft };
     },
     async confirmProfile(_userId, input) {
+      if (profile || !draft?.primaryUrl) {
+        return { applied: false, state: { draft, profile } };
+      }
       profile = {
         id: "7f80291e-67c4-441f-8972-8579a0bbf251",
         userId,
@@ -46,12 +56,14 @@ function createMemoryRepository() {
         status: "draft",
         submittedAt: null,
       };
-      return profile;
+      return { applied: true, value: profile };
     },
     async submitForVerification(_userId, submittedAt) {
-      if (!profile || profile.status !== "draft") return null;
+      if (!profile || profile.status !== "draft") {
+        return { applied: false, state: { draft, profile } };
+      }
       profile = { ...profile, status: "pending", submittedAt };
-      return profile;
+      return { applied: true, value: profile };
     },
   };
 
@@ -88,6 +100,32 @@ describe("member onboarding service", () => {
 
     await service.submitVerification(userId);
     expect(await service.nextPath(userId)).toBe("/dashboard");
+  });
+
+  it("redirects replayed mutations to the state that won", async () => {
+    const service = createOnboardingService(createMemoryRepository());
+
+    await service.saveIdentity(userId, {
+      kind: "organisation",
+      subtype: "startup",
+    });
+    expect(
+      await service.saveIdentity(userId, {
+        kind: "creator",
+        subtype: "creator",
+      }),
+    ).toEqual({ ok: false, redirectTo: "/onboarding/source" });
+
+    await service.saveSource(userId, {
+      kind: "organisation",
+      websiteUrl: "https://mewtuals.com",
+    });
+    expect(
+      await service.saveSource(userId, {
+        kind: "organisation",
+        websiteUrl: "https://stale.example",
+      }),
+    ).toEqual({ ok: false, redirectTo: "/onboarding/profile" });
   });
 
   it.each([

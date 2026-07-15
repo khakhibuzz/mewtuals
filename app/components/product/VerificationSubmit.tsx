@@ -1,26 +1,22 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent } from "react";
 
+import { FormSubmissionAlert } from "./FormSubmissionAlert";
 import styles from "./product.module.css";
-import { continueTo, postForm } from "./form-client";
+import { useProductSubmission } from "./useProductSubmission";
 
 export function VerificationSubmit({ profileName }: { profileName: string }) {
-  const [error, setError] = useState<string>();
-  const [submitting, setSubmitting] = useState(false);
+  const {
+    generalError,
+    sessionExpired,
+    submit: submitForm,
+    submitting,
+  } = useProductSubmission();
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSubmitting(true);
-    setError(undefined);
-    const { response, result } = await postForm("/api/verification/submit", {});
-    setSubmitting(false);
-    const destination = result.nextPath ?? result.redirectTo;
-    if (destination) {
-      continueTo(destination);
-      return;
-    }
-    if (!response.ok) setError(result.error ?? "Could not submit for verification.");
+    await submitForm("/api/verification/submit", {});
   }
 
   return (
@@ -29,11 +25,10 @@ export function VerificationSubmit({ profileName }: { profileName: string }) {
         Submit <strong>{profileName}</strong> for a private Mewtuals review. Your
         public profile remains hidden while we review it.
       </p>
-      {error ? (
-        <p className={styles.error} role="alert">
-          {error}
-        </p>
-      ) : null}
+      <FormSubmissionAlert
+        message={generalError}
+        sessionExpired={sessionExpired}
+      />
       <button className={styles.button} type="submit" disabled={submitting}>
         {submitting ? "Submitting…" : "Submit for verification"}
       </button>

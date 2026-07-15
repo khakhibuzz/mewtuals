@@ -116,4 +116,136 @@ describe("product onboarding forms", () => {
     expect(onLoggedOut).toHaveBeenCalledOnce();
     vi.unstubAllGlobals();
   });
+
+  type ResilientForm = {
+    name: string;
+    renderForm: () => ReturnType<typeof render>;
+    prepare?: (user: ReturnType<typeof userEvent.setup>) => Promise<void>;
+    submit: () => HTMLElement;
+  };
+
+  const resilientForms: ResilientForm[] = [
+    {
+      name: "identity",
+      renderForm: () => render(<IdentityForm />),
+      submit: () => screen.getByRole("button", { name: "Continue" }),
+    },
+    {
+      name: "source",
+      renderForm: () =>
+        render(
+          <SourceForm
+            identityKind="creator"
+            initialValues={{ primaryUrl: "https://youtube.com/@mew" }}
+          />,
+        ),
+      submit: () => screen.getByRole("button", { name: "Build my profile" }),
+    },
+    {
+      name: "profile",
+      renderForm: () =>
+        render(
+          <ProfileConfirmForm
+            draft={{
+              name: "Mew Studio",
+              organisationName: "Mew Media",
+              domain: "youtube.com",
+              identityLabel: "Creator · Podcaster",
+              primaryUrl: "https://youtube.com/@mew",
+            }}
+          />,
+        ),
+      prepare: async (user: ReturnType<typeof userEvent.setup>) =>
+        user.click(
+          screen.getByRole("checkbox", { name: /I confirm this profile/i }),
+        ),
+      submit: () => screen.getByRole("button", { name: "Confirm profile" }),
+    },
+    {
+      name: "verification",
+      renderForm: () => render(<VerificationSubmit profileName="Mew Studio" />),
+      submit: () =>
+        screen.getByRole("button", { name: "Submit for verification" }),
+    },
+  ];
+
+  it.each(resilientForms)(
+    "restores the $name form after a rejected request and announces a general error",
+    async ({ renderForm, prepare, submit }) => {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => Promise.reject(new Error("offline"))),
+      );
+      renderForm();
+      await prepare?.(user);
+      const button = submit();
+
+      await user.click(button);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "We could not complete that request. Try again.",
+      );
+      expect(button).toBeEnabled();
+      vi.unstubAllGlobals();
+    },
+  );
+
+  it.each(resilientForms)(
+    "shows a non-field API error on the $name form and restores submission",
+    async ({ renderForm, prepare, submit }) => {
+      const user = userEvent.setup();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () =>
+          new Response(
+            JSON.stringify({
+              ok: false,
+              error: "The profile changed. Reload and try again.",
+            }),
+            {
+              status: 409,
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+        ),
+      );
+      renderForm();
+      await prepare?.(user);
+      const button = submit();
+
+      await user.click(button);
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "The profile changed. Reload and try again.",
+      );
+      expect(button).toBeEnabled();
+      vi.unstubAllGlobals();
+    },
+  );
+
+  it("gives an expired identity session a predictable sign-in recovery", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ ok: false, error: "Sign in to continue." }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    render(<IdentityForm />);
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Your session expired. Sign in to continue.",
+    );
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/login",
+    );
+    vi.unstubAllGlobals();
+  });
 });

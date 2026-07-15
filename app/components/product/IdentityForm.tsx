@@ -3,8 +3,9 @@
 import { FormEvent, useState } from "react";
 
 import type { IdentityKind } from "../../domain/identity";
+import { FormSubmissionAlert } from "./FormSubmissionAlert";
 import styles from "./product.module.css";
-import { continueTo, postForm } from "./form-client";
+import { useProductSubmission } from "./useProductSubmission";
 
 const subtypeOptions = {
   organisation: [
@@ -35,26 +36,24 @@ export function IdentityForm({
   const [subtype, setSubtype] = useState(
     initialValues?.subtype ?? subtypeOptions[initialKind][0][0],
   );
-  const [errors, setErrors] = useState(initialErrors);
-  const [submitting, setSubmitting] = useState(false);
+  const {
+    clearFieldErrors,
+    fieldErrors: errors,
+    generalError,
+    sessionExpired,
+    submit: submitForm,
+    submitting,
+  } = useProductSubmission(initialErrors);
 
   function chooseKind(nextKind: IdentityKind) {
     setKind(nextKind);
     setSubtype(subtypeOptions[nextKind][0][0]);
-    setErrors({});
+    clearFieldErrors();
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSubmitting(true);
-    const { result } = await postForm("/api/onboarding/identity", { kind, subtype });
-    setSubmitting(false);
-    if (result.errors) {
-      setErrors(result.errors);
-      return;
-    }
-    const destination = result.nextPath ?? result.redirectTo;
-    if (destination) continueTo(destination);
+    await submitForm("/api/onboarding/identity", { kind, subtype });
   }
 
   return (
@@ -98,6 +97,10 @@ export function IdentityForm({
           </p>
         ) : null}
       </div>
+      <FormSubmissionAlert
+        message={generalError}
+        sessionExpired={sessionExpired}
+      />
       <button className={styles.button} type="submit" disabled={submitting}>
         {submitting ? "Saving…" : "Continue"}
       </button>

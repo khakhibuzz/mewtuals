@@ -3,8 +3,9 @@
 import { FormEvent, useState } from "react";
 
 import type { IdentityKind } from "../../domain/identity";
+import { FormSubmissionAlert } from "./FormSubmissionAlert";
 import styles from "./product.module.css";
-import { continueTo, postForm } from "./form-client";
+import { useProductSubmission } from "./useProductSubmission";
 
 type SourceFormProps = {
   identityKind: IdentityKind;
@@ -18,28 +19,26 @@ export function SourceForm({
   initialErrors = {},
 }: SourceFormProps) {
   const [values, setValues] = useState(initialValues);
-  const [errors, setErrors] = useState(initialErrors);
-  const [submitting, setSubmitting] = useState(false);
+  const {
+    clearFieldError,
+    fieldErrors: errors,
+    generalError,
+    sessionExpired,
+    submit: submitForm,
+    submitting,
+  } = useProductSubmission(initialErrors);
 
   const update = (field: string, value: string) => {
     setValues((current) => ({ ...current, [field]: value }));
-    setErrors((current) => ({ ...current, [field]: "" }));
+    clearFieldError(field);
   };
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSubmitting(true);
-    const { result } = await postForm("/api/onboarding/source", {
+    await submitForm("/api/onboarding/source", {
       kind: identityKind,
       ...values,
     });
-    setSubmitting(false);
-    if (result.errors) {
-      setErrors(result.errors);
-      return;
-    }
-    const destination = result.nextPath ?? result.redirectTo;
-    if (destination) continueTo(destination);
   }
 
   const field = (
@@ -84,6 +83,10 @@ export function SourceForm({
           {field("businessEmail", "Business email (optional)", "email", false)}
         </>
       )}
+      <FormSubmissionAlert
+        message={generalError}
+        sessionExpired={sessionExpired}
+      />
       <button className={styles.button} type="submit" disabled={submitting}>
         {submitting ? "Understanding…" : "Build my profile"}
       </button>

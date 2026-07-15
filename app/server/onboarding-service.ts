@@ -84,24 +84,33 @@ export type ConfirmedProfile = Omit<
   "id" | "userId" | "submittedAt"
 > & { submittedAt?: Date | null };
 
+type OnboardingState = {
+  draft: OnboardingDraftRecord | null;
+  profile: OnboardingProfileRecord | null;
+};
+
+type OnboardingMutation<T> =
+  | { applied: true; value: T }
+  | { applied: false; state: OnboardingState };
+
 export interface OnboardingRepository {
-  findState(userId: string): Promise<{
-    draft: OnboardingDraftRecord | null;
-    profile: OnboardingProfileRecord | null;
-  }>;
+  findState(userId: string): Promise<OnboardingState>;
   saveIdentity(
     userId: string,
     identity: SavedIdentity,
-  ): Promise<OnboardingDraftRecord>;
-  saveSource(userId: string, source: SavedSource): Promise<OnboardingDraftRecord>;
+  ): Promise<OnboardingMutation<OnboardingDraftRecord>>;
+  saveSource(
+    userId: string,
+    input: { expectedIdentityKind: IdentityKind; source: SavedSource },
+  ): Promise<OnboardingMutation<OnboardingDraftRecord>>;
   confirmProfile(
     userId: string,
     profile: ConfirmedProfile,
-  ): Promise<OnboardingProfileRecord>;
+  ): Promise<OnboardingMutation<OnboardingProfileRecord>>;
   submitForVerification(
     userId: string,
     submittedAt: Date,
-  ): Promise<OnboardingProfileRecord | null>;
+  ): Promise<OnboardingMutation<OnboardingProfileRecord>>;
 }
 
 type FormValues = Record<string, unknown>;
@@ -237,8 +246,14 @@ export function createOnboardingService(
               organisationSubtype: null,
               creatorSubtype: parsed.data.subtype,
             };
-      const saved = await repository.saveIdentity(userId, identity);
-      return { ok: true, value: saved, nextPath: "/onboarding/source" };
+      const result = await repository.saveIdentity(userId, identity);
+      if (!result.applied) {
+        return {
+          ok: false,
+          redirectTo: nextOnboardingPath(result.state),
+        };
+      }
+      return { ok: true, value: result.value, nextPath: "/onboarding/source" };
     },
 
     async saveSource(
@@ -286,8 +301,17 @@ export function createOnboardingService(
         generatedDomain: generated.domain,
         primaryUrl: generated.primaryUrl,
       };
-      const saved = await repository.saveSource(userId, source);
-      return { ok: true, value: saved, nextPath: "/onboarding/profile" };
+      const result = await repository.saveSource(userId, {
+        expectedIdentityKind: state.draft!.identityKind,
+        source,
+      });
+      if (!result.applied) {
+        return {
+          ok: false,
+          redirectTo: nextOnboardingPath(result.state),
+        };
+      }
+      return { ok: true, value: result.value, nextPath: "/onboarding/profile" };
     },
 
     async confirmProfile(
@@ -314,7 +338,7 @@ export function createOnboardingService(
       }
 
       const draft = state.draft!;
-      const profile = await repository.confirmProfile(userId, {
+      const result = await repository.confirmProfile(userId, {
         name: parsed.data.name,
         organisationName: parsed.data.organisationName ?? null,
         identityKind: draft.identityKind,
@@ -328,9 +352,15 @@ export function createOnboardingService(
         status: "draft",
         submittedAt: null,
       });
+      if (!result.applied) {
+        return {
+          ok: false,
+          redirectTo: nextOnboardingPath(result.state),
+        };
+      }
       return {
         ok: true,
-        value: profile,
+        value: result.value,
         nextPath: "/onboarding/verification",
       };
     },
@@ -347,14 +377,14 @@ export function createOnboardingService(
       profileStatusSchema.parse(state.profile!.status);
       transitionProfileStatus(state.profile!.status, "pending");
       const submittedAt = now();
-      const profile = await repository.submitForVerification(userId, submittedAt);
-      if (!profile) {
+      const result = await repository.submitForVerification(userId, submittedAt);
+      if (!result.applied) {
         return {
           ok: false,
-          redirectTo: nextOnboardingPath(await readState(userId)),
+          redirectTo: nextOnboardingPath(result.state),
         };
       }
-      return { ok: true, value: profile, nextPath: "/dashboard" };
+      return { ok: true, value: result.value, nextPath: "/dashboard" };
     },
   };
 }

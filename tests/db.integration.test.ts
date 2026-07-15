@@ -432,23 +432,32 @@ describe("PostgreSQL authentication repository", () => {
       creatorSubtype: null,
     });
     expect(identity).toMatchObject({
-      userId: user!.id,
-      identityKind: "organisation",
-      organisationSubtype: "startup",
-      primaryUrl: null,
+      applied: true,
+      value: {
+        userId: user!.id,
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        primaryUrl: null,
+      },
     });
 
     const source = await onboardingRepository.saveSource(user!.id, {
-      websiteUrl: "https://mewtuals.com/",
-      linkedInUrl: null,
-      socialUrl: null,
-      businessEmail: null,
-      generatedName: "Mewtuals",
-      generatedOrganisationName: "Mewtuals",
-      generatedDomain: "mewtuals.com",
-      primaryUrl: "https://mewtuals.com/",
+      expectedIdentityKind: "organisation",
+      source: {
+        websiteUrl: "https://mewtuals.com/",
+        linkedInUrl: null,
+        socialUrl: null,
+        businessEmail: null,
+        generatedName: "Mewtuals",
+        generatedOrganisationName: "Mewtuals",
+        generatedDomain: "mewtuals.com",
+        primaryUrl: "https://mewtuals.com/",
+      },
     });
-    expect(source.generatedDomain).toBe("mewtuals.com");
+    expect(source).toMatchObject({
+      applied: true,
+      value: { generatedDomain: "mewtuals.com" },
+    });
 
     const profile = await onboardingRepository.confirmProfile(user!.id, {
       name: "Mewtuals",
@@ -464,15 +473,24 @@ describe("PostgreSQL authentication repository", () => {
       status: "draft",
       submittedAt: null,
     });
-    expect(profile.status).toBe("draft");
+    expect(profile).toMatchObject({
+      applied: true,
+      value: { status: "draft" },
+    });
 
     const submittedAt = new Date("2026-07-15T13:00:00.000Z");
     expect(
       await onboardingRepository.submitForVerification(user!.id, submittedAt),
-    ).toMatchObject({ status: "pending", submittedAt });
+    ).toMatchObject({
+      applied: true,
+      value: { status: "pending", submittedAt },
+    });
     expect(
       await onboardingRepository.submitForVerification(user!.id, submittedAt),
-    ).toBeNull();
+    ).toMatchObject({
+      applied: false,
+      state: { profile: { status: "pending", submittedAt } },
+    });
 
     expect(
       await db.select().from(onboardingDrafts).where(eq(onboardingDrafts.userId, user!.id)),
@@ -480,5 +498,111 @@ describe("PostgreSQL authentication repository", () => {
     expect(
       await db.select().from(profiles).where(eq(profiles.userId, user!.id)),
     ).toHaveLength(1);
+  });
+
+  it("serializes competing identity choices and rejects mismatched source evidence", async () => {
+    const email = `${emailPrefix}-identity-race@example.test`;
+    const [user] = await db.insert(users).values({ email }).returning();
+    expect(user).toBeDefined();
+
+    const attempts = await Promise.all([
+      onboardingRepository.saveIdentity(user!.id, {
+        identityKind: "organisation",
+        organisationSubtype: "brand",
+        creatorSubtype: null,
+      }),
+      onboardingRepository.saveIdentity(user!.id, {
+        identityKind: "creator",
+        organisationSubtype: null,
+        creatorSubtype: "podcaster",
+      }),
+    ]);
+
+    expect(attempts.filter((attempt) => attempt.applied)).toHaveLength(1);
+    expect(attempts.filter((attempt) => !attempt.applied)).toHaveLength(1);
+
+    const state = await onboardingRepository.findState(user!.id);
+    expect(state.draft).not.toBeNull();
+    const mismatchedKind =
+      state.draft!.identityKind === "organisation" ? "creator" : "organisation";
+    const mismatch = await onboardingRepository.saveSource(user!.id, {
+      expectedIdentityKind: mismatchedKind,
+      source: {
+        websiteUrl: null,
+        linkedInUrl: null,
+        socialUrl: "https://youtube.com/@wrong-kind",
+        businessEmail: null,
+        generatedName: "Wrong Kind",
+        generatedOrganisationName: null,
+        generatedDomain: "youtube.com",
+        primaryUrl: "https://youtube.com/@wrong-kind",
+      },
+    });
+
+    expect(mismatch.applied).toBe(false);
+    if (mismatch.applied) throw new Error("Mismatched source was applied.");
+    expect(mismatch.state.draft).toMatchObject({
+      identityKind: state.draft!.identityKind,
+      primaryUrl: null,
+      websiteUrl: null,
+      socialUrl: null,
+    });
+  });
+
+  it("rejects replayed identity mutation after profile confirmation", async () => {
+    const email = `${emailPrefix}-post-confirm-replay@example.test`;
+    const [user] = await db.insert(users).values({ email }).returning();
+    expect(user).toBeDefined();
+
+    const identity = await onboardingRepository.saveIdentity(user!.id, {
+      identityKind: "organisation",
+      organisationSubtype: "startup",
+      creatorSubtype: null,
+    });
+    expect(identity.applied).toBe(true);
+    const source = await onboardingRepository.saveSource(user!.id, {
+      expectedIdentityKind: "organisation",
+      source: {
+        websiteUrl: "https://mewtuals.com/",
+        linkedInUrl: null,
+        socialUrl: null,
+        businessEmail: null,
+        generatedName: "Mewtuals",
+        generatedOrganisationName: "Mewtuals",
+        generatedDomain: "mewtuals.com",
+        primaryUrl: "https://mewtuals.com/",
+      },
+    });
+    expect(source.applied).toBe(true);
+    const profile = await onboardingRepository.confirmProfile(user!.id, {
+      name: "Mewtuals",
+      organisationName: "Mewtuals",
+      identityKind: "organisation",
+      organisationSubtype: "startup",
+      creatorSubtype: null,
+      domain: "mewtuals.com",
+      primaryUrl: "https://mewtuals.com/",
+      websiteUrl: "https://mewtuals.com/",
+      linkedInUrl: null,
+      socialUrl: null,
+      status: "draft",
+      submittedAt: null,
+    });
+    expect(profile.applied).toBe(true);
+
+    const replay = await onboardingRepository.saveIdentity(user!.id, {
+      identityKind: "creator",
+      organisationSubtype: null,
+      creatorSubtype: "creator",
+    });
+
+    expect(replay.applied).toBe(false);
+    if (replay.applied) throw new Error("Replayed identity was applied.");
+    expect(replay.state.profile?.status).toBe("draft");
+    expect(replay.state.draft).toMatchObject({
+      identityKind: "organisation",
+      organisationSubtype: "startup",
+      primaryUrl: "https://mewtuals.com/",
+    });
   });
 });
