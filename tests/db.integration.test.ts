@@ -3,15 +3,18 @@ import { resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { randomUUID } from "node:crypto";
 
-import { eq, like } from "drizzle-orm";
+import { eq, like, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres, { type Sql } from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createAuthService } from "../app/server/auth-service";
 import { hashToken } from "../app/server/tokens";
 import * as verifyRoute from "../app/auth/verify/route";
-import { closeDb, getDb } from "../db/client";
+import { closeDb, getDb, type MewtualsDatabase } from "../db/client";
 import { createAuthRepository } from "../db/repositories/auth-repository";
 import { createOnboardingRepository } from "../db/repositories/onboarding-repository";
+import * as databaseSchema from "../db/schema";
 import { magicLinks, onboardingDrafts, profiles, sessions, users } from "../db/schema";
 
 const localEnvironment = resolve(process.cwd(), ".env.local");
@@ -30,6 +33,77 @@ const verificationRoute = verifyRoute as {
   GET(request: Request): Promise<Response>;
   POST?: (request: Request) => Promise<Response>;
 };
+
+type IndependentDatabase = {
+  applicationName: string;
+  client: Sql;
+  database: MewtualsDatabase;
+};
+
+function createIndependentDatabase(applicationName: string): IndependentDatabase {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) throw new Error("DATABASE_URL is required for integration tests.");
+
+  const client = postgres(databaseUrl, {
+    max: 1,
+    prepare: false,
+    connection: { application_name: applicationName },
+  });
+  return {
+    applicationName,
+    client,
+    database: drizzle(client, { schema: databaseSchema }),
+  };
+}
+
+async function closeIndependentDatabases(databases: IndependentDatabase[]) {
+  await Promise.all(databases.map(({ client }) => client.end({ timeout: 5 })));
+}
+
+type DatabaseTransaction = Parameters<
+  Parameters<MewtualsDatabase["transaction"]>[0]
+>[0];
+
+async function waitForLockWaiters(
+  transaction: DatabaseTransaction,
+  applicationNames: [string, string],
+) {
+  const deadline = Date.now() + 2_000;
+  let observedSessions: {
+    applicationName: string;
+    state: string;
+    waitEvent: string | null;
+    waitEventType: string | null;
+  }[] = [];
+
+  while (Date.now() < deadline) {
+    observedSessions = await transaction.execute<{
+      applicationName: string;
+      state: string;
+      waitEvent: string | null;
+      waitEventType: string | null;
+    }>(sql`
+      select
+        application_name as "applicationName",
+        state,
+        wait_event as "waitEvent",
+        wait_event_type as "waitEventType"
+      from pg_stat_activity
+      where application_name in (${applicationNames[0]}, ${applicationNames[1]})
+    `);
+    const waiters = observedSessions.filter(
+      ({ waitEventType }) => waitEventType === "Lock",
+    );
+    if (waiters.length === applicationNames.length) {
+      return waiters.map(({ applicationName }) => applicationName).sort();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(
+    `Competing onboarding mutations did not overlap: ${JSON.stringify(observedSessions)}`,
+  );
+}
 
 async function cleanTestRows() {
   await db.delete(magicLinks).where(like(magicLinks.email, `${emailPrefix}%`));
@@ -500,33 +574,20 @@ describe("PostgreSQL authentication repository", () => {
     ).toHaveLength(1);
   });
 
-  it("serializes competing identity choices and rejects mismatched source evidence", async () => {
-    const email = `${emailPrefix}-identity-race@example.test`;
+  it("serializes overlapping source choices on independent connections", async () => {
+    const email = `${emailPrefix}-source-race@example.test`;
     const [user] = await db.insert(users).values({ email }).returning();
     expect(user).toBeDefined();
 
-    const attempts = await Promise.all([
-      onboardingRepository.saveIdentity(user!.id, {
+    expect(
+      await onboardingRepository.saveIdentity(user!.id, {
         identityKind: "organisation",
         organisationSubtype: "brand",
         creatorSubtype: null,
       }),
-      onboardingRepository.saveIdentity(user!.id, {
-        identityKind: "creator",
-        organisationSubtype: null,
-        creatorSubtype: "podcaster",
-      }),
-    ]);
-
-    expect(attempts.filter((attempt) => attempt.applied)).toHaveLength(1);
-    expect(attempts.filter((attempt) => !attempt.applied)).toHaveLength(1);
-
-    const state = await onboardingRepository.findState(user!.id);
-    expect(state.draft).not.toBeNull();
-    const mismatchedKind =
-      state.draft!.identityKind === "organisation" ? "creator" : "organisation";
+    ).toMatchObject({ applied: true });
     const mismatch = await onboardingRepository.saveSource(user!.id, {
-      expectedIdentityKind: mismatchedKind,
+      expectedIdentityKind: "creator",
       source: {
         websiteUrl: null,
         linkedInUrl: null,
@@ -542,11 +603,97 @@ describe("PostgreSQL authentication repository", () => {
     expect(mismatch.applied).toBe(false);
     if (mismatch.applied) throw new Error("Mismatched source was applied.");
     expect(mismatch.state.draft).toMatchObject({
-      identityKind: state.draft!.identityKind,
+      identityKind: "organisation",
       primaryUrl: null,
       websiteUrl: null,
       socialUrl: null,
     });
+
+    const connectionPrefix = `mewtuals-race-${testRun.slice(0, 8)}`;
+    const independentDatabases = [
+      createIndependentDatabase(`${connectionPrefix}-a`),
+      createIndependentDatabase(`${connectionPrefix}-b`),
+    ];
+
+    try {
+      const [firstDatabase, secondDatabase] = independentDatabases;
+      const activeNames = await Promise.all(
+        independentDatabases.map(async ({ database }) => {
+          const [session] = await database.execute<{ applicationName: string }>(
+            sql`select current_setting('application_name') as "applicationName"`,
+          );
+          return session?.applicationName;
+        }),
+      );
+      expect(activeNames).toEqual(
+        independentDatabases.map(({ applicationName }) => applicationName),
+      );
+      const firstRepository = createOnboardingRepository(firstDatabase.database);
+      const secondRepository = createOnboardingRepository(secondDatabase.database);
+      let attemptsPromise:
+        | Promise<
+            Awaited<ReturnType<typeof firstRepository.saveSource>>[]
+          >
+        | undefined;
+
+      await db.transaction(async (transaction) => {
+        // Hold the draft row so PostgreSQL can prove both independent writers
+        // overlap before either mutation is allowed to finish.
+        await transaction
+          .select({ id: onboardingDrafts.id })
+          .from(onboardingDrafts)
+          .where(eq(onboardingDrafts.userId, user!.id))
+          .for("update");
+
+        attemptsPromise = Promise.all([
+          firstRepository.saveSource(user!.id, {
+            expectedIdentityKind: "organisation",
+            source: {
+              websiteUrl: "https://first.example/",
+              linkedInUrl: null,
+              socialUrl: null,
+              businessEmail: null,
+              generatedName: "First",
+              generatedOrganisationName: "First",
+              generatedDomain: "first.example",
+              primaryUrl: "https://first.example/",
+            },
+          }),
+          secondRepository.saveSource(user!.id, {
+            expectedIdentityKind: "organisation",
+            source: {
+              websiteUrl: "https://second.example/",
+              linkedInUrl: null,
+              socialUrl: null,
+              businessEmail: null,
+              generatedName: "Second",
+              generatedOrganisationName: "Second",
+              generatedDomain: "second.example",
+              primaryUrl: "https://second.example/",
+            },
+          }),
+        ]);
+
+        expect(
+          await waitForLockWaiters(transaction, [
+            firstDatabase.applicationName,
+            secondDatabase.applicationName,
+          ]),
+        ).toEqual(
+          [firstDatabase.applicationName, secondDatabase.applicationName].sort(),
+        );
+      });
+
+      if (!attemptsPromise) throw new Error("Source mutations did not start.");
+      const attempts = await attemptsPromise;
+      expect(attempts.filter((attempt) => attempt.applied)).toHaveLength(1);
+      expect(attempts.filter((attempt) => !attempt.applied)).toHaveLength(1);
+
+      const state = await onboardingRepository.findState(user!.id);
+      expect(state.draft?.generatedDomain).toMatch(/^(first|second)\.example$/);
+    } finally {
+      await closeIndependentDatabases(independentDatabases);
+    }
   });
 
   it("rejects replayed identity mutation after profile confirmation", async () => {
