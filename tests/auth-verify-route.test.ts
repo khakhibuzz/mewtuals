@@ -21,7 +21,7 @@ describe("magic-link verification route", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("referrer-policy")).toBe("strict-origin");
     expect(response.headers.get("content-security-policy")).toContain(
       "form-action 'self'",
     );

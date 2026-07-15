@@ -11,7 +11,8 @@ import { hashToken } from "../app/server/tokens";
 import * as verifyRoute from "../app/auth/verify/route";
 import { closeDb, getDb } from "../db/client";
 import { createAuthRepository } from "../db/repositories/auth-repository";
-import { magicLinks, sessions, users } from "../db/schema";
+import { createOnboardingRepository } from "../db/repositories/onboarding-repository";
+import { magicLinks, onboardingDrafts, profiles, sessions, users } from "../db/schema";
 
 const localEnvironment = resolve(process.cwd(), ".env.local");
 if (existsSync(localEnvironment)) loadEnvFile(localEnvironment);
@@ -24,6 +25,7 @@ const sessionSecret =
 
 const db = getDb();
 const repository = createAuthRepository(db);
+const onboardingRepository = createOnboardingRepository(db);
 const verificationRoute = verifyRoute as {
   GET(request: Request): Promise<Response>;
   POST?: (request: Request) => Promise<Response>;
@@ -417,5 +419,66 @@ describe("PostgreSQL authentication repository", () => {
     expect(
       await db.select().from(users).where(eq(users.email, email)),
     ).toHaveLength(0);
+  });
+
+  it("persists ordered onboarding draft evidence and atomically submits a confirmed profile", async () => {
+    const email = `${emailPrefix}-onboarding@example.test`;
+    const [user] = await db.insert(users).values({ email }).returning();
+    expect(user).toBeDefined();
+
+    const identity = await onboardingRepository.saveIdentity(user!.id, {
+      identityKind: "organisation",
+      organisationSubtype: "startup",
+      creatorSubtype: null,
+    });
+    expect(identity).toMatchObject({
+      userId: user!.id,
+      identityKind: "organisation",
+      organisationSubtype: "startup",
+      primaryUrl: null,
+    });
+
+    const source = await onboardingRepository.saveSource(user!.id, {
+      websiteUrl: "https://mewtuals.com/",
+      linkedInUrl: null,
+      socialUrl: null,
+      businessEmail: null,
+      generatedName: "Mewtuals",
+      generatedOrganisationName: "Mewtuals",
+      generatedDomain: "mewtuals.com",
+      primaryUrl: "https://mewtuals.com/",
+    });
+    expect(source.generatedDomain).toBe("mewtuals.com");
+
+    const profile = await onboardingRepository.confirmProfile(user!.id, {
+      name: "Mewtuals",
+      organisationName: "Mewtuals",
+      identityKind: "organisation",
+      organisationSubtype: "startup",
+      creatorSubtype: null,
+      domain: "mewtuals.com",
+      primaryUrl: "https://mewtuals.com/",
+      websiteUrl: "https://mewtuals.com/",
+      linkedInUrl: null,
+      socialUrl: null,
+      status: "draft",
+      submittedAt: null,
+    });
+    expect(profile.status).toBe("draft");
+
+    const submittedAt = new Date("2026-07-15T13:00:00.000Z");
+    expect(
+      await onboardingRepository.submitForVerification(user!.id, submittedAt),
+    ).toMatchObject({ status: "pending", submittedAt });
+    expect(
+      await onboardingRepository.submitForVerification(user!.id, submittedAt),
+    ).toBeNull();
+
+    expect(
+      await db.select().from(onboardingDrafts).where(eq(onboardingDrafts.userId, user!.id)),
+    ).toHaveLength(1);
+    expect(
+      await db.select().from(profiles).where(eq(profiles.userId, user!.id)),
+    ).toHaveLength(1);
   });
 });

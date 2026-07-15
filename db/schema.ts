@@ -127,6 +127,40 @@ export const sessions = pgTable(
   ],
 );
 
+export const onboardingDrafts = pgTable(
+  "onboarding_drafts",
+  {
+    id: id(),
+    userId: uuid("user_id")
+      .notNull()
+      .unique("onboarding_drafts_user_id_unique")
+      .references(() => users.id, { onDelete: "cascade" }),
+    identityKind: identityKindEnum("identity_kind").notNull(),
+    organisationSubtype: organisationSubtypeEnum("organisation_subtype"),
+    creatorSubtype: creatorSubtypeEnum("creator_subtype"),
+    websiteUrl: text("website_url"),
+    linkedInUrl: text("linkedin_url"),
+    socialUrl: text("social_url"),
+    businessEmail: text("business_email"),
+    generatedName: text("generated_name"),
+    generatedOrganisationName: text("generated_organisation_name"),
+    generatedDomain: text("generated_domain"),
+    primaryUrl: text("primary_url"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    check(
+      "onboarding_drafts_identity_subtype_check",
+      sql`(
+        (${table.identityKind} = 'organisation' AND ${table.organisationSubtype} IS NOT NULL AND ${table.creatorSubtype} IS NULL)
+        OR
+        (${table.identityKind} = 'creator' AND ${table.creatorSubtype} IS NOT NULL AND ${table.organisationSubtype} IS NULL)
+      )`,
+    ),
+  ],
+);
+
 export const profiles = pgTable(
   "profiles",
   {

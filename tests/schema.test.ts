@@ -10,6 +10,7 @@ import {
   introductionRequests,
   introductionStateEnum,
   magicLinks,
+  onboardingDrafts,
   opportunities,
   organisationSubtypeEnum,
   partnershipDirectionEnum,
@@ -50,6 +51,7 @@ describe("Mewtuals PostgreSQL schema", () => {
       users,
       magicLinks,
       sessions,
+      onboardingDrafts,
       profiles,
       verificationReviews,
       signals,
@@ -62,6 +64,7 @@ describe("Mewtuals PostgreSQL schema", () => {
       "users",
       "magic_links",
       "sessions",
+      "onboarding_drafts",
       "profiles",
       "verification_reviews",
       "signals",
@@ -129,6 +132,7 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(hasUniqueIndex(magicLinks, "magic_links_token_hash_idx")).toBe(true);
     expect(hasUniqueIndex(sessions, "sessions_token_hash_idx")).toBe(true);
     expect(profiles.userId.isUnique).toBe(true);
+    expect(onboardingDrafts.userId.isUnique).toBe(true);
     expect(signals.profileId.isUnique).toBe(true);
     expect(opportunities.key.isUnique).toBe(true);
     expect(uniqueConstraintNames(profileOpportunities)).toContain(
@@ -191,6 +195,7 @@ describe("Mewtuals PostgreSQL schema", () => {
   it("uses cascading foreign keys for owned product records", () => {
     const ownedTables = [
       sessions,
+      onboardingDrafts,
       profiles,
       verificationReviews,
       signals,

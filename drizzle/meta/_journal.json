@@ -15,6 +15,13 @@
       "when": 1784122057847,
       "tag": "0001_tense_iron_fist",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784123029290,
+      "tag": "0002_giant_xavin",
+      "breakpoints": true
     }
   ]
 }

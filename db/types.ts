@@ -1,6 +1,7 @@
 import type {
   introductionRequests,
   magicLinks,
+  onboardingDrafts,
   opportunities,
   profileOpportunities,
   profiles,
@@ -16,6 +17,8 @@ export type MagicLink = typeof magicLinks.$inferSelect;
 export type NewMagicLink = typeof magicLinks.$inferInsert;
 export type Session = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;
+export type OnboardingDraft = typeof onboardingDrafts.$inferSelect;
+export type NewOnboardingDraft = typeof onboardingDrafts.$inferInsert;
 export type Profile = typeof profiles.$inferSelect;
 export type NewProfile = typeof profiles.$inferInsert;
 export type VerificationReview = typeof verificationReviews.$inferSelect;

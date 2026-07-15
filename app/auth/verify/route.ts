@@ -104,7 +104,7 @@ function verificationPage(content: string, status = 200): NextResponse {
         "Content-Type": "text/html; charset=utf-8",
         "Content-Security-Policy":
           "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-        "Referrer-Policy": "no-referrer",
+        "Referrer-Policy": "strict-origin",
         "X-Content-Type-Options": "nosniff",
       },
     },

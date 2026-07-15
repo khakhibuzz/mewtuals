@@ -30,20 +30,30 @@ function requireDatabaseUrl() {
   return result.data;
 }
 
+export function shouldCacheDatabaseConnection(runtime: object): boolean {
+  return !("Cloudflare" in runtime);
+}
+
 export function getDb(): MewtualsDatabase {
-  if (database) {
+  const cacheConnection = shouldCacheDatabaseConnection(globalThis);
+  if (cacheConnection && database) {
     return database;
   }
 
-  client = postgres(requireDatabaseUrl(), {
+  const nextClient = postgres(requireDatabaseUrl(), {
     max: 1,
     prepare: false,
     connect_timeout: 5,
-    idle_timeout: 10,
+    idle_timeout: cacheConnection ? 10 : 0,
   });
-  database = drizzle(client, { schema });
+  const nextDatabase = drizzle(nextClient, { schema });
 
-  return database;
+  if (cacheConnection) {
+    client = nextClient;
+    database = nextDatabase;
+  }
+
+  return nextDatabase;
 }
 
 export async function closeDb() {
