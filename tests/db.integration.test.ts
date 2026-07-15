@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createAuthService } from "../app/server/auth-service";
 import { hashToken } from "../app/server/tokens";
+import * as verifyRoute from "../app/auth/verify/route";
 import { closeDb, getDb } from "../db/client";
 import { createAuthRepository } from "../db/repositories/auth-repository";
 import { magicLinks, sessions, users } from "../db/schema";
@@ -23,6 +24,10 @@ const sessionSecret =
 
 const db = getDb();
 const repository = createAuthRepository(db);
+const verificationRoute = verifyRoute as {
+  GET(request: Request): Promise<Response>;
+  POST?: (request: Request) => Promise<Response>;
+};
 
 async function cleanTestRows() {
   await db.delete(magicLinks).where(like(magicLinks.email, `${emailPrefix}%`));
@@ -155,6 +160,65 @@ describe("PostgreSQL authentication repository", () => {
     expect(
       await db.select().from(sessions).where(eq(sessions.userId, user!.id)),
     ).toHaveLength(1);
+  });
+
+  it("keeps GET read-only and consumes the link only through same-origin POST", async () => {
+    const email = `${emailPrefix}-route@example.test`;
+    const magicToken = "r".repeat(43);
+    const service = createAuthService({
+      repository,
+      emailSender: { sendMagicLink: async () => undefined },
+      sessionSecret,
+      environment: "development",
+      now: () => new Date(),
+      tokenFactory: () => magicToken,
+    });
+    await service.requestMagicLink({
+      email,
+      origin: "http://localhost:4000",
+    });
+
+    const getResponse = await verificationRoute.GET(
+      new Request(
+        `http://localhost:4000/auth/verify?token=${encodeURIComponent(magicToken)}`,
+      ),
+    );
+    const [afterGet] = await db
+      .select({ consumedAt: magicLinks.consumedAt })
+      .from(magicLinks)
+      .where(eq(magicLinks.tokenHash, hashToken(magicToken, sessionSecret)));
+
+    expect(getResponse.status).toBe(200);
+    expect(afterGet?.consumedAt).toBeNull();
+    expect(verificationRoute.POST).toBeTypeOf("function");
+    if (!verificationRoute.POST) return;
+
+    const postResponse = await verificationRoute.POST(
+      new Request("http://localhost:4000/auth/verify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Origin: "http://localhost:4000",
+        },
+        body: new URLSearchParams({ token: magicToken }),
+      }),
+    );
+
+    expect(postResponse.status).toBe(303);
+    expect(postResponse.headers.get("location")).toBe(
+      "http://localhost:4000/onboarding/identity",
+    );
+    const cookie = postResponse.headers.get("set-cookie") ?? "";
+    expect(cookie).toContain("mewtuals_session=");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=lax");
+    expect(cookie).not.toContain("Secure");
+
+    const [afterPost] = await db
+      .select({ consumedAt: magicLinks.consumedAt })
+      .from(magicLinks)
+      .where(eq(magicLinks.tokenHash, hashToken(magicToken, sessionSecret)));
+    expect(afterPost?.consumedAt).toBeInstanceOf(Date);
   });
 
   it("enforces token-digest uniqueness at the database boundary", async () => {
