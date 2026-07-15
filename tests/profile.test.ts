@@ -17,6 +17,12 @@ describe("public profile sources", () => {
     expect(
       normalizePublicUrl("https://[2606:4700:4700::1111]/profile"),
     ).toBe("https://[2606:4700:4700::1111]/profile");
+    expect(normalizePublicUrl("https://[::ffff:8.8.8.8]/profile")).toBe(
+      "https://[::ffff:808:808]/profile",
+    );
+    expect(normalizePublicUrl("https://example.com./profile")).toBe(
+      "https://example.com/profile",
+    );
   });
 
   it.each([
@@ -24,6 +30,8 @@ describe("public profile sources", () => {
     "https://user:secret@example.com/profile",
     "http://localhost:3000/profile",
     "http://sub.localhost/profile",
+    "http://localhost./profile",
+    "http://service.local./profile",
     "http://127.0.0.1/profile",
     "http://10.20.30.40/profile",
     "http://172.16.0.1/profile",
@@ -32,6 +40,9 @@ describe("public profile sources", () => {
     "http://169.254.10.1/profile",
     "http://[::1]/profile",
     "http://[fd00::1]/profile",
+    "http://[::ffff:127.0.0.1]/profile",
+    "http://[::ffff:10.20.30.40]/profile",
+    "http://[::ffff:169.254.169.254]/profile",
     "http://intranet/profile",
     "not a URL",
   ])("rejects unsafe or malformed source %s", (source) => {

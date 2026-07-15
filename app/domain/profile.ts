@@ -37,6 +37,52 @@ const isPrivateIpv4 = (hostname: string) => {
   );
 };
 
+const expandIpv6 = (address: string) => {
+  const halves = address.split("::");
+
+  if (halves.length > 2) {
+    return null;
+  }
+
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves[1] ? halves[1].split(":") : [];
+  const missingGroupCount = 8 - left.length - right.length;
+
+  if (
+    (halves.length === 1 && missingGroupCount !== 0) ||
+    (halves.length === 2 && missingGroupCount < 1)
+  ) {
+    return null;
+  }
+
+  return [
+    ...left,
+    ...Array.from({ length: missingGroupCount }, () => "0"),
+    ...right,
+  ].map((group) => Number.parseInt(group || "0", 16));
+};
+
+const embeddedIpv4 = (address: string) => {
+  const groups = expandIpv6(address);
+
+  if (!groups || groups.length !== 8) {
+    return null;
+  }
+
+  const isMapped =
+    groups.slice(0, 5).every((group) => group === 0) &&
+    groups[5] === 0xffff;
+  const isCompatible = groups.slice(0, 6).every((group) => group === 0);
+
+  if (!isMapped && !isCompatible) {
+    return null;
+  }
+
+  const high = groups[6];
+  const low = groups[7];
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
+};
+
 const isPrivateIpv6 = (hostname: string) => {
   const address = hostname.replace(/^\[|\]$/g, "").toLowerCase();
 
@@ -56,12 +102,16 @@ const isPrivateIpv6 = (hostname: string) => {
     return true;
   }
 
-  const mappedIpv4 = address.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-  return mappedIpv4 ? isPrivateIpv4(mappedIpv4) : false;
+  const ipv4 = embeddedIpv4(address);
+  return ipv4 ? isPrivateIpv4(ipv4) : false;
 };
 
 const assertPublicHostname = (hostname: string) => {
-  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const isIpv6 = hostname.startsWith("[");
+  const normalized = hostname
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.+$/, "")
+    .toLowerCase();
   const isPrivateName =
     normalized === "localhost" ||
     (!normalized.includes(".") && !normalized.includes(":")) ||
@@ -74,6 +124,8 @@ const assertPublicHostname = (hostname: string) => {
   ) {
     throw new Error("Source URL must use a public host");
   }
+
+  return isIpv6 ? `[${normalized}]` : normalized;
 };
 
 export const normalizePublicUrl = (input: string) => {
@@ -93,7 +145,7 @@ export const normalizePublicUrl = (input: string) => {
     throw new Error("Source URL must not contain credentials");
   }
 
-  assertPublicHostname(url.hostname);
+  url.hostname = assertPublicHostname(url.hostname);
   url.hash = "";
 
   return url.toString();
