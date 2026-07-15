@@ -14,6 +14,9 @@ export function ForStartups() {
           <p className="startups-principle">
             Less corporate theatre. More useful movement.
           </p>
+          <a className="startups-cta text-link" href="/join">
+            Join Mewtuals
+          </a>
         </div>
       </div>
       <ol aria-label="A startup’s changing needs" className="startup-stages">

@@ -15,7 +15,7 @@ export function Hero() {
           pilot.
         </p>
         <div className="hero-actions">
-          <a className="primary-button" href="#apply">
+          <a className="primary-button" href="/join">
             Find my next partnership
           </a>
           <a className="text-link" href="#how-it-works">

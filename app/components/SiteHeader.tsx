@@ -7,6 +7,9 @@ const links = [
   { href: "#for-startups", label: "For startups" },
   { href: "#about", label: "About" },
   { href: "#apply", label: "Apply" },
+  { href: "/join", label: "For creators", productEntry: true },
+  { href: "/join", label: "Join Mewtuals", primary: true },
+  { href: "/login", label: "Log in", productEntry: true },
 ] as const;
 
 export function SiteHeader() {
@@ -46,7 +49,18 @@ export function SiteHeader() {
         id="primary-navigation"
       >
         {links.map((link) => (
-          <a href={link.href} key={link.href} onClick={() => setIsOpen(false)}>
+          <a
+            className={
+              "primary" in link && link.primary
+                ? "header-primary-link"
+                : "productEntry" in link && link.productEntry
+                  ? "header-product-link"
+                  : undefined
+            }
+            href={link.href}
+            key={link.label}
+            onClick={() => setIsOpen(false)}
+          >
             {link.label}
           </a>
         ))}

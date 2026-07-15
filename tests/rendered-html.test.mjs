@@ -81,7 +81,11 @@ test("server-renders the complete Mewtuals landing page", async () => {
   assert.match(html, />The Mewtuals map<\/span>/);
   assert.match(html, /aria-label="How Mewtuals changes the business map"/);
   assert.match(html, />Put Mewtuals on your company’s side\.<\/h2>/);
-  assert.match(html, /href="#apply">Find my next partnership<\/a>/);
+  assert.match(html, /href="\/join">Find my next partnership<\/a>/);
+  assert.match(html, /href="#how-it-works">See how it works<\/a>/);
+  assert.match(html, /href="\/join">For creators<\/a>/);
+  assert.match(html, /href="\/join">Join Mewtuals<\/a>/);
+  assert.match(html, /href="\/login">Log in<\/a>/);
   assert.match(
     html,
     /<meta name="description" content="Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands\."\/?>/,
@@ -94,9 +98,27 @@ test("server-renders the complete Mewtuals landing page", async () => {
   for (const id of ["top", "how-it-works", "for-startups", "about", "apply"]) {
     assert.match(html, new RegExp(`id=["']${id}["']`));
   }
-  for (const label of ["How it works", "For startups", "About", "Apply"]) {
+  for (const label of [
+    "How it works",
+    "For startups",
+    "About",
+    "Apply",
+    "For creators",
+    "Join Mewtuals",
+    "Log in",
+  ]) {
     assert.match(html, new RegExp(`>${label}<`));
   }
+
+  const orderedSectionIds = [
+    "top",
+    "how-it-works",
+    "for-startups",
+    "about",
+    "apply",
+  ];
+  const sectionOffsets = orderedSectionIds.map((id) => html.indexOf(`id="${id}"`));
+  assert.deepEqual(sectionOffsets, [...sectionOffsets].sort((left, right) => left - right));
 
   assert.equal((html.match(/Illustrative case study/g) ?? []).length, 5);
   for (const label of ["Company URL", "Work email", "Phone number"]) {

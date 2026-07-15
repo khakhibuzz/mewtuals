@@ -88,9 +88,14 @@ export function ApplySection({
             The introduction is the easy part. Understanding comes first.
           </h2>
           <p>Prototype mode — your information was not sent.</p>
-          <button className="text-button" onClick={resetApplication} type="button">
-            Try another application
-          </button>
+          <div className="application-success-actions">
+            <a className="primary-button" href="/join">
+              Continue to Mewtuals
+            </a>
+            <button className="text-button" onClick={resetApplication} type="button">
+              Try another application
+            </button>
+          </div>
         </div>
       </section>
     );

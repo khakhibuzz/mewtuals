@@ -88,9 +88,34 @@ button {
 .primary-navigation {
   display: flex;
   align-items: center;
-  gap: clamp(24px, 3vw, 46px);
+  gap: clamp(17px, 2.2vw, 34px);
   color: var(--ink);
   font-size: 0.84rem;
+}
+
+.primary-navigation .header-product-link {
+  font-weight: 560;
+}
+
+.primary-navigation .header-primary-link {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  padding: 0 16px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 560;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.primary-navigation .header-primary-link:hover {
+  background: transparent;
+  color: var(--ink);
+}
+
+.primary-navigation .header-primary-link::after {
+  display: none;
 }
 
 .primary-navigation a,
@@ -645,6 +670,11 @@ main {
   font-weight: 560;
 }
 
+.startups-cta {
+  display: inline-block;
+  margin-top: 34px;
+}
+
 .startup-stages {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -800,8 +830,14 @@ main {
   max-width: 930px;
 }
 
-.application-success .text-button {
+.application-success-actions {
+  display: flex;
+  align-items: center;
+  gap: 34px;
   margin-top: 42px;
+}
+
+.application-success-actions .text-button {
   padding: 0;
 }
 
@@ -867,6 +903,13 @@ main {
     padding: 14px 0;
     border-bottom: 1px solid var(--line);
     font-size: 1.1rem;
+  }
+
+  .primary-navigation .header-primary-link {
+    width: fit-content;
+    min-height: 48px;
+    padding: 0 18px;
+    border-bottom-color: var(--ink);
   }
 
   .hero {
@@ -1046,6 +1089,11 @@ main {
 
   .application-form .primary-button {
     width: 100%;
+  }
+
+  .application-success-actions {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 
