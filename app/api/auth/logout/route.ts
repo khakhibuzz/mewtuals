@@ -36,6 +36,7 @@ export async function POST(request: Request) {
       }),
       sessionSecret: environment.sessionSecret,
       environment: environment.environment,
+      exposeDevelopmentVerifyUrl: false,
     });
     await service.logout(token);
   }

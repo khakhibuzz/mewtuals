@@ -56,6 +56,7 @@ export async function POST(request: Request) {
     }),
     sessionSecret: environment.sessionSecret,
     environment: environment.environment,
+    exposeDevelopmentVerifyUrl: false,
   });
   const verified = await service.verifyMagicLink(token);
 

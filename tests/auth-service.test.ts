@@ -27,6 +27,8 @@ const now = new Date("2026-07-15T12:00:00.000Z");
 type StoredMagicLink = {
   email: string;
   tokenHash: string;
+  requesterHash: string;
+  issued: boolean;
   createdAt: Date;
   expiresAt: Date;
   consumedAt: Date | null;
@@ -40,9 +42,13 @@ class FakeAuthRepository implements AuthRepository {
   async createMagicLink(params: {
     email: string;
     tokenHash: string;
+    requesterHash: string;
     createdAt: Date;
     expiresAt: Date;
     throttleWindowSeconds: number;
+    abuseWindowSeconds: number;
+    requesterAttemptLimit: number;
+    globalAttemptLimit: number;
   }): Promise<MagicLinkCreateResult> {
     const latest = this.magicLinks
       .filter((link) => link.email === params.email)
@@ -67,7 +73,7 @@ class FakeAuthRepository implements AuthRepository {
       }
     }
 
-    this.magicLinks.push({ ...params, consumedAt: null });
+    this.magicLinks.push({ ...params, issued: true, consumedAt: null });
     return { created: true };
   }
 
@@ -119,6 +125,7 @@ function buildService(
   repository: FakeAuthRepository,
   options: {
     environment?: "development" | "production";
+    exposeDevelopmentVerifyUrl?: boolean;
     clock?: () => Date;
     tokenFactory?: () => string;
     emailSender?: { sendMagicLink(input: { email: string; verifyUrl: string }): Promise<void> };
@@ -129,6 +136,7 @@ function buildService(
     emailSender: options.emailSender ?? { sendMagicLink: async () => undefined },
     sessionSecret,
     environment: options.environment ?? "development",
+    exposeDevelopmentVerifyUrl: options.exposeDevelopmentVerifyUrl ?? false,
     now: options.clock ?? (() => now),
     tokenFactory: options.tokenFactory,
   });
@@ -140,6 +148,7 @@ describe("passwordless authentication service", () => {
     const deliveries: Array<{ email: string; verifyUrl: string }> = [];
     const service = buildService(repository, {
       tokenFactory: () => "known-magic-token",
+      exposeDevelopmentVerifyUrl: true,
       emailSender: {
         sendMagicLink: async (delivery) => {
           deliveries.push(delivery);
@@ -150,12 +159,17 @@ describe("passwordless authentication service", () => {
     const result = await service.requestMagicLink({
       email: "  Person@Example.COM ",
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
 
     expect(normalizeEmail("  Person@Example.COM ")).toBe("person@example.com");
     expect(repository.magicLinks[0]).toMatchObject({
       email: "person@example.com",
       tokenHash: hashToken("known-magic-token", sessionSecret),
+      requesterHash: hashToken(
+        "requester:development-loopback",
+        sessionSecret,
+      ),
       createdAt: now,
       expiresAt: new Date("2026-07-15T12:15:00.000Z"),
     });
@@ -192,11 +206,13 @@ describe("passwordless authentication service", () => {
     await service.requestMagicLink({
       email: "person@example.com",
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
     currentTime = new Date(now.getTime() + 59_000);
     const throttled = await service.requestMagicLink({
       email: "person@example.com",
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
 
     expect(deliveries).toHaveLength(1);
@@ -208,15 +224,34 @@ describe("passwordless authentication service", () => {
     const repository = new FakeAuthRepository();
     const service = buildService(repository, {
       environment: "production",
+      exposeDevelopmentVerifyUrl: true,
       tokenFactory: () => "production-magic-token",
     });
 
     const result = await service.requestMagicLink({
       email: "person@example.com",
       origin: "https://mewtuals.com",
+      requesterIdentity: "cf:203.0.113.42",
     });
 
     expect(result).toEqual({ accepted: true });
+  });
+
+  it("does not expose a link when the explicit development capability is absent", async () => {
+    const repository = new FakeAuthRepository();
+    const service = buildService(repository, {
+      environment: "development",
+      exposeDevelopmentVerifyUrl: false,
+      tokenFactory: () => "private-development-token",
+    });
+
+    expect(
+      await service.requestMagicLink({
+        email: "person@example.com",
+        origin: "http://localhost:4000",
+        requesterIdentity: "development-loopback",
+      }),
+    ).toEqual({ accepted: true });
   });
 
   it("consumes a magic link once and creates a 30-day opaque session", async () => {
@@ -228,6 +263,7 @@ describe("passwordless authentication service", () => {
     await service.requestMagicLink({
       email: "person@example.com",
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
 
     const verified = await service.verifyMagicLink("magic-token");
@@ -256,6 +292,7 @@ describe("passwordless authentication service", () => {
     await service.requestMagicLink({
       email: "person@example.com",
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
     currentTime = new Date(now.getTime() + 15 * 60_000);
 

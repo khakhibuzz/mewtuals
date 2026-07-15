@@ -88,6 +88,8 @@ export const magicLinks = pgTable(
     }),
     email: text("email").notNull(),
     tokenHash: text("token_hash").notNull(),
+    requesterHash: text("requester_hash"),
+    issued: boolean("issued").default(true).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
     createdAt: createdAt(),
@@ -96,6 +98,11 @@ export const magicLinks = pgTable(
     uniqueIndex("magic_links_token_hash_idx").on(table.tokenHash),
     index("magic_links_email_idx").on(table.email),
     index("magic_links_expires_at_idx").on(table.expiresAt),
+    index("magic_links_requester_hash_created_at_idx").on(
+      table.requesterHash,
+      table.createdAt,
+    ),
+    index("magic_links_created_at_idx").on(table.createdAt),
   ],
 );
 

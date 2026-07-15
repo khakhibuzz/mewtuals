@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
 
 import type { MewtualsDatabase } from "../client";
 import { getDb } from "../client";
@@ -23,9 +23,13 @@ export type MagicLinkCreateResult =
 export type CreateMagicLinkInput = {
   email: string;
   tokenHash: string;
+  requesterHash: string;
   createdAt: Date;
   expiresAt: Date;
   throttleWindowSeconds: number;
+  abuseWindowSeconds: number;
+  requesterAttemptLimit: number;
+  globalAttemptLimit: number;
 };
 
 export type ConsumeMagicLinkInput = {
@@ -51,13 +55,27 @@ export function createAuthRepository(
     async createMagicLink(input) {
       return database.transaction(async (transaction) => {
         await transaction.execute(
+          sql`select pg_advisory_xact_lock(197731, 1)`,
+        );
+        await transaction.execute(
+          sql`select pg_advisory_xact_lock(hashtext(${input.requesterHash}))`,
+        );
+        await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtext(${input.email}))`,
         );
 
+        const abuseWindowStart = new Date(
+          input.createdAt.getTime() - input.abuseWindowSeconds * 1_000,
+        );
         const [latest] = await transaction
           .select({ createdAt: magicLinks.createdAt })
           .from(magicLinks)
-          .where(eq(magicLinks.email, input.email))
+          .where(
+            and(
+              eq(magicLinks.email, input.email),
+              lte(magicLinks.createdAt, input.createdAt),
+            ),
+          )
           .orderBy(desc(magicLinks.createdAt))
           .limit(1);
         const retryAt = latest
@@ -66,8 +84,50 @@ export function createAuthRepository(
             )
           : undefined;
 
-        if (retryAt && retryAt > input.createdAt) {
-          return { created: false, retryAt };
+        const [requesterAttempts] = await transaction
+          .select({ value: count() })
+          .from(magicLinks)
+          .where(
+            and(
+              eq(magicLinks.requesterHash, input.requesterHash),
+              gt(magicLinks.createdAt, abuseWindowStart),
+              lte(magicLinks.createdAt, input.createdAt),
+            ),
+          );
+        const [globalAttempts] = await transaction
+          .select({ value: count() })
+          .from(magicLinks)
+          .where(
+            and(
+              gt(magicLinks.createdAt, abuseWindowStart),
+              lte(magicLinks.createdAt, input.createdAt),
+            ),
+          );
+
+        const emailThrottled = Boolean(retryAt && retryAt > input.createdAt);
+        const requesterThrottled =
+          (requesterAttempts?.value ?? 0) >= input.requesterAttemptLimit;
+        const globalThrottled =
+          (globalAttempts?.value ?? 0) >= input.globalAttemptLimit;
+
+        if (emailThrottled || requesterThrottled || globalThrottled) {
+          await transaction.insert(magicLinks).values({
+            email: input.email,
+            tokenHash: input.tokenHash,
+            requesterHash: input.requesterHash,
+            issued: false,
+            expiresAt: input.expiresAt,
+            consumedAt: input.createdAt,
+            createdAt: input.createdAt,
+          });
+          return {
+            created: false,
+            retryAt:
+              retryAt ??
+              new Date(
+                input.createdAt.getTime() + input.abuseWindowSeconds * 1_000,
+              ),
+          };
         }
 
         await transaction
@@ -84,6 +144,8 @@ export function createAuthRepository(
         await transaction.insert(magicLinks).values({
           email: input.email,
           tokenHash: input.tokenHash,
+          requesterHash: input.requesterHash,
+          issued: true,
           createdAt: input.createdAt,
           expiresAt: input.expiresAt,
         });
@@ -100,6 +162,7 @@ export function createAuthRepository(
           .where(
             and(
               eq(magicLinks.tokenHash, input.magicLinkTokenHash),
+              eq(magicLinks.issued, true),
               isNull(magicLinks.consumedAt),
               gt(magicLinks.expiresAt, input.now),
             ),

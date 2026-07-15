@@ -6,7 +6,7 @@ const optionalTrimmedString = z.preprocess(
 );
 
 const serverEnvironmentSchema = z.object({
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  NODE_ENV: z.enum(["development", "test", "production"]).default("production"),
   SESSION_SECRET: z
     .string()
     .min(32, "SESSION_SECRET must contain at least 32 characters."),
@@ -55,4 +55,29 @@ export function readServerEnvironment(
     googleClientId: value.GOOGLE_CLIENT_ID,
     googleClientSecret: value.GOOGLE_CLIENT_SECRET,
   };
+}
+
+export function canExposeDevelopmentVerifyUrl(
+  environment: ServerEnvironment,
+  requestOrigin: string,
+): boolean {
+  if (
+    environment.environment === "production" ||
+    !environment.developmentAuthEnabled
+  ) {
+    return false;
+  }
+
+  try {
+    const hostname = new URL(requestOrigin).hostname
+      .replace(/^\[|\]$/g, "")
+      .toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1"
+    );
+  } catch {
+    return false;
+  }
 }

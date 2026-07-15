@@ -139,6 +139,10 @@ describe("Mewtuals PostgreSQL schema", () => {
 
   it("indexes authentication tokens and workflow status lookups", () => {
     expect(indexNames(magicLinks)).toContain("magic_links_token_hash_idx");
+    expect(indexNames(magicLinks)).toContain(
+      "magic_links_requester_hash_created_at_idx",
+    );
+    expect(indexNames(magicLinks)).toContain("magic_links_created_at_idx");
     expect(indexNames(sessions)).toContain("sessions_token_hash_idx");
     expect(indexNames(profiles)).toContain("profiles_status_idx");
     expect(indexNames(verificationReviews)).toContain(
@@ -148,6 +152,15 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(indexNames(introductionRequests)).toContain(
       "introduction_requests_state_idx",
     );
+  });
+
+  it("records durable abuse-control attempts without requiring legacy requester data", () => {
+    expect(columnNames(magicLinks)).toEqual(
+      expect.arrayContaining(["requester_hash", "issued"]),
+    );
+    expect(magicLinks.requesterHash.notNull).toBe(false);
+    expect(magicLinks.issued.notNull).toBe(true);
+    expect(magicLinks.issued.default).toBe(true);
   });
 
   it("models matching inputs and eligibility explicitly", () => {

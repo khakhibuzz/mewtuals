@@ -49,6 +49,7 @@ describe("PostgreSQL authentication repository", () => {
       emailSender: { sendMagicLink: async () => undefined },
       sessionSecret,
       environment: "development",
+      exposeDevelopmentVerifyUrl: true,
       now: () => currentTime,
       tokenFactory: () => tokens.shift() ?? randomUUID(),
     });
@@ -57,19 +58,22 @@ describe("PostgreSQL authentication repository", () => {
     await service.requestMagicLink({
       email,
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
     currentTime = new Date(currentTime.getTime() + 30_000);
     expect(
       await service.requestMagicLink({
         email,
         origin: "http://localhost:4000",
+        requesterIdentity: "development-loopback",
       }),
     ).toEqual({ accepted: true });
-    currentTime = new Date(currentTime.getTime() + 31_000);
+    currentTime = new Date(currentTime.getTime() + 61_000);
     expect(
       await service.requestMagicLink({
         email,
         origin: "http://localhost:4000",
+        requesterIdentity: "development-loopback",
       }),
     ).toMatchObject({
       developmentVerifyUrl: expect.stringContaining("replacement-magic"),
@@ -79,7 +83,8 @@ describe("PostgreSQL authentication repository", () => {
       .select()
       .from(magicLinks)
       .where(eq(magicLinks.email, email.toLowerCase()));
-    expect(persisted).toHaveLength(2);
+    expect(persisted).toHaveLength(3);
+    expect(persisted.filter((link) => link.issued)).toHaveLength(2);
     expect(persisted.map((link) => link.tokenHash)).toEqual(
       expect.arrayContaining([
         hashToken("first-magic", sessionSecret),
@@ -103,12 +108,14 @@ describe("PostgreSQL authentication repository", () => {
       emailSender: { sendMagicLink: async () => undefined },
       sessionSecret,
       environment: "development",
+      exposeDevelopmentVerifyUrl: false,
       now: () => new Date("2026-07-15T12:00:00.000Z"),
       tokenFactory: () => tokens.shift() ?? randomUUID(),
     });
     await service.requestMagicLink({
       email: email.toUpperCase(),
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
 
     const verified = await service.verifyMagicLink("single-use-magic");
@@ -141,12 +148,14 @@ describe("PostgreSQL authentication repository", () => {
       emailSender: { sendMagicLink: async () => undefined },
       sessionSecret,
       environment: "development",
+      exposeDevelopmentVerifyUrl: false,
       now: () => new Date("2026-07-15T12:00:00.000Z"),
       tokenFactory: () => tokens.shift() ?? randomUUID(),
     });
     await service.requestMagicLink({
       email,
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
 
     const results = await Promise.all([
@@ -170,12 +179,14 @@ describe("PostgreSQL authentication repository", () => {
       emailSender: { sendMagicLink: async () => undefined },
       sessionSecret,
       environment: "development",
+      exposeDevelopmentVerifyUrl: false,
       now: () => new Date(),
       tokenFactory: () => magicToken,
     });
     await service.requestMagicLink({
       email,
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
 
     const getResponse = await verificationRoute.GET(
@@ -221,6 +232,135 @@ describe("PostgreSQL authentication repository", () => {
     expect(afterPost?.consumedAt).toBeInstanceOf(Date);
   });
 
+  it("blocks IP and recipient rotation with durable requester attempts", async () => {
+    const createdAt = new Date("2030-01-01T00:00:00.000Z");
+    const common = {
+      expiresAt: new Date("2030-01-01T00:15:00.000Z"),
+      throttleWindowSeconds: 60,
+      abuseWindowSeconds: 900,
+      requesterAttemptLimit: 2,
+      globalAttemptLimit: 100,
+    };
+
+    const firstEmail = `${emailPrefix}-ip-rotation@example.test`;
+    const first = await repository.createMagicLink({
+      ...common,
+      email: firstEmail,
+      requesterHash: "requester-hash-a",
+      tokenHash: hashToken(randomUUID(), sessionSecret),
+      createdAt,
+    });
+    const rotatedIp = await repository.createMagicLink({
+      ...common,
+      email: firstEmail,
+      requesterHash: "requester-hash-b",
+      tokenHash: hashToken(randomUUID(), sessionSecret),
+      createdAt: new Date(createdAt.getTime() + 1_000),
+    });
+
+    const rotatingRequester = "requester-hash-recipient-rotation";
+    const recipientResults = [];
+    for (let index = 0; index < 3; index += 1) {
+      recipientResults.push(
+        await repository.createMagicLink({
+          ...common,
+          email: `${emailPrefix}-recipient-${index}@example.test`,
+          requesterHash: rotatingRequester,
+          tokenHash: hashToken(randomUUID(), sessionSecret),
+          createdAt: new Date(createdAt.getTime() + index * 1_000),
+        }),
+      );
+    }
+
+    expect(first.created).toBe(true);
+    expect(rotatedIp.created).toBe(false);
+    expect(recipientResults.map((result) => result.created)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it("enforces the global rolling quota across requester rotation", async () => {
+    const createdAt = new Date("2031-01-01T00:00:00.000Z");
+    const results = await Promise.all(
+      Array.from({ length: 3 }, (_, index) =>
+        repository.createMagicLink({
+          email: `${emailPrefix}-global-${index}@example.test`,
+          requesterHash: `global-requester-${index}`,
+          tokenHash: hashToken(randomUUID(), sessionSecret),
+          createdAt: new Date(createdAt.getTime() + index),
+          expiresAt: new Date(createdAt.getTime() + 15 * 60_000),
+          throttleWindowSeconds: 60,
+          abuseWindowSeconds: 900,
+          requesterAttemptLimit: 100,
+          globalAttemptLimit: 2,
+        }),
+      ),
+    );
+
+    expect(results.filter((result) => result.created)).toHaveLength(2);
+  });
+
+  it("serializes concurrent requester quota decisions", async () => {
+    const createdAt = new Date("2032-01-01T00:00:00.000Z");
+    const requesterHash = "concurrent-requester-hash";
+    const results = await Promise.all(
+      Array.from({ length: 2 }, (_, index) =>
+        repository.createMagicLink({
+          email: `${emailPrefix}-concurrent-limit-${index}@example.test`,
+          requesterHash,
+          tokenHash: hashToken(randomUUID(), sessionSecret),
+          createdAt,
+          expiresAt: new Date(createdAt.getTime() + 15 * 60_000),
+          throttleWindowSeconds: 60,
+          abuseWindowSeconds: 900,
+          requesterAttemptLimit: 1,
+          globalAttemptLimit: 100,
+        }),
+      ),
+    );
+
+    expect(results.filter((result) => result.created)).toHaveLength(1);
+    const attempts = await db
+      .select({ issued: magicLinks.issued })
+      .from(magicLinks)
+      .where(eq(magicLinks.requesterHash, requesterHash));
+    expect(attempts).toHaveLength(2);
+    expect(attempts.filter((attempt) => attempt.issued)).toHaveLength(1);
+  });
+
+  it("persists only an HMAC of the requester identity", async () => {
+    const rawRequester = "cf:203.0.113.99";
+    const email = `${emailPrefix}-requester-hash@example.test`;
+    const service = createAuthService({
+      repository,
+      emailSender: { sendMagicLink: async () => undefined },
+      sessionSecret,
+      environment: "production",
+      exposeDevelopmentVerifyUrl: true,
+      now: () => new Date("2033-01-01T00:00:00.000Z"),
+      tokenFactory: () => "h".repeat(43),
+    });
+
+    expect(
+      await service.requestMagicLink({
+        email,
+        origin: "https://mewtuals.com",
+        requesterIdentity: rawRequester,
+      }),
+    ).toEqual({ accepted: true });
+
+    const [attempt] = await db
+      .select({ requesterHash: magicLinks.requesterHash })
+      .from(magicLinks)
+      .where(eq(magicLinks.email, email));
+    expect(attempt?.requesterHash).toBe(
+      hashToken(`requester:${rawRequester}`, sessionSecret),
+    );
+    expect(attempt?.requesterHash).not.toContain("203.0.113.99");
+  });
+
   it("enforces token-digest uniqueness at the database boundary", async () => {
     const tokenHash = hashToken("duplicate-magic", sessionSecret);
     const createdAt = new Date("2026-07-15T12:00:00.000Z");
@@ -229,18 +369,26 @@ describe("PostgreSQL authentication repository", () => {
     await repository.createMagicLink({
       email: `${emailPrefix}-unique-first@example.test`,
       tokenHash,
+      requesterHash: "unique-requester-first",
       createdAt,
       expiresAt,
       throttleWindowSeconds: 60,
+      abuseWindowSeconds: 900,
+      requesterAttemptLimit: 100,
+      globalAttemptLimit: 100_000,
     });
 
     await expect(
       repository.createMagicLink({
         email: `${emailPrefix}-unique-second@example.test`,
         tokenHash,
+        requesterHash: "unique-requester-second",
         createdAt,
         expiresAt,
         throttleWindowSeconds: 60,
+        abuseWindowSeconds: 900,
+        requesterAttemptLimit: 100,
+        globalAttemptLimit: 100_000,
       }),
     ).rejects.toThrow();
   });
@@ -254,12 +402,14 @@ describe("PostgreSQL authentication repository", () => {
       emailSender: { sendMagicLink: async () => undefined },
       sessionSecret,
       environment: "development",
+      exposeDevelopmentVerifyUrl: false,
       now: () => currentTime,
       tokenFactory: () => tokens.shift() ?? randomUUID(),
     });
     await service.requestMagicLink({
       email,
       origin: "http://localhost:4000",
+      requesterIdentity: "development-loopback",
     });
     currentTime = new Date(currentTime.getTime() + 15 * 60_000);
 

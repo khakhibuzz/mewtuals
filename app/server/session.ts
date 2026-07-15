@@ -52,6 +52,7 @@ export async function getCurrentSession() {
     }),
     sessionSecret: environment.sessionSecret,
     environment: environment.environment,
+    exposeDevelopmentVerifyUrl: false,
   });
   return service.getSession(token);
 }
