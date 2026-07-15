@@ -201,6 +201,23 @@ describe("editable profile draft generation", () => {
     ).toBe("Example");
   });
 
+  it.each([
+    ["a control-bearing handle", "%00signal"],
+    ["an oversized handle", "a".repeat(121)],
+  ])("falls back safely when %s cannot be a profile name", (_, handle) => {
+    const draft = generateProfileDraft({
+      identity: { kind: "creator", subtype: "creator" },
+      source: {
+        kind: "creator",
+        primaryUrl: `https://example.com/${handle}`,
+      },
+    });
+
+    expect(draft.name).toBe("Example");
+    expect(draft.name).not.toMatch(/\p{Cc}/u);
+    expect(draft.name.length).toBeLessThanOrEqual(120);
+  });
+
   it("is deterministic and never adds unsupported descriptive facts", () => {
     const input = {
       identity: { kind: "creator", subtype: "creator" } as const,

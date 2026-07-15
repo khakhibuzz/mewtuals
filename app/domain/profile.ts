@@ -287,12 +287,25 @@ const readableName = (evidence: string) => {
   return words.map((word) => `${word[0].toUpperCase()}${word.slice(1)}`).join(" ");
 };
 
-const nameFromDomain = (domain: string) => readableName(domain.split(".")[0]);
+const validDerivedName = (evidence: string) => {
+  const result = profileNameSchema.safeParse(readableName(evidence));
+  return result.success ? result.data : undefined;
+};
+
+const nameFromDomain = (domain: string) => {
+  const name = validDerivedName(domain.split(".")[0]);
+
+  if (!name) {
+    throw new Error("Could not derive a valid name from the supplied source");
+  }
+
+  return name;
+};
 
 const nameFromProfileUrl = (url: string) => {
   const parsed = new URL(url);
   const pathEvidence = parsed.pathname.split("/").filter(Boolean).at(-1);
-  const pathName = pathEvidence ? readableName(pathEvidence) : "";
+  const pathName = pathEvidence ? validDerivedName(pathEvidence) : undefined;
   return pathName || nameFromDomain(canonicalDomain(url));
 };
 
