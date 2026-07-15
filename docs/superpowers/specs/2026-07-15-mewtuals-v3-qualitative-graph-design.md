@@ -16,6 +16,7 @@ The current image presents numbered X and Y axes, ticks, and a chart grid withou
 - Keep the existing warm paper background, charcoal curve, open-circle markers, typography, proportions, and hero placement.
 - Remove the X and Y labels, all numerical tick labels, axis lines, tick marks, and quantitative gridlines.
 - Add the restrained title `Mewtuals partnership progression` inside the graphic.
+- Provide a mobile-specific rendering with substantially larger embedded title and stage-label typography so the same narrative remains legible at phone widths.
 - Preserve the four qualitative stages in order:
   1. `Signal captured`
   2. `Conversation initiated`
@@ -26,15 +27,17 @@ The current image presents numbered X and Y axes, ticks, and a chart grid withou
 
 ## Accessibility
 
-Update the hero image alternative text to: `Qualitative Mewtuals partnership progression from signal captured through conversation and aligned interest to a human decision`.
+Update the hero image alternative text to: `Qualitative Mewtuals partnership progression: Signal captured, Conversation initiated, Interest aligned, and Human decision required.`
 
-The alternative text must explicitly describe the image as qualitative so assistive-technology users are not given a false quantitative interpretation.
+The alternative text must explicitly describe the image as qualitative and name every stage exactly so assistive-technology users receive the complete narrative without false quantitative interpretation.
 
 ## Implementation Boundary
 
-- Modify `public/hero-opportunity-graph.png` in place so the existing responsive layout and asset path remain stable.
-- Modify only the hero image alternative text in `app/components/Hero.tsx`.
-- Extend the rendered-page contract in `tests/rendered-html.test.mjs` to require the qualitative alt text and reject the previous alt text.
+- Modify `public/hero-opportunity-graph.png` in place so the existing desktop responsive layout and fallback path remain stable.
+- Add `public/hero-opportunity-graph-mobile.png` with larger embedded text for viewports up to 640px.
+- Add WebP versions of both desktop and mobile assets to reduce transfer weight while retaining PNG fallbacks.
+- Wrap the existing image in a responsive `<picture>` in `app/components/Hero.tsx`, with mobile WebP/PNG sources, desktop WebP, and desktop PNG fallback.
+- Extend the rendered-page contract in `tests/rendered-html.test.mjs` to require the responsive sources and exact qualitative alt text, and reject both previous alt-text variants.
 - Do not change hero copy, layout, CSS, curve stages, other components, dependencies, or `.openai/hosting.json`.
 
 ## Versioning

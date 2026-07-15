@@ -38,6 +38,31 @@ test("server-renders the complete Mewtuals landing page", async () => {
     html,
     />Mewtuals researches your company, identifies where another organisation can unlock growth, and advances the relationship from hypothesis to pilot\.<\/p>/,
   );
+  assert.match(
+    html,
+    /alt="Qualitative Mewtuals partnership progression: Signal captured, Conversation initiated, Interest aligned, and Human decision required\."/,
+  );
+  assert.doesNotMatch(
+    html,
+    /alt="Opportunity movement from signal captured through conversation and aligned interest to a human decision"/,
+  );
+  assert.doesNotMatch(
+    html,
+    /alt="Qualitative Mewtuals partnership progression from signal captured through conversation and aligned interest to a human decision"/,
+  );
+  assert.match(html, /<picture>/);
+  assert.match(
+    html,
+    /<source(?=[^>]*\bmedia="\(max-width: 640px\)")(?=[^>]*\bsrcSet="\/hero-opportunity-graph-mobile\.webp")(?=[^>]*\btype="image\/webp")[^>]*>/,
+  );
+  assert.match(
+    html,
+    /<source(?=[^>]*\bmedia="\(max-width: 640px\)")(?=[^>]*\bsrcSet="\/hero-opportunity-graph-mobile\.png")(?=[^>]*\btype="image\/png")[^>]*>/,
+  );
+  assert.match(
+    html,
+    /<source(?=[^>]*\bsrcSet="\/hero-opportunity-graph\.webp")(?=[^>]*\btype="image\/webp")[^>]*>/,
+  );
   assert.match(html, />Built for companies that move at internet speed\.<\/h2>/);
   assert.match(
     html,

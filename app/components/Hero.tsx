@@ -26,13 +26,25 @@ export function Hero() {
 
       <figure className="hero-graph">
         {/* Vinext's local image optimizer is not available in this Sites runtime. */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          alt="Opportunity movement from signal captured through conversation and aligned interest to a human decision"
-          height="1402"
-          src="/hero-opportunity-graph.png"
-          width="1122"
-        />
+        <picture>
+          <source
+            media="(max-width: 640px)"
+            srcSet="/hero-opportunity-graph-mobile.webp"
+            type="image/webp"
+          />
+          <source
+            media="(max-width: 640px)"
+            srcSet="/hero-opportunity-graph-mobile.png"
+            type="image/png"
+          />
+          <source srcSet="/hero-opportunity-graph.webp" type="image/webp" />
+          <img
+            alt="Qualitative Mewtuals partnership progression: Signal captured, Conversation initiated, Interest aligned, and Human decision required."
+            height="1402"
+            src="/hero-opportunity-graph.png"
+            width="1122"
+          />
+        </picture>
       </figure>
     </section>
   );
