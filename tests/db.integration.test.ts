@@ -76,6 +76,22 @@ async function closeIndependentDatabases(databases: IndependentDatabase[]) {
   await Promise.all(databases.map(({ client }) => client.end({ timeout: 5 })));
 }
 
+async function insertDashboardTestOpportunity(suffix: string) {
+  const seed = opportunitySeedData.find(
+    ({ direction }) => direction === "startup_distribution_partner",
+  );
+  if (!seed) throw new Error("Startup distribution seed is required.");
+  const [opportunity] = await db
+    .insert(opportunities)
+    .values({
+      ...seed,
+      key: `${seed.key}-${testRun}-${suffix}`,
+    })
+    .returning();
+  if (!opportunity) throw new Error("Test opportunity was not created.");
+  return opportunity;
+}
+
 type DatabaseTransaction = Parameters<
   Parameters<MewtualsDatabase["transaction"]>[0]
 >[0];
@@ -1105,6 +1121,222 @@ describe("PostgreSQL authentication repository", () => {
         )
         .where(eq(profileOpportunities.profileId, profile!.id)),
     ).toHaveLength(1);
+  });
+
+  it("hides inactive unrequested assignments while keeping requested relationships readable", async () => {
+    const [user] = await db
+      .insert(users)
+      .values({ email: `${emailPrefix}-inactive-read@example.test` })
+      .returning();
+    const [profile] = await db
+      .insert(profiles)
+      .values({
+        userId: user!.id,
+        name: "Inactive Read Startup",
+        organisationName: "Inactive Read Startup",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        primaryUrl: "https://inactive-read.example/",
+        status: "verified",
+        verifiedAt: new Date("2037-02-01T09:00:00.000Z"),
+      })
+      .returning();
+    const hidden = await insertDashboardTestOpportunity("read-hidden");
+    const preserved = await insertDashboardTestOpportunity("read-preserved");
+
+    try {
+      const [hiddenAssignment, preservedAssignment] = await db
+        .insert(profileOpportunities)
+        .values([
+          {
+            profileId: profile!.id,
+            opportunityId: hidden.id,
+            fitSummary: "Inactive and unrequested.",
+            rank: 1,
+          },
+          {
+            profileId: profile!.id,
+            opportunityId: preserved.id,
+            fitSummary: "Requested before deactivation.",
+            rank: 2,
+          },
+        ])
+        .returning();
+      expect(hiddenAssignment).toBeDefined();
+      const [introduction] = await db
+        .insert(introductionRequests)
+        .values({
+          profileOpportunityId: preservedAssignment!.id,
+          state: "reviewing",
+        })
+        .returning();
+      await db
+        .update(opportunities)
+        .set({ active: false })
+        .where(eq(opportunities.id, hidden.id));
+      await db
+        .update(opportunities)
+        .set({ active: false })
+        .where(eq(opportunities.id, preserved.id));
+      const repository = createOpportunityRepository(db);
+
+      await expect(
+        repository.listAssignedToProfile(profile!.id),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          id: preserved.id,
+          introduction: expect.objectContaining({ state: "reviewing" }),
+        }),
+      ]);
+      await expect(repository.readDashboard(user!.id)).resolves.toMatchObject({
+        access: "verified",
+        assignments: [
+          {
+            id: preserved.id,
+            introduction: { state: "reviewing" },
+          },
+        ],
+      });
+      await expect(
+        createDashboardService({ repository }).advance(user!.id, preserved.id),
+      ).resolves.toMatchObject({
+        ok: true,
+        introduction: {
+          id: introduction!.id,
+          state: "reviewing",
+        },
+        message: "Mewtuals is reviewing the relationship",
+      });
+    } finally {
+      await db.delete(opportunities).where(eq(opportunities.id, hidden.id));
+      await db.delete(opportunities).where(eq(opportunities.id, preserved.id));
+    }
+  });
+
+  it("removes inactive unrequested assignments during signal recomputation", async () => {
+    const [user] = await db
+      .insert(users)
+      .values({ email: `${emailPrefix}-inactive-recompute@example.test` })
+      .returning();
+    const [profile] = await db
+      .insert(profiles)
+      .values({
+        userId: user!.id,
+        name: "Inactive Recompute Startup",
+        organisationName: "Inactive Recompute Startup",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        primaryUrl: "https://inactive-recompute.example/",
+        status: "verified",
+        verifiedAt: new Date("2037-03-01T09:00:00.000Z"),
+      })
+      .returning();
+    const inactive = await insertDashboardTestOpportunity("recompute");
+
+    try {
+      await db.insert(profileOpportunities).values({
+        profileId: profile!.id,
+        opportunityId: inactive.id,
+        fitSummary: "No longer available.",
+        rank: 1,
+      });
+      await db
+        .update(opportunities)
+        .set({ active: false })
+        .where(eq(opportunities.id, inactive.id));
+      const service = createDashboardService({
+        repository: createOpportunityRepository(db),
+      });
+
+      await expect(
+        service.saveSignal(user!.id, {
+          availability: "not_available",
+          openTo: ["distribution_partnerships"],
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        state: { assignments: [] },
+      });
+      await expect(
+        db
+          .select()
+          .from(profileOpportunities)
+          .where(eq(profileOpportunities.profileId, profile!.id)),
+      ).resolves.toHaveLength(0);
+    } finally {
+      await db.delete(opportunities).where(eq(opportunities.id, inactive.id));
+    }
+  });
+
+  it("rejects concurrent owner advancement after deactivation without creating an introduction", async () => {
+    const [user] = await db
+      .insert(users)
+      .values({ email: `${emailPrefix}-inactive-advance@example.test` })
+      .returning();
+    const [profile] = await db
+      .insert(profiles)
+      .values({
+        userId: user!.id,
+        name: "Inactive Advance Startup",
+        organisationName: "Inactive Advance Startup",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        primaryUrl: "https://inactive-advance.example/",
+        status: "verified",
+        verifiedAt: new Date("2037-04-01T09:00:00.000Z"),
+      })
+      .returning();
+    const inactive = await insertDashboardTestOpportunity("advance");
+    const [assignment] = await db
+      .insert(profileOpportunities)
+      .values({
+        profileId: profile!.id,
+        opportunityId: inactive.id,
+        fitSummary: "Deactivated before the request.",
+        rank: 1,
+      })
+      .returning();
+    await db
+      .update(opportunities)
+      .set({ active: false })
+      .where(eq(opportunities.id, inactive.id));
+    const connections = [
+      createIndependentDatabase(`inactive-advance-${testRun.slice(0, 8)}-a`),
+      createIndependentDatabase(`inactive-advance-${testRun.slice(0, 8)}-b`),
+    ];
+
+    try {
+      await Promise.all(
+        connections.map(({ database }) => database.execute(sql`select 1`)),
+      );
+      const services = connections.map(({ database }) =>
+        createDashboardService({
+          repository: createOpportunityRepository(database),
+        }),
+      );
+
+      const results = await Promise.all(
+        services.map((service) => service.advance(user!.id, inactive.id)),
+      );
+      expect(results).toEqual([
+        expect.objectContaining({ ok: false, status: 404 }),
+        expect.objectContaining({ ok: false, status: 404 }),
+      ]);
+      await expect(
+        db
+          .select()
+          .from(introductionRequests)
+          .where(
+            eq(introductionRequests.profileOpportunityId, assignment!.id),
+          ),
+      ).resolves.toHaveLength(0);
+    } finally {
+      await closeIndependentDatabases(connections);
+      await db.delete(opportunities).where(eq(opportunities.id, inactive.id));
+    }
   });
 
   it("makes advancement idempotent under concurrency and rejects unassigned or other-profile ids", async () => {

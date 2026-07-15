@@ -85,7 +85,8 @@ type SignalSelectionInput = {
 type IntroductionAccess =
   | { access: "verified"; introduction: DashboardIntroduction }
   | { access: "denied" }
-  | { access: "unassigned" };
+  | { access: "unassigned" }
+  | { access: "unavailable" };
 
 export interface DashboardRepository {
   readDashboard(userId: string): Promise<DashboardAccess>;
@@ -248,7 +249,10 @@ export function createDashboardService(
         note: parsedNote.data ?? null,
       });
       if (result.access === "denied") return verifiedOnly;
-      if (result.access === "unassigned") {
+      if (
+        result.access === "unassigned" ||
+        result.access === "unavailable"
+      ) {
         return {
           ok: false as const,
           status: 404 as const,

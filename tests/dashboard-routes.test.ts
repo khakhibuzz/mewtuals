@@ -191,4 +191,36 @@ describe("dashboard route adapters", () => {
       "Please review.",
     );
   });
+
+  it("preserves the unavailable response when an assigned pick was deactivated", async () => {
+    const opportunityId = "1723c982-a683-4e57-a584-26837f011347";
+    const advance = vi.fn(async () => ({
+      ok: false as const,
+      status: 404 as const,
+      error: "This Mewtuals Pick is not available to your profile.",
+    }));
+    const handler = createAdvanceHandler({
+      getSession: async () => memberSession,
+      advance,
+    });
+
+    const response = await handler(
+      new Request(
+        `http://localhost:4000/api/opportunities/${opportunityId}/advance`,
+        {
+          method: "POST",
+          headers: { Origin: "http://localhost:4000" },
+          body: "{}",
+        },
+      ),
+      { params: Promise.resolve({ opportunityId }) },
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      status: 404,
+      error: "This Mewtuals Pick is not available to your profile.",
+    });
+  });
 });

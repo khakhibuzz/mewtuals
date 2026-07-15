@@ -405,4 +405,21 @@ describe("verified member dashboard service", () => {
       error: "A verified Mewtuals profile is required.",
     });
   });
+
+  it("treats an assigned pick deactivated before advancement as unavailable", async () => {
+    const repository = dashboardRepository({
+      requestIntroduction: vi.fn(async () => ({
+        access: "unavailable" as const,
+      })),
+    });
+    const service = serviceFor(repository);
+
+    await expect(
+      service.advance("member-id", startupOpportunity.id),
+    ).resolves.toEqual({
+      ok: false,
+      status: 404,
+      error: "This Mewtuals Pick is not available to your profile.",
+    });
+  });
 });

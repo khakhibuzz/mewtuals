@@ -1,4 +1,4 @@
-import { and, asc, eq, notInArray } from "drizzle-orm";
+import { and, asc, eq, isNotNull, notInArray, or } from "drizzle-orm";
 
 import type {
   AssignmentPlan,
@@ -129,7 +129,15 @@ async function readAssignments(
       introductionRequests,
       eq(introductionRequests.profileOpportunityId, profileOpportunities.id),
     )
-    .where(eq(profileOpportunities.profileId, profileId))
+    .where(
+      and(
+        eq(profileOpportunities.profileId, profileId),
+        or(
+          eq(opportunities.active, true),
+          isNotNull(introductionRequests.id),
+        ),
+      ),
+    )
     .orderBy(asc(profileOpportunities.rank), asc(opportunities.key))
     .limit(3);
 
@@ -358,16 +366,45 @@ export function createOpportunityRepository(
         }
 
         const [assignment] = await transaction
-          .select({ id: profileOpportunities.id })
+          .select({
+            id: profileOpportunities.id,
+            opportunityActive: opportunities.active,
+            introductionId: introductionRequests.id,
+            introductionState: introductionRequests.state,
+          })
           .from(profileOpportunities)
+          .innerJoin(
+            opportunities,
+            eq(profileOpportunities.opportunityId, opportunities.id),
+          )
+          .leftJoin(
+            introductionRequests,
+            eq(
+              introductionRequests.profileOpportunityId,
+              profileOpportunities.id,
+            ),
+          )
           .where(
             and(
               eq(profileOpportunities.profileId, profile.id),
               eq(profileOpportunities.opportunityId, input.opportunityId),
             ),
           )
+          .for("no key update", { of: opportunities })
           .limit(1);
         if (!assignment) return { access: "unassigned" as const };
+        if (assignment.introductionId && assignment.introductionState) {
+          return {
+            access: "verified" as const,
+            introduction: {
+              id: assignment.introductionId,
+              state: assignment.introductionState,
+            },
+          };
+        }
+        if (!assignment.opportunityActive) {
+          return { access: "unavailable" as const };
+        }
 
         const [created] = await transaction
           .insert(introductionRequests)
