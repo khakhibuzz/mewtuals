@@ -24,6 +24,16 @@ describe("acceptance environment safety", () => {
     expect(packageJson.scripts["db:setup:local"]).not.toContain(
       "${DATABASE_URL",
     );
+    expect(packageJson.scripts["dev:4000"]).toContain("vinext dev --port 4000");
+  });
+
+  it("checks local PostgreSQL status against the primary database", () => {
+    const source = readFileSync("scripts/local-postgres.mjs", "utf8");
+
+    expect(source).toContain("const primaryDatabaseName = databaseNames[0]");
+    expect(source).toContain(
+      '["-h", host, "-p", port, "-d", primaryDatabaseName]',
+    );
   });
 
   it("allows only the dedicated loopback database in integration acceptance", () => {

@@ -11,6 +11,7 @@ const logFile = join(runtimeDir, "postgres.log");
 const host = "127.0.0.1";
 const port = "55432";
 const databaseNames = ["mewtuals", "mewtuals_test"];
+const primaryDatabaseName = databaseNames[0];
 
 function run(command, args, { capture = false, allowFailure = false } = {}) {
   const result = spawnSync(command, args, {
@@ -258,7 +259,7 @@ function status(binDir) {
 
   const ready = run(
     binary(binDir, "pg_isready"),
-    ["-h", host, "-p", port, "-d", databaseName],
+    ["-h", host, "-p", port, "-d", primaryDatabaseName],
     { capture: true, allowFailure: true },
   );
   console.log(ready.stdout.trim() || "PostgreSQL is running.");

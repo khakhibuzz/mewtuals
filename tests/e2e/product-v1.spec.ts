@@ -28,9 +28,16 @@ async function ageMemberMagicLinks() {
     .where(eq(magicLinks.email, memberEmail));
 }
 
+async function waitForProductHydration(page: Page) {
+  await expect(
+    page.locator('[data-product-hydrated="true"]'),
+  ).toHaveCount(1);
+}
+
 async function requestAndConfirmMagicLink(page: Page, mode: "join" | "login") {
   if (!memberEmail) throw new Error("Browser member email is not available.");
   await page.goto(mode === "join" ? "/join" : "/login");
+  await waitForProductHydration(page);
   await page.getByLabel("Email address").fill(memberEmail);
   await page
     .getByRole("button", {
@@ -75,14 +82,20 @@ test("fresh member completes and retains the product-v1 journey", async ({
 
   await requestAndConfirmMagicLink(page, "join");
   await expect(page).toHaveURL(/\/onboarding\/identity$/);
+  await waitForProductHydration(page);
 
   await page.getByLabel("Which best describes you?").selectOption("startup");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page).toHaveURL(/\/onboarding\/source$/);
+  await waitForProductHydration(page);
 
   await page.getByLabel("Website").fill(`https://${websiteHost}`);
+  await expect(page.getByLabel("Website")).toHaveValue(
+    `https://${websiteHost}`,
+  );
   await page.getByRole("button", { name: "Build my profile" }).click();
   await expect(page).toHaveURL(/\/onboarding\/profile$/);
+  await waitForProductHydration(page);
   await expect(page.getByLabel("Display name")).not.toHaveValue(profileName);
 
   await page.getByLabel("Display name").fill(profileName);
@@ -96,11 +109,13 @@ test("fresh member completes and retains the product-v1 journey", async ({
     .check();
   await page.getByRole("button", { name: "Confirm profile" }).click();
   await expect(page).toHaveURL(/\/onboarding\/verification$/);
+  await waitForProductHydration(page);
 
   await page
     .getByRole("button", { name: "Submit for verification" })
     .click();
   await expect(page).toHaveURL(/\/dashboard$/);
+  await waitForProductHydration(page);
   await expect(
     page.getByRole("heading", { name: "Verification in progress" }),
   ).toBeVisible();
@@ -113,6 +128,7 @@ test("fresh member completes and retains the product-v1 journey", async ({
   await expect(
     page.getByRole("heading", { name: "Your profile is verified." }),
   ).toBeVisible();
+  await waitForProductHydration(page);
 
   await page.getByLabel("Distribution partnerships").check();
   await page
@@ -130,6 +146,7 @@ test("fresh member completes and retains the product-v1 journey", async ({
   );
 
   await page.reload();
+  await waitForProductHydration(page);
   await expect(
     page.getByTestId("curated-opportunity").first().getByRole("status"),
   ).toHaveText("Mewtuals is reviewing the relationship");
@@ -142,6 +159,7 @@ test("fresh member completes and retains the product-v1 journey", async ({
   await ageMemberMagicLinks();
   await requestAndConfirmMagicLink(page, "login");
   await expect(page).toHaveURL(/\/dashboard$/);
+  await waitForProductHydration(page);
   await expect(
     page.getByRole("heading", { name: "Your profile is verified." }),
   ).toBeVisible();

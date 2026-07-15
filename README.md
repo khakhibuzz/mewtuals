@@ -53,7 +53,7 @@ npm run db:setup
 Start Mewtuals on the product-v1 local URL:
 
 ```bash
-PORT=4000 PUBLIC_BASE_URL=http://localhost:4000 npm run dev
+npm run dev:4000
 ```
 
 Open [http://localhost:4000](http://localhost:4000).

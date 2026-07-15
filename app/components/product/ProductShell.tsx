@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 
 import { LogoutButton } from "./LogoutButton";
+import { ProductHydrationReady } from "./ProductHydrationReady";
 import styles from "./product.module.css";
 
 type ProductShellProps = {
@@ -21,6 +22,7 @@ export function ProductShell({
 }: ProductShellProps) {
   return (
     <div className={styles.shell}>
+      <ProductHydrationReady />
       <header className={styles.header}>
         <Link className={styles.wordmark} href="/" aria-label="Mewtuals home">
           Mewtuals

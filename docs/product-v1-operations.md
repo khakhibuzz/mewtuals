@@ -48,7 +48,7 @@ Stop the cluster with `npm run db:stop`.
 Start the application:
 
 ```bash
-PORT=4000 PUBLIC_BASE_URL=http://localhost:4000 npm run dev
+npm run dev:4000
 ```
 
 ## 2. Local authentication and verification

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -6,10 +6,21 @@ import { IdentityForm } from "../app/components/product/IdentityForm";
 import { LogoutButton } from "../app/components/product/LogoutButton";
 import { MagicLinkForm } from "../app/components/product/MagicLinkForm";
 import { ProfileConfirmForm } from "../app/components/product/ProfileConfirmForm";
+import { ProductHydrationReady } from "../app/components/product/ProductHydrationReady";
 import { SourceForm } from "../app/components/product/SourceForm";
 import { VerificationSubmit } from "../app/components/product/VerificationSubmit";
 
 describe("product onboarding forms", () => {
+  it("exposes a stable browser-ready signal after client hydration", async () => {
+    const { container } = render(<ProductHydrationReady />);
+
+    await waitFor(() =>
+      expect(
+        container.querySelector('[data-product-hydrated="true"]'),
+      ).toBeInTheDocument(),
+    );
+  });
+
   it("offers exactly two identity choices and every subtype progressively", async () => {
     const user = userEvent.setup();
     render(<IdentityForm />);
