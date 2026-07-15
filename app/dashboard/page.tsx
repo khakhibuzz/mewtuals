@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 
 import { PendingDashboard } from "../components/product/PendingDashboard";
 import { ProductShell } from "../components/product/ProductShell";
+import { VerifiedDashboard } from "../components/product/VerifiedDashboard";
+import { getDashboardService } from "../server/dashboard";
 import { nextOnboardingPath } from "../server/onboarding-service";
 import { getOnboardingService } from "../server/onboarding";
 import { resolveProtectedPage } from "../server/onboarding-route";
@@ -71,16 +73,21 @@ export default async function DashboardPage() {
     );
   }
 
+  const dashboard = await getDashboardService().state(session.user.id);
+  if (!dashboard.ok) {
+    throw new Error("Verified dashboard state could not be loaded.");
+  }
+
   return (
     <ProductShell
       eyebrow="Verified member"
       title="Your profile is verified."
-      intro="Your signal and curated Mewtuals Picks are the next part of this private flow."
+      intro="Share what is timely. Mewtuals will keep the result small, private, and considered."
     >
-      <p>
-        Verification is complete. No opportunity is shown until you tell
-        Mewtuals what you are open to.
-      </p>
+      <VerifiedDashboard
+        signal={dashboard.state.signal}
+        opportunities={dashboard.state.assignments}
+      />
     </ProductShell>
   );
 }

@@ -30,6 +30,7 @@ export const opportunityCandidateSchema = z.object({
   summary: z.string().trim().min(1),
   direction: partnershipDirectionSchema,
   counterpartyType: z.string().trim().min(1),
+  reciprocalValue: z.string().trim().min(1),
   eligibleIdentityKinds: z.array(identityKindSchema).min(1),
   eligibleOrganisationSubtypes: z.array(organisationSubtypeSchema),
   eligibleCreatorSubtypes: z.array(creatorSubtypeSchema),

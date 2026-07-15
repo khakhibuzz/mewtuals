@@ -173,6 +173,7 @@ describe("Mewtuals PostgreSQL schema", () => {
       expect.arrayContaining([
         "direction",
         "counterparty_type",
+        "reciprocal_value",
         "eligible_identity_kinds",
         "eligible_organisation_subtypes",
         "eligible_creator_subtypes",
@@ -186,6 +187,7 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(opportunitySeedData).toHaveLength(4);
     for (const opportunity of opportunitySeedData) {
       expect(opportunity.openToTags.length).toBeGreaterThan(0);
+      expect(opportunity.reciprocalValue).toContain("↔");
       expect(
         opportunity.openToTags.every((tag) => allowedInterests.has(tag)),
       ).toBe(true);

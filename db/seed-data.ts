@@ -16,6 +16,8 @@ export const opportunitySeedData = [
       "Pair a brand with a creator whose audience and editorial voice fit a useful campaign, launch, or recurring format.",
     direction: "brand_creator",
     counterpartyType: "Brand or creator with a complementary audience",
+    reciprocalValue:
+      "Relevant audience and editorial trust ↔ useful products, access, and campaign value",
     eligibleIdentityKinds: ["organisation", "creator"],
     eligibleOrganisationSubtypes: ["company", "brand"],
     eligibleCreatorSubtypes: ["creator", "podcaster", "publication"],
@@ -33,6 +35,8 @@ export const opportunitySeedData = [
       "Connect non-competing brands that can create shared customer value through co-distribution or a joint offer.",
     direction: "brand_brand",
     counterpartyType: "Non-competing brand serving an adjacent customer need",
+    reciprocalValue:
+      "Adjacent audience access ↔ complementary product value and shared demand",
     eligibleIdentityKinds: ["organisation"],
     eligibleOrganisationSubtypes: ["company", "brand"],
     eligibleCreatorSubtypes: [],
@@ -46,6 +50,8 @@ export const opportunitySeedData = [
       "Bring together creators with compatible audiences and distinct strengths for a useful shared format or channel exchange.",
     direction: "creator_creator",
     counterpartyType: "Creator or media operator with complementary expertise",
+    reciprocalValue:
+      "Distinct expertise and format strength ↔ complementary audience and distribution",
     eligibleIdentityKinds: ["creator"],
     eligibleOrganisationSubtypes: [],
     eligibleCreatorSubtypes: [
@@ -64,6 +70,8 @@ export const opportunitySeedData = [
       "Match a startup with a distribution partner that can validate a channel through a focused, measurable pilot.",
     direction: "startup_distribution_partner",
     counterpartyType: "Distribution partner with relevant customer access",
+    reciprocalValue:
+      "Relevant customer access ↔ a useful product story and measurable pilot learning",
     eligibleIdentityKinds: ["organisation"],
     eligibleOrganisationSubtypes: ["startup", "distribution_partner"],
     eligibleCreatorSubtypes: [],

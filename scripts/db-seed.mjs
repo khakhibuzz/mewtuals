@@ -19,6 +19,7 @@ try {
           summary: opportunity.summary,
           direction: opportunity.direction,
           counterpartyType: opportunity.counterpartyType,
+          reciprocalValue: opportunity.reciprocalValue,
           eligibleIdentityKinds: opportunity.eligibleIdentityKinds,
           eligibleOrganisationSubtypes: opportunity.eligibleOrganisationSubtypes,
           eligibleCreatorSubtypes: opportunity.eligibleCreatorSubtypes,

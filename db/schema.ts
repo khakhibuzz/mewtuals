@@ -246,6 +246,7 @@ export const opportunities = pgTable(
     summary: text("summary").notNull(),
     direction: partnershipDirectionEnum("direction").notNull(),
     counterpartyType: text("counterparty_type").notNull(),
+    reciprocalValue: text("reciprocal_value").notNull(),
     eligibleIdentityKinds: identityKindEnum("eligible_identity_kinds")
       .array()
       .notNull(),

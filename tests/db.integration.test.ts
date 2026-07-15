@@ -9,18 +9,25 @@ import postgres, { type Sql } from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createAuthService } from "../app/server/auth-service";
+import { createDashboardService } from "../app/server/dashboard-service";
 import { hashToken } from "../app/server/tokens";
 import * as verifyRoute from "../app/auth/verify/route";
 import { closeDb, getDb, type MewtualsDatabase } from "../db/client";
 import { createAuthRepository } from "../db/repositories/auth-repository";
 import { createOnboardingRepository } from "../db/repositories/onboarding-repository";
+import { createOpportunityRepository } from "../db/repositories/opportunity-repository";
 import { createVerificationRepository } from "../db/repositories/verification-repository";
+import { opportunitySeedData } from "../db/seed-data";
 import * as databaseSchema from "../db/schema";
 import {
   magicLinks,
   onboardingDrafts,
+  opportunities,
+  profileOpportunities,
   profiles,
   sessions,
+  signals,
+  introductionRequests,
   users,
   verificationReviews,
 } from "../db/schema";
@@ -931,6 +938,373 @@ describe("PostgreSQL authentication repository", () => {
       );
     } finally {
       await closeIndependentDatabases(independentDatabases);
+    }
+  });
+
+  it("persists a verified signal and deterministic curated assignments while denying other states", async () => {
+    for (const opportunity of opportunitySeedData) {
+      await db
+        .insert(opportunities)
+        .values(opportunity)
+        .onConflictDoUpdate({
+          target: opportunities.key,
+          set: { ...opportunity, updatedAt: new Date() },
+        });
+    }
+    const [verifiedUser, pendingUser] = await db
+      .insert(users)
+      .values([
+        { email: `${emailPrefix}-dashboard-verified@example.test` },
+        { email: `${emailPrefix}-dashboard-pending@example.test` },
+      ])
+      .returning();
+    expect(verifiedUser).toBeDefined();
+    expect(pendingUser).toBeDefined();
+    await db.insert(profiles).values([
+      {
+        userId: verifiedUser!.id,
+        name: "Verified Startup",
+        organisationName: "Verified Startup",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        primaryUrl: "https://verified-startup.example/",
+        status: "verified",
+        verifiedAt: new Date("2036-01-01T09:00:00.000Z"),
+      },
+      {
+        userId: pendingUser!.id,
+        name: "Pending Startup",
+        organisationName: "Pending Startup",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        primaryUrl: "https://pending-startup.example/",
+        status: "pending",
+        submittedAt: new Date("2036-01-01T09:00:00.000Z"),
+      },
+    ]);
+    const opportunityRepository = createOpportunityRepository(db);
+    const service = createDashboardService({
+      repository: opportunityRepository,
+    });
+
+    await expect(
+      service.saveSignal(pendingUser!.id, {
+        availability: "open_now",
+        openTo: ["distribution_partnerships"],
+      }),
+    ).resolves.toMatchObject({ ok: false, status: 403 });
+    const saved = await service.saveSignal(verifiedUser!.id, {
+      availability: "open_now",
+      openTo: ["distribution_partnerships"],
+      notes: "A measurable pilot.",
+    });
+
+    expect(saved).toMatchObject({
+      ok: true,
+      state: {
+        signal: {
+          availability: "open_now",
+          openTo: ["distribution_partnerships"],
+          notes: "A measurable pilot.",
+        },
+        assignments: [
+          {
+            direction: "startup_distribution_partner",
+            counterpartyType: "Distribution partner with relevant customer access",
+            reciprocalValue:
+              "Relevant customer access ↔ a useful product story and measurable pilot learning",
+            rank: 1,
+            introduction: null,
+          },
+        ],
+      },
+    });
+    const [profile] = await db
+      .select({ id: profiles.id })
+      .from(profiles)
+      .where(eq(profiles.userId, verifiedUser!.id));
+    expect(
+      await db.select().from(signals).where(eq(signals.profileId, profile!.id)),
+    ).toHaveLength(1);
+    expect(
+      await db
+        .select()
+        .from(profileOpportunities)
+        .where(eq(profileOpportunities.profileId, profile!.id)),
+    ).toMatchObject([
+      {
+        rank: 1,
+        fitSummary: "Fits your current interest in distribution_partnerships.",
+      },
+    ]);
+
+    const empty = await service.saveSignal(verifiedUser!.id, {
+      availability: "not_available",
+      openTo: ["distribution_partnerships"],
+    });
+    expect(empty).toMatchObject({ ok: true, state: { assignments: [] } });
+  });
+
+  it("keeps a requested relationship durable across later signal changes", async () => {
+    const [user] = await db
+      .insert(users)
+      .values({ email: `${emailPrefix}-durable-pick@example.test` })
+      .returning();
+    const [profile] = await db
+      .insert(profiles)
+      .values({
+        userId: user!.id,
+        name: "Durable Pick Startup",
+        organisationName: "Durable Pick Startup",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        primaryUrl: "https://durable-pick.example/",
+        status: "verified",
+        verifiedAt: new Date("2037-01-01T09:00:00.000Z"),
+      })
+      .returning();
+    const repository = createOpportunityRepository(db);
+    const service = createDashboardService({ repository });
+    const first = await service.saveSignal(user!.id, {
+      availability: "open_now",
+      openTo: ["distribution_partnerships"],
+    });
+    if (!first.ok) throw new Error(first.error);
+    const assignedId = first.state.assignments[0]?.id;
+    expect(assignedId).toBeDefined();
+
+    const requested = await service.advance(user!.id, assignedId!);
+    expect(requested).toMatchObject({ ok: true });
+    const changed = await service.saveSignal(user!.id, {
+      availability: "not_available",
+      openTo: ["distribution_partnerships"],
+    });
+
+    expect(changed).toMatchObject({
+      ok: true,
+      state: {
+        assignments: [
+          {
+            id: assignedId,
+            rank: 1,
+            introduction: { state: "requested" },
+          },
+        ],
+      },
+    });
+    expect(
+      await db
+        .select()
+        .from(introductionRequests)
+        .innerJoin(
+          profileOpportunities,
+          eq(introductionRequests.profileOpportunityId, profileOpportunities.id),
+        )
+        .where(eq(profileOpportunities.profileId, profile!.id)),
+    ).toHaveLength(1);
+  });
+
+  it("makes advancement idempotent under concurrency and rejects unassigned or other-profile ids", async () => {
+    const [owner, other] = await db
+      .insert(users)
+      .values([
+        { email: `${emailPrefix}-advance-owner@example.test` },
+        { email: `${emailPrefix}-advance-other@example.test` },
+      ])
+      .returning();
+    await db.insert(profiles).values([
+      {
+        userId: owner!.id,
+        name: "Advance Owner",
+        organisationName: "Advance Owner",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        primaryUrl: "https://advance-owner.example/",
+        status: "verified",
+        verifiedAt: new Date("2038-01-01T09:00:00.000Z"),
+      },
+      {
+        userId: other!.id,
+        name: "Advance Other",
+        organisationName: "Advance Other",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        primaryUrl: "https://advance-other.example/",
+        status: "verified",
+        verifiedAt: new Date("2038-01-01T09:00:00.000Z"),
+      },
+    ]);
+    const repository = createOpportunityRepository(db);
+    const service = createDashboardService({ repository });
+    const saved = await service.saveSignal(owner!.id, {
+      availability: "open_now",
+      openTo: ["distribution_partnerships"],
+    });
+    if (!saved.ok) throw new Error(saved.error);
+    const assignedId = saved.state.assignments[0]!.id;
+    const [unassigned] = await db
+      .select({ id: opportunities.id })
+      .from(opportunities)
+      .where(eq(opportunities.key, "brand-brand-co-distribution"));
+
+    await expect(service.advance(other!.id, assignedId)).resolves.toMatchObject({
+      ok: false,
+      status: 404,
+    });
+    await expect(
+      service.advance(owner!.id, unassigned!.id),
+    ).resolves.toMatchObject({ ok: false, status: 404 });
+
+    const connectionPrefix = `advance-race-${testRun.slice(0, 8)}`;
+    const connections = [
+      createIndependentDatabase(`${connectionPrefix}-a`),
+      createIndependentDatabase(`${connectionPrefix}-b`),
+    ];
+    try {
+      const activeNames = await Promise.all(
+        connections.map(async ({ database }) => {
+          const [session] = await database.execute<{ applicationName: string }>(
+            sql`select current_setting('application_name') as "applicationName"`,
+          );
+          return session?.applicationName;
+        }),
+      );
+      expect(activeNames).toEqual(
+        connections.map(({ applicationName }) => applicationName),
+      );
+      const services = connections.map(({ database }) =>
+        createDashboardService({
+          repository: createOpportunityRepository(database),
+        }),
+      );
+      const results = await Promise.all(
+        services.map((candidate) => candidate.advance(owner!.id, assignedId)),
+      );
+      expect(results.every((result) => result.ok)).toBe(true);
+      expect(
+        results.map((result) => (result.ok ? result.introduction.id : null)),
+      ).toEqual([results[0]!.ok ? results[0]!.introduction.id : null, results[0]!.ok ? results[0]!.introduction.id : null]);
+      const [assignment] = await db
+        .select({ id: profileOpportunities.id })
+        .from(profileOpportunities)
+        .where(eq(profileOpportunities.opportunityId, assignedId));
+      expect(
+        await db
+          .select()
+          .from(introductionRequests)
+          .where(eq(introductionRequests.profileOpportunityId, assignment!.id)),
+      ).toHaveLength(1);
+    } finally {
+      await closeIndependentDatabases(connections);
+    }
+  });
+
+  it("serializes competing signal updates on the verified profile row", async () => {
+    const [user] = await db
+      .insert(users)
+      .values({ email: `${emailPrefix}-signal-race@example.test` })
+      .returning();
+    const [profile] = await db
+      .insert(profiles)
+      .values({
+        userId: user!.id,
+        name: "Signal Race",
+        organisationName: "Signal Race",
+        identityKind: "organisation",
+        organisationSubtype: "startup",
+        creatorSubtype: null,
+        primaryUrl: "https://signal-race.example/",
+        status: "verified",
+        verifiedAt: new Date("2039-01-01T09:00:00.000Z"),
+      })
+      .returning();
+    const connectionPrefix = `signal-race-${testRun.slice(0, 8)}`;
+    const connections = [
+      createIndependentDatabase(`${connectionPrefix}-a`),
+      createIndependentDatabase(`${connectionPrefix}-b`),
+    ];
+    try {
+      const activeNames = await Promise.all(
+        connections.map(async ({ database }) => {
+          const [session] = await database.execute<{ applicationName: string }>(
+            sql`select current_setting('application_name') as "applicationName"`,
+          );
+          return session?.applicationName;
+        }),
+      );
+      expect(activeNames).toEqual(
+        connections.map(({ applicationName }) => applicationName),
+      );
+      const services = connections.map(({ database }) =>
+        createDashboardService({
+          repository: createOpportunityRepository(database),
+        }),
+      );
+      let attempts:
+        | Promise<
+            [
+              Awaited<ReturnType<(typeof services)[0]["saveSignal"]>>,
+              Awaited<ReturnType<(typeof services)[1]["saveSignal"]>>,
+            ]
+          >
+        | undefined;
+
+      await db.transaction(async (transaction) => {
+        await transaction
+          .select({ id: profiles.id })
+          .from(profiles)
+          .where(eq(profiles.id, profile!.id))
+          .for("update");
+        attempts = Promise.all([
+          services[0].saveSignal(user!.id, {
+            availability: "open_now",
+            openTo: ["distribution_partnerships"],
+          }),
+          services[1].saveSignal(user!.id, {
+            availability: "open_now",
+            openTo: ["co_marketing"],
+          }),
+        ]);
+        expect(
+          await waitForLockWaiters(transaction, [
+            connections[0].applicationName,
+            connections[1].applicationName,
+          ]),
+        ).toEqual(connections.map(({ applicationName }) => applicationName).sort());
+      });
+
+      if (!attempts) throw new Error("Signal updates did not start.");
+      const results = await attempts;
+      expect(results.every((result) => result.ok)).toBe(true);
+      const [persistedSignal] = await db
+        .select()
+        .from(signals)
+        .where(eq(signals.profileId, profile!.id));
+      const assignments = await db
+        .select({ direction: opportunities.direction, rank: profileOpportunities.rank })
+        .from(profileOpportunities)
+        .innerJoin(
+          opportunities,
+          eq(profileOpportunities.opportunityId, opportunities.id),
+        )
+        .where(eq(profileOpportunities.profileId, profile!.id));
+      expect(assignments.length).toBeLessThanOrEqual(3);
+      expect(new Set(assignments.map(({ rank }) => rank)).size).toBe(assignments.length);
+      if (persistedSignal!.openTo.includes("distribution_partnerships")) {
+        expect(assignments.map(({ direction }) => direction)).toEqual([
+          "startup_distribution_partner",
+        ]);
+      } else {
+        expect(persistedSignal!.openTo).toEqual(["co_marketing"]);
+        expect(assignments).toEqual([]);
+      }
+    } finally {
+      await closeIndependentDatabases(connections);
     }
   });
 });
