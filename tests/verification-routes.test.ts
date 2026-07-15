@@ -146,4 +146,30 @@ describe("verification route adapters", () => {
       email: "member@example.com",
     });
   });
+
+  it("hides local approval on a same-origin non-loopback development host", async () => {
+    const approve = vi.fn(async () => ({
+      ok: true as const,
+      profile: { status: "verified" },
+      review: { decision: "verified" },
+    }));
+    const getSession = vi.fn(async () => memberSession);
+    const handler = createDevelopmentApprovalHandler({
+      environment: "development",
+      developmentAuthEnabled: true,
+      getSession,
+      approve,
+    });
+
+    const response = await handler(
+      new Request("https://preview.example/api/dev/verification/approve", {
+        method: "POST",
+        headers: { Origin: "https://preview.example" },
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(getSession).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
+  });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 
 import styles from "./product.module.css";
 
@@ -22,6 +22,7 @@ export function VerificationQueue({
 }) {
   const [activeProfileId, setActiveProfileId] = useState<string>();
   const [error, setError] = useState<string>();
+  const submissionInFlight = useRef(false);
 
   async function submitReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -30,9 +31,11 @@ export function VerificationQueue({
       .submitter as HTMLButtonElement | null;
     const decision = submitter?.value;
     if (decision !== "verified" && decision !== "waitlisted") return;
+    if (submissionInFlight.current) return;
 
     const formData = new FormData(form);
     const profileId = String(formData.get("profileId") ?? "");
+    submissionInFlight.current = true;
     setActiveProfileId(profileId);
     setError(undefined);
     try {
@@ -55,6 +58,7 @@ export function VerificationQueue({
     } catch {
       setError("The review could not be saved.");
     } finally {
+      submissionInFlight.current = false;
       setActiveProfileId(undefined);
     }
   }
@@ -83,9 +87,13 @@ export function VerificationQueue({
               <div>
                 <dt>Submitted</dt>
                 <dd>
-                  {profile.submittedAt
-                    ? new Date(profile.submittedAt).toLocaleString()
-                    : "Unknown"}
+                  {profile.submittedAt ? (
+                    <time dateTime={profile.submittedAt}>
+                      {formatUtcTimestamp(profile.submittedAt)}
+                    </time>
+                  ) : (
+                    "Unknown"
+                  )}
                 </dd>
               </div>
               <div>
@@ -109,7 +117,8 @@ export function VerificationQueue({
                   type="submit"
                   name="decision"
                   value="verified"
-                  disabled={activeProfileId === profile.id}
+                  aria-label={`Approve ${profile.name}`}
+                  disabled={activeProfileId !== undefined}
                 >
                   Approve
                 </button>
@@ -118,7 +127,8 @@ export function VerificationQueue({
                   type="submit"
                   name="decision"
                   value="waitlisted"
-                  disabled={activeProfileId === profile.id}
+                  aria-label={`Waitlist ${profile.name}`}
+                  disabled={activeProfileId !== undefined}
                 >
                   Waitlist
                 </button>
@@ -129,4 +139,29 @@ export function VerificationQueue({
       })}
     </div>
   );
+}
+
+const monthLabels = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+
+function formatUtcTimestamp(value: string): string {
+  const timestamp = new Date(value);
+  const day = String(timestamp.getUTCDate()).padStart(2, "0");
+  const month = monthLabels[timestamp.getUTCMonth()];
+  const year = timestamp.getUTCFullYear();
+  const hours = String(timestamp.getUTCHours()).padStart(2, "0");
+  const minutes = String(timestamp.getUTCMinutes()).padStart(2, "0");
+  return `${day} ${month} ${year}, ${hours}:${minutes} UTC`;
 }

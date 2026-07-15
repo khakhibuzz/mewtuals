@@ -51,11 +51,21 @@ function normalizeConnectingIp(value: string | null): string | undefined {
   return normalized.toLowerCase();
 }
 
-function isLoopbackHostname(hostname: string): boolean {
+export function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   return (
     normalized === "localhost" ||
     normalized === "127.0.0.1" ||
     normalized === "::1"
   );
+}
+
+export function isLoopbackHost(host: string | null): boolean {
+  if (!host || /[\/@?#]/.test(host)) return false;
+
+  try {
+    return isLoopbackHostname(new URL(`http://${host}`).hostname);
+  } catch {
+    return false;
+  }
 }

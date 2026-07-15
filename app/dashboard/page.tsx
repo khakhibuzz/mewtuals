@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { PendingDashboard } from "../components/product/PendingDashboard";
@@ -6,6 +7,7 @@ import { nextOnboardingPath } from "../server/onboarding-service";
 import { getOnboardingService } from "../server/onboarding";
 import { resolveProtectedPage } from "../server/onboarding-route";
 import { readServerEnvironment } from "../server/env";
+import { isLoopbackHost } from "../server/request-security";
 import { getCurrentSession } from "../server/session";
 import { getVerificationService } from "../server/verification";
 
@@ -44,9 +46,11 @@ export default async function DashboardPage() {
 
   if (profile.status === "pending" || profile.status === "waitlisted") {
     const environment = readServerEnvironment();
+    const requestHeaders = await headers();
     const developmentApprovalEnabled =
       environment.environment !== "production" &&
-      environment.developmentAuthEnabled;
+      environment.developmentAuthEnabled &&
+      isLoopbackHost(requestHeaders.get("host"));
     return (
       <ProductShell
         eyebrow="Member dashboard"

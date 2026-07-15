@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 
 import type { AuthenticatedSession } from "../../db/repositories/auth-repository";
-import { assertSameOrigin, SameOriginError } from "./request-security";
+import {
+  assertSameOrigin,
+  isLoopbackHostname,
+  SameOriginError,
+} from "./request-security";
 import type { VerificationActor } from "./verification-service";
 
 type SessionReader = () => Promise<AuthenticatedSession | null>;
@@ -78,7 +82,8 @@ export function createDevelopmentApprovalHandler(dependencies: {
 
     if (
       dependencies.environment === "production" ||
-      !dependencies.developmentAuthEnabled
+      !dependencies.developmentAuthEnabled ||
+      !isLoopbackHostname(new URL(request.url).hostname)
     ) {
       return NextResponse.json(
         { ok: false, error: "Not found." },
