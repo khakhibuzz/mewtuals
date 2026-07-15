@@ -10,7 +10,7 @@ const dataDir = join(runtimeDir, "data");
 const logFile = join(runtimeDir, "postgres.log");
 const host = "127.0.0.1";
 const port = "55432";
-const databaseName = "mewtuals";
+const databaseNames = ["mewtuals", "mewtuals_test"];
 
 function run(command, args, { capture = false, allowFailure = false } = {}) {
   const result = spawnSync(command, args, {
@@ -181,7 +181,7 @@ function connectionArgs(database = "postgres") {
   return ["-h", host, "-p", port, "-d", database];
 }
 
-function ensureDatabase(binDir) {
+function ensureDatabase(binDir, databaseName) {
   const result = run(
     binary(binDir, "psql"),
     [
@@ -221,10 +221,11 @@ function start(binDir) {
     ]);
   }
 
-  ensureDatabase(binDir);
-  console.log(
-    `PostgreSQL 16 is running at postgresql://${host}:${port}/${databaseName}`,
-  );
+  for (const databaseName of databaseNames) {
+    ensureDatabase(binDir, databaseName);
+  }
+  console.log(`PostgreSQL 16 is running at ${host}:${port}.`);
+  console.log(`Databases: ${databaseNames.join(", ")}`);
 }
 
 function stop(binDir) {

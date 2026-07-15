@@ -70,6 +70,7 @@ or on a non-loopback preview host.
 npm test
 npm run test:db
 npm run test:acceptance
+npm run test:e2e
 npm run lint
 npm run build
 ```
@@ -79,6 +80,12 @@ magic-link confirmation, onboarding, pending verification, local approval,
 signals, curated picks, idempotent advancement, persistence, logout/re-login,
 protected access, and token-at-rest assertions.
 
+`test:e2e` expects Mewtuals to already be running at
+`http://localhost:4000`. It drives the rendered forms in Google Chrome, checks
+logout/re-login persistence and protected redirects, and fails on browser
+console errors. Set `PLAYWRIGHT_CHANNEL=chromium` after installing Playwright's
+Chromium binary if Google Chrome is unavailable.
+
 ## Database commands
 
 ```bash
@@ -86,13 +93,15 @@ npm run db:start
 npm run db:status
 npm run db:migrate
 npm run db:seed
+npm run db:test:prepare
 npm run db:stop
 ```
 
-`db:setup` is the local convenience command: it starts PostgreSQL on
-`127.0.0.1:55432`, applies migrations, and idempotently seeds the internal
-opportunity catalogue. Production migrations should use the managed
-`DATABASE_URL` directly; do not run the local setup command in production.
+`db:setup` is an alias for the guarded `db:setup:local` command. It always uses
+`127.0.0.1:55432/mewtuals`, even when the shell exports another `DATABASE_URL`.
+`db:test:prepare` similarly owns the separate local `mewtuals_test` database.
+Production migrations should use the managed `DATABASE_URL` directly; do not
+use either local convenience command in production.
 
 ## Production configuration
 

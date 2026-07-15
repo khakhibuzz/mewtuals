@@ -39,8 +39,11 @@ npm run db:setup
 npm run db:status
 ```
 
-The local cluster binds only to `127.0.0.1:55432` and stores its ignored data in
-`.local-postgres/`. Stop it with `npm run db:stop`.
+The local cluster binds only to `127.0.0.1:55432`, creates `mewtuals` and the
+separate `mewtuals_test` acceptance database, and stores its ignored data in
+`.local-postgres/`. `db:setup` is an alias for `db:setup:local`; the command
+hard-pins the application database and ignores an exported `DATABASE_URL`.
+Stop the cluster with `npm run db:stop`.
 
 Start the application:
 
@@ -146,14 +149,17 @@ npm run db:setup
 npm test
 npm run test:db
 npm run test:acceptance
+npm run test:e2e
 npm run lint
 npm run build
 git diff --check
 ```
 
 `npm test` intentionally excludes live-database suites. `npm run test:db` runs
-the repository integration suite plus the complete product acceptance flow.
-`npm run test:acceptance` is the narrow repeatable smoke test.
+the repository integration suite plus the complete product acceptance flow in
+the dedicated local `mewtuals_test` database. Both database test commands
+prepare that database themselves and refuse a non-loopback or differently named
+database. `npm run test:acceptance` is the narrow repeatable database smoke test.
 
 The acceptance test uses a unique member, cleans its records, and checks:
 
@@ -166,6 +172,27 @@ The acceptance test uses a unique member, cleans its records, and checks:
 - a fresh service instance and a new login see the persisted member state;
 - logout revokes the old session and protected mutations return 401;
 - magic-link, requester, and session credentials are stored only as HMACs.
+
+Keep the local application running at `http://localhost:4000` while running the
+rendered-browser gate in a second terminal:
+
+```bash
+npm run test:e2e
+```
+
+The Playwright test uses Google Chrome by default, drives the complete fresh
+member journey through the actual forms and cookies, reloads persisted state,
+logs out and back in, verifies the signed-out dashboard redirect, and fails on
+console or uncaught page errors. It refuses a non-loopback base URL and refuses
+database cleanup unless `.env.local` points to the project-owned application
+database at `127.0.0.1:55432/mewtuals`.
+
+If Google Chrome is unavailable, install Playwright's Chromium and select it:
+
+```bash
+npx playwright install chromium
+PLAYWRIGHT_CHANNEL=chromium npm run test:e2e
+```
 
 For release QA, also inspect the actual browser at 1440×1100 and 390×844,
 complete the flow with a fresh email, use keyboard navigation, confirm there are

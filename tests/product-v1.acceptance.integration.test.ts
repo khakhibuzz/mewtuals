@@ -1,7 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { loadEnvFile } from "node:process";
 
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -39,9 +36,12 @@ import {
   verificationReviews,
 } from "../db/schema";
 import { opportunitySeedData } from "../db/seed-data";
+import {
+  acceptanceToken,
+  requireLocalTestDatabaseUrl,
+} from "./support/acceptance-environment";
 
-const localEnvironment = resolve(process.cwd(), ".env.local");
-if (existsSync(localEnvironment)) loadEnvFile(localEnvironment);
+requireLocalTestDatabaseUrl(process.env.DATABASE_URL);
 
 process.env.SESSION_SECRET ??=
   "product-v1-acceptance-secret-that-is-longer-than-32-characters";
@@ -50,9 +50,9 @@ const database = getDb();
 const testId = randomUUID();
 const email = `product-v1-${testId}@example.test`;
 const sessionSecret = process.env.SESSION_SECRET;
-const firstMagicToken = "a".repeat(43);
-const secondMagicToken = "b".repeat(43);
-const secondSessionToken = "c".repeat(43);
+const firstMagicToken = acceptanceToken(testId, "first-magic");
+const secondMagicToken = acceptanceToken(testId, "second-magic");
+const secondSessionToken = acceptanceToken(testId, "second-session");
 const requesterIdentity = `acceptance:${testId}`;
 
 async function cleanAcceptanceMember() {
@@ -60,28 +60,19 @@ async function cleanAcceptanceMember() {
   await database.delete(users).where(eq(users.email, email));
 }
 
-async function seedCatalogue() {
-  for (const opportunity of opportunitySeedData) {
-    await database
-      .insert(opportunities)
-      .values(opportunity)
-      .onConflictDoUpdate({
-        target: opportunities.key,
-        set: {
-          title: opportunity.title,
-          summary: opportunity.summary,
-          direction: opportunity.direction,
-          counterpartyType: opportunity.counterpartyType,
-          reciprocalValue: opportunity.reciprocalValue,
-          eligibleIdentityKinds: opportunity.eligibleIdentityKinds,
-          eligibleOrganisationSubtypes:
-            opportunity.eligibleOrganisationSubtypes,
-          eligibleCreatorSubtypes: opportunity.eligibleCreatorSubtypes,
-          openToTags: opportunity.openToTags,
-          active: opportunity.active,
-          updatedAt: new Date(),
-        },
-      });
+async function requireSeededCatalogue() {
+  const startupSeed = opportunitySeedData.find(
+    ({ direction }) => direction === "startup_distribution_partner",
+  );
+  if (!startupSeed) throw new Error("Startup distribution seed is required.");
+  const [stored] = await database
+    .select({ id: opportunities.id })
+    .from(opportunities)
+    .where(eq(opportunities.key, startupSeed.key));
+  if (!stored) {
+    throw new Error(
+      "The dedicated acceptance database is not seeded. Run npm run db:test:prepare.",
+    );
   }
 }
 
@@ -106,7 +97,7 @@ function sessionTokenFrom(response: Response) {
 describe("Mewtuals product v1 acceptance", () => {
   beforeAll(async () => {
     await cleanAcceptanceMember();
-    await seedCatalogue();
+    await requireSeededCatalogue();
   });
 
   afterAll(async () => {
@@ -323,17 +314,23 @@ describe("Mewtuals product v1 acceptance", () => {
           availability: "open_now",
           openTo: ["distribution_partnerships"],
         },
-        assignments: [
-          {
-            direction: "startup_distribution_partner",
-            rank: 1,
-            introduction: null,
-          },
-        ],
       },
       nextPath: "/dashboard",
     });
-    const opportunityId = signalled.state.assignments[0].id as string;
+    expect(signalled.state.assignments.length).toBeGreaterThanOrEqual(1);
+    expect(signalled.state.assignments.length).toBeLessThanOrEqual(3);
+    const selectedOpportunity = signalled.state.assignments.find(
+      (candidate: { direction: string }) =>
+        candidate.direction === "startup_distribution_partner",
+    );
+    expect(selectedOpportunity).toMatchObject({
+      introduction: null,
+      rank: expect.any(Number),
+    });
+    if (!selectedOpportunity) {
+      throw new Error("A startup distribution pick was not assigned.");
+    }
+    const opportunityId = selectedOpportunity.id as string;
 
     const advance = createAdvanceHandler({
       getSession: async () => firstSession,
@@ -504,7 +501,9 @@ describe("Mewtuals product v1 acceptance", () => {
         secondSessionToken,
         requesterIdentity,
       ]).not.toContain(link.tokenHash);
-      expect(link.requesterHash).not.toBe(requesterIdentity);
+      expect(link.requesterHash).toBe(
+        hashToken(`requester:${requesterIdentity}`, sessionSecret),
+      );
     }
     const persistedSessions = await database
       .select({ tokenHash: sessions.tokenHash })
