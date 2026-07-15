@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -15,6 +16,19 @@ async function render() {
     },
     { waitUntil() {}, passThroughOnException() {} },
   );
+}
+
+async function readCompiledStyles() {
+  const assetsDirectory = new URL("../dist/client/assets/", import.meta.url);
+  const stylesheets = (await readdir(assetsDirectory)).filter((file) =>
+    file.endsWith(".css"),
+  );
+
+  return (
+    await Promise.all(
+      stylesheets.map((file) => readFile(new URL(file, assetsDirectory), "utf8")),
+    )
+  ).join("\n");
 }
 
 test("server-renders the complete Mewtuals landing page", async () => {
@@ -131,4 +145,13 @@ test("server-renders the complete Mewtuals landing page", async () => {
   assert.doesNotMatch(html, /A startup begins as a small living idea\./);
   assert.doesNotMatch(html, /Competition explains how value is divided\./);
   assert.doesNotMatch(html, /codex-preview|Codex is working|react-loading-skeleton/i);
+});
+
+test("compiled mobile navigation stays reachable in short viewports", async () => {
+  const css = await readCompiledStyles();
+
+  assert.match(
+    css,
+    /@media \(width<=900px\).*?\.primary-navigation\{(?=[^}]*max-height:calc\(100dvh\s*-\s*var\(--header-height\)\))(?=[^}]*overflow-y:auto)[^}]*\}/s,
+  );
 });
