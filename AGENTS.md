@@ -19,11 +19,12 @@ individual features. Product requirements and implementation history belong in
 - `app/domain` owns pure validation, profile, workflow, signal, and matching
   rules. It must not import React, Next/Vinext, database code, environment
   access, or network clients.
-- Repository contracts and PostgreSQL implementations live in
-  `db/repositories`; `app/server` may import their typed contracts. SQL and query
-  builders stay inside repository implementations. Routes and composition
-  modules may wire concrete repositories but must not construct queries. Schema,
-  migration, and seed tooling remain under `db/`, `drizzle/`, and `scripts/`.
+- Runtime PostgreSQL repository implementations, including their SQL and
+  schema/query-builder imports, live under `db/repositories`. Service-facing
+  repository contracts currently live at the boundary appropriate to each
+  service and must remain framework-free. Routes and composition modules may
+  wire concrete repositories but must not construct queries. Schema, migration,
+  and seed tooling remain under `db/`, `drizzle/`, and `scripts/`.
 - A verified member may receive zero curated picks. Preserve that honest result;
   never weaken the matching gate or invent a recommendation to fill space.
 
