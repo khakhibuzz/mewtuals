@@ -31,7 +31,8 @@ describe("public landing mobile responsive contract", () => {
   it("keeps the sub-768 experience inside one explicit, touch-first media block", () => {
     const mobile = mobileBlock(css);
     expect(mobile).not.toBe("");
-    expect(mobile).toContain("--page-gutter: max(20px, env(safe-area-inset-left))");
+    expect(mobile).toContain("--page-gutter: calc(20px + env(safe-area-inset-left, 0px));");
+    expect(mobile).toContain("--page-gutter-end: calc(20px + env(safe-area-inset-right, 0px));");
     expect(mobile).toContain("overflow-wrap: anywhere");
     expect(mobile).toContain("min-width: 44px");
     expect(mobile).toContain("min-height: 44px");

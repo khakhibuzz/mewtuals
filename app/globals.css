@@ -1028,8 +1028,8 @@ main {
 
 @media (max-width: 767px) {
   :root {
-    --page-gutter: max(20px, env(safe-area-inset-left));
-    --page-gutter-end: max(20px, env(safe-area-inset-right));
+    --page-gutter: calc(20px + env(safe-area-inset-left, 0px));
+    --page-gutter-end: calc(20px + env(safe-area-inset-right, 0px));
     --header-height: 64px;
     --section-space: 88px;
   }
