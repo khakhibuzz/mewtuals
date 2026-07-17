@@ -10,11 +10,21 @@ export const PUBLIC_ASSET_PATHS = [
   "/hero-opportunity-graph-mobile.webp",
 ] as const;
 
-const CACHE_VERSION = "v1";
+const CACHE_NAME_PLACEHOLDER = "__MEWTUALS_CACHE_NAME__";
 
-export function createServiceWorkerSource(): string {
-  return `
-const CACHE_NAME = "mewtuals-${CACHE_VERSION}";
+export function createCacheName(workerTemplate: string): string {
+  let hash = 0x811c9dc5;
+
+  for (let index = 0; index < workerTemplate.length; index += 1) {
+    hash ^= workerTemplate.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return `mewtuals-${(hash >>> 0).toString(36)}`;
+}
+
+export const WORKER_TEMPLATE = String.raw`
+const CACHE_NAME = "${CACHE_NAME_PLACEHOLDER}";
 const PUBLIC_ASSET_PATHS = ${JSON.stringify(PUBLIC_ASSET_PATHS)};
 
 function isCacheableResponse(response) {
@@ -147,4 +157,7 @@ self.addEventListener("fetch", (event) => {
   }
 });
 `;
+
+export function createServiceWorkerSource(): string {
+  return WORKER_TEMPLATE.replace(CACHE_NAME_PLACEHOLDER, createCacheName(WORKER_TEMPLATE));
 }

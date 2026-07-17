@@ -12,6 +12,8 @@ import OfflinePage from "../app/offline/page";
 import PwaRegistration from "../app/pwa/PwaRegistration";
 import {
   PUBLIC_ASSET_PATHS,
+  WORKER_TEMPLATE,
+  createCacheName,
   createServiceWorkerSource,
 } from "../app/pwa/service-worker-source";
 import { GET } from "../app/sw.js/route";
@@ -151,5 +153,16 @@ describe("generated public-only service worker", () => {
     expect(source).toContain('key.startsWith("mewtuals-") && key !== CACHE_NAME');
     expect(source).toContain("self.clients.claim()");
     expect(source).toContain("response.ok && !response.redirected && url.origin === self.location.origin");
+  });
+
+  it("isolates every worker revision so a failed install cannot delete the active cache", () => {
+    const activeCacheName = createCacheName(WORKER_TEMPLATE);
+    const revisedCacheName = createCacheName(`${WORKER_TEMPLATE}\n// revised worker logic`);
+    const source = createServiceWorkerSource();
+
+    expect(activeCacheName).toMatch(/^mewtuals-[a-z0-9]+$/);
+    expect(revisedCacheName).not.toBe(activeCacheName);
+    expect(source).toContain(`const CACHE_NAME = "${activeCacheName}"`);
+    expect(source).toContain("await caches.delete(CACHE_NAME);");
   });
 });
