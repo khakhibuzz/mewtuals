@@ -13,16 +13,17 @@ individual features. Product requirements and implementation history belong in
   import `app/server` runtime modules, repositories, database code, or server
   environment access.
 - `app/server` owns application orchestration, authentication, authorization,
-  session handling, request security, and integration ports. Authentication,
-  authorization, and same-origin enforcement for mutations are server-owned and
-  reused by routes; client state and client-side checks are never authoritative.
+  session handling, and request security. Authentication, authorization, and
+  same-origin enforcement for mutations are server-owned and reused by routes;
+  client state and client-side checks are never authoritative.
 - `app/domain` owns pure validation, profile, workflow, signal, and matching
   rules. It must not import React, Next/Vinext, database code, environment
   access, or network clients.
-- Runtime SQL belongs only in `db/repositories`. Repositories implement the
-  interfaces needed by server services; routes and services must not construct
-  queries or import schema/query builders. Schema, migration, and seed tooling
-  remain under `db/`, `drizzle/`, and `scripts/`.
+- Repository contracts and PostgreSQL implementations live in
+  `db/repositories`; `app/server` may import their typed contracts. SQL and query
+  builders stay inside repository implementations. Routes and composition
+  modules may wire concrete repositories but must not construct queries. Schema,
+  migration, and seed tooling remain under `db/`, `drizzle/`, and `scripts/`.
 - A verified member may receive zero curated picks. Preserve that honest result;
   never weaken the matching gate or invent a recommendation to fill space.
 
@@ -69,6 +70,7 @@ that coverage when a route or PWA behavior changes.
 Never commit populated or local environment files, `.dev.vars`, secrets,
 managed database URLs, local database directories or dumps, browser profiles,
 traces, screenshots, coverage, or build output. The tracked, sanitized
-`.env.example` is the only environment-file exception and must contain
-placeholders rather than credentials. Keep disposable browser-test accounts
-allowlisted only in ignored local configuration.
+`.env.example` and `.dev.vars.example` templates are the only environment-file
+exceptions and must contain placeholders rather than credentials. Keep
+disposable browser-test accounts allowlisted only in ignored local
+configuration.
