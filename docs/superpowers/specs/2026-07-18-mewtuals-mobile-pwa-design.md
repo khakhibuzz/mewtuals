@@ -141,12 +141,21 @@ the full navigation cannot fit.
   layout.
 - Register a module service worker from a small client-only component.
 
+### Social preview
+
+- Generate one site-specific social-preview candidate after the responsive
+  visual direction is stable, using the approved headline, warm-paper and
+  charcoal palette, and restrained graph-line motif.
+- Add it to Open Graph and X metadata only if the exact text and visual
+  constraints pass inspection. If it is unusable, omit the image rather than
+  shipping a generic fallback or expanding into an unbounded visual exercise.
+
 ### Cache policy
 
 The service worker uses versioned caches and the narrowest useful rules:
 
 - precache the public landing URL, offline fallback URL, manifest, icons, and
-  existing public landing imagery;
+  the four existing public landing graph images;
 - cache only same-origin build assets under `/assets/` plus the explicitly
   listed manifest, icons, favicon, and landing graph images; do not use a broad
   destination-based runtime cache for arbitrary future assets;
@@ -214,11 +223,12 @@ Automated coverage must prove:
 - no route loses fields or actions.
 
 Browser verification covers every browser route at 390x844 and at a width near
-the 768px boundary, plus desktop regression at 1440x1100. Checks include page
-overflow, control size, menu/dialog behavior, full onboarding, pending and
-verified dashboards, administrator review, protected redirects, console errors,
-and an offline navigation exercise proving that `/` loads while `/dashboard`
-shows the network-required fallback.
+the 768px boundary, includes a 320px overflow pass, and retains desktop
+regression at 1440x1100. Checks include page overflow, control size,
+menu/dialog behavior, full onboarding, pending and verified dashboards,
+administrator review, protected redirects, console errors, and an offline
+navigation exercise proving that `/` loads while `/dashboard` shows the
+network-required fallback.
 
 The release gate remains:
 
