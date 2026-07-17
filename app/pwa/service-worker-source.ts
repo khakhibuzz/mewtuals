@@ -66,17 +66,17 @@ function extractSameOriginAssetPaths(html) {
 
 async function fetchRequired(pathname) {
   const url = new URL(pathname, self.location.origin);
-  const request = url.pathname.endsWith(".css")
-    ? new Request(url, {
-        credentials: "same-origin",
-        headers: { Accept: "text/css,*/*;q=0.1" },
-      })
-    : pathname;
-  const response = await fetch(request, { credentials: "same-origin" });
+  const request = new Request(url, {
+    credentials: "same-origin",
+    headers: url.pathname.endsWith(".css")
+      ? { Accept: "text/css,*/*;q=0.1" }
+      : undefined,
+  });
+  const response = await fetch(request);
   if (!isCacheableResponse(response)) {
     throw new Error("Public shell response was not cacheable: " + pathname);
   }
-  return response;
+  return { request, response };
 }
 
 async function installPublicShell() {
@@ -97,12 +97,12 @@ async function installPublicShell() {
       ...extractSameOriginAssetPaths(await landingResponse.clone().text()),
       ...extractSameOriginAssetPaths(await offlineResponse.clone().text()),
     ])];
-    const assetResponses = await Promise.all(assetPaths.map(fetchRequired));
+    const assets = await Promise.all(assetPaths.map(fetchRequired));
 
     await Promise.all([
       cache.put("/", landingResponse.clone()),
       cache.put("/offline", offlineResponse.clone()),
-      ...assetResponses.map((response, index) => cache.put(assetPaths[index], response.clone())),
+      ...assets.map(({ request, response }) => cache.put(request, response.clone())),
     ]);
   } catch (error) {
     await caches.delete(CACHE_NAME);
@@ -122,20 +122,35 @@ async function cacheFirst(request) {
   return response;
 }
 
-async function stagedAssetOrNetwork(request) {
+async function landingClient(clientId) {
+  if (!clientId) return false;
+  const client = await self.clients.get(clientId);
+  if (!client) return false;
+  return new URL(client.url).pathname === "/";
+}
+
+async function publicShellAsset(event) {
+  const request = event.request;
   const cache = await caches.open(CACHE_NAME);
-  return (await cache.match(request)) || fetch(request);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+
+  const response = await fetch(request);
+  if (isCacheableResponse(response) && await landingClient(event.clientId)) {
+    await cache.put(request, response.clone());
+  }
+  return response;
 }
 
 async function refreshRootShell(response) {
   try {
     const cache = await caches.open(CACHE_NAME);
     const assetPaths = extractSameOriginAssetPaths(await response.clone().text());
-    const assetResponses = await Promise.all(assetPaths.map(fetchRequired));
+    const assets = await Promise.all(assetPaths.map(fetchRequired));
 
     await Promise.all(
-      assetResponses.map((assetResponse, index) =>
-        cache.put(assetPaths[index], assetResponse.clone()),
+      assets.map(({ request, response }) =>
+        cache.put(request, response.clone()),
       ),
     );
     await cache.put("/", response.clone());
@@ -202,12 +217,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (url.pathname.startsWith("/assets/")) {
-    event.respondWith(stagedAssetOrNetwork(request));
+  if (
+    url.pathname.startsWith("/assets/") ||
+    ["font", "image", "script", "style"].includes(request.destination)
+  ) {
+    event.respondWith(publicShellAsset(event));
     return;
   }
-
-  event.respondWith(stagedAssetOrNetwork(request));
 });
 `;
 

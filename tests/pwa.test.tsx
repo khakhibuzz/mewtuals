@@ -31,6 +31,8 @@ const expectedPublicAssetPaths = [
 ];
 
 type WorkerRequest = {
+  destination?: string;
+  headers?: Record<string, string>;
   method: string;
   mode: string;
   url: string;
@@ -39,7 +41,7 @@ type WorkerRequestLike = WorkerRequest | Request;
 
 type WorkerHarness = {
   cache: (name?: string) => FakeCache;
-  dispatchFetch: (request: WorkerRequest) => Promise<{
+  dispatchFetch: (request: WorkerRequest, clientUrl?: string) => Promise<{
     intercepted: boolean;
     response?: Response;
     waitForBackground: () => Promise<void>;
@@ -49,26 +51,56 @@ type WorkerHarness = {
 };
 
 type WorkerEvent = {
+  clientId?: string;
   request?: WorkerRequest;
   respondWith?: (response: Response | Promise<Response>) => void;
   waitUntil: (work: Promise<unknown>) => void;
 };
 
 class FakeCache {
-  readonly entries = new Map<string, Response>();
+  readonly entries = new Map<
+    string,
+    { request: Request; response: Response }
+  >();
 
   constructor(private readonly failPut?: (key: string) => boolean) {}
 
   async match(request: string | WorkerRequestLike) {
-    const response = this.entries.get(cacheKey(request));
-    return response?.clone();
+    const entry = this.entries.get(cacheKey(request));
+    if (!entry) return undefined;
+
+    const candidate = cacheRequest(request);
+    const vary = entry.response.headers.get("vary");
+    if (vary === "*") return undefined;
+    for (const header of vary?.split(",").map((value) => value.trim()) ?? []) {
+      if (
+        entry.request.headers.get(header) !== candidate.headers.get(header)
+      ) {
+        return undefined;
+      }
+    }
+    return entry.response.clone();
   }
 
   async put(request: string | WorkerRequestLike, response: Response) {
     const key = cacheKey(request);
     if (this.failPut?.(key)) throw new Error(`cache write failed for ${key}`);
-    this.entries.set(key, response.clone());
+    this.entries.set(key, {
+      request: cacheRequest(request),
+      response: response.clone(),
+    });
   }
+}
+
+function cacheRequest(request: string | WorkerRequestLike): Request {
+  if (request instanceof Request) return request.clone();
+  if (typeof request === "string") {
+    return new Request(new URL(request, "https://mewtuals.test"));
+  }
+  return new Request(request.url, {
+    headers: request.headers,
+    method: request.method,
+  });
 }
 
 function cacheKey(request: string | WorkerRequestLike) {
@@ -85,8 +117,14 @@ function documentRequest(pathname: string): WorkerRequest {
   };
 }
 
-function assetRequest(pathname: string): WorkerRequest {
+function assetRequest(
+  pathname: string,
+  headers?: Record<string, string>,
+  destination = "style",
+): WorkerRequest {
   return {
+    destination,
+    headers,
     method: "GET",
     mode: "no-cors",
     url: `https://mewtuals.test${pathname}`,
@@ -105,6 +143,7 @@ function createWorkerHarness(options: {
   const cacheName = createCacheName(WORKER_TEMPLATE);
   const cacheMap = options.initialCaches ?? new Map<string, FakeCache>();
   const fetchCalls: string[] = [];
+  const clientUrls = new Map<string, string>();
   const caches = {
     async delete(name: string) {
       return cacheMap.delete(name);
@@ -121,7 +160,13 @@ function createWorkerHarness(options: {
     addEventListener(type: string, handler: (event: WorkerEvent) => void) {
       listeners.set(type, handler);
     },
-    clients: { claim: vi.fn().mockResolvedValue(undefined) },
+    clients: {
+      claim: vi.fn().mockResolvedValue(undefined),
+      get: vi.fn(async (clientId: string) => {
+        const url = clientUrls.get(clientId);
+        return url ? { url } : undefined;
+      }),
+    },
     location: { origin: "https://mewtuals.test" },
   };
   const fetch = async (request: string | WorkerRequestLike) => {
@@ -142,10 +187,13 @@ function createWorkerHarness(options: {
       if (!cacheMap.has(name)) cacheMap.set(name, new FakeCache(options.failPut));
       return cacheMap.get(name)!;
     },
-    async dispatchFetch(request) {
+    async dispatchFetch(request, clientUrl?: string) {
       const waits: Promise<unknown>[] = [];
       let responsePromise: Promise<Response> | undefined;
+      const clientId = clientUrl ? `client-${clientUrls.size + 1}` : undefined;
+      if (clientId && clientUrl) clientUrls.set(clientId, clientUrl);
       listeners.get("fetch")?.({
+        clientId,
         request,
         respondWith(response: Response | Promise<Response>) {
           responsePromise = Promise.resolve(response);
@@ -192,10 +240,16 @@ function publicShellResponder(
       "headers" in request ? request.headers.get("accept") : null;
     return new Response(
       accept?.includes("text/css") ? "public styles" : "development css module",
-      { status: 200 },
+      { headers: { Vary: "Accept" }, status: 200 },
     );
   }
   if (pathname === "/assets/landing-public.js") return new Response("landing asset", { status: 200 });
+  if (pathname === "/app/components/SiteHeader.tsx") {
+    return new Response("interactive landing module", { status: 200 });
+  }
+  if (pathname === "/app/components/product/VerifiedDashboard.tsx") {
+    return new Response("member module", { status: 200 });
+  }
   if (expectedPublicAssetPaths.includes(pathname)) return new Response("public asset", { status: 200 });
   throw new Error(`unexpected network request for ${pathname}`);
 }
@@ -365,10 +419,84 @@ describe("service worker cache behavior", () => {
     await worker.dispatchLifecycle("install");
     offline = true;
 
-    const result = await worker.dispatchFetch(assetRequest("/app/globals.css"));
+    const result = await worker.dispatchFetch(
+      assetRequest("/app/globals.css", { Accept: "text/css,*/*;q=0.1" }),
+    );
 
     expect(result.intercepted).toBe(true);
     await expect(result.response?.text()).resolves.toBe("public styles");
+  });
+
+  it("does not intercept a same-URL framework request as cached root HTML", async () => {
+    const worker = createWorkerHarness({ fetchResponse: publicShellResponder });
+    await worker.dispatchLifecycle("install");
+    const rootFetchesBefore = worker.fetchCalls.filter((path) => path === "/").length;
+
+    const result = await worker.dispatchFetch({
+      headers: { Accept: "text/x-component" },
+      method: "GET",
+      mode: "cors",
+      url: "https://mewtuals.test/",
+    });
+
+    expect(result.intercepted).toBe(false);
+    expect(worker.fetchCalls.filter((path) => path === "/")).toHaveLength(
+      rootFetchesBefore,
+    );
+  });
+
+  it("records an interactive asset requested by the controlled public landing only", async () => {
+    let offline = false;
+    const worker = createWorkerHarness({
+      fetchResponse: (pathname, request) => {
+        if (offline) throw new Error(`offline request for ${pathname}`);
+        return publicShellResponder(pathname, request);
+      },
+    });
+    await worker.dispatchLifecycle("install");
+    const request = assetRequest(
+      "/app/components/SiteHeader.tsx",
+      { Accept: "*/*" },
+      "script",
+    );
+
+    const online = await worker.dispatchFetch(
+      request,
+      "https://mewtuals.test/",
+    );
+    await expect(online.response?.text()).resolves.toBe(
+      "interactive landing module",
+    );
+    offline = true;
+    const cached = await worker.dispatchFetch(
+      request,
+      "https://mewtuals.test/",
+    );
+
+    await expect(cached.response?.text()).resolves.toBe(
+      "interactive landing module",
+    );
+    expect(worker.cache().entries.has("/app/components/SiteHeader.tsx")).toBe(
+      true,
+    );
+  });
+
+  it("never records an asset requested by a member route", async () => {
+    const worker = createWorkerHarness({ fetchResponse: publicShellResponder });
+    await worker.dispatchLifecycle("install");
+    const cachedBefore = [...worker.cache().entries.keys()].sort();
+
+    const result = await worker.dispatchFetch(
+      assetRequest(
+        "/app/components/product/VerifiedDashboard.tsx",
+        { Accept: "*/*" },
+        "script",
+      ),
+      "https://mewtuals.test/dashboard",
+    );
+
+    await expect(result.response?.text()).resolves.toBe("member module");
+    expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
   });
 
   it("never writes an unreferenced same-origin stylesheet to the public cache", async () => {

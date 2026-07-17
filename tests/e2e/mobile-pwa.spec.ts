@@ -30,6 +30,9 @@ const DESKTOP_VIEWPORT = { width: 1440, height: 1100 } as const;
 const BASE_URL = requireLoopbackBaseUrl(
   process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:4000",
 );
+const PWA_BASE_URL = requireProductionPwaBaseUrl(
+  process.env.PLAYWRIGHT_PWA_BASE_URL ?? "http://localhost:4002",
+);
 
 loadLocalEnvironment();
 requireLocalAppDatabaseUrl(process.env.DATABASE_URL);
@@ -184,10 +187,10 @@ test("mobile member and administrator journey stays responsive and private offli
     "Mewtuals is reviewing the relationship",
   );
 
-  expect(memberErrors).toEqual([]);
   await provePublicOnlyOfflineBoundary(
     context,
     page,
+    memberErrors,
     profileName,
     websiteHost,
   );
@@ -310,15 +313,34 @@ async function authenticateDedicatedAdmin(browser: Browser): Promise<{
 async function provePublicOnlyOfflineBoundary(
   context: BrowserContext,
   page: Page,
+  browserErrors: string[],
   profileName: string,
   websiteHost: string,
 ) {
-  await page.goto("/");
+  await page.goto(`${PWA_BASE_URL}/`);
   await page.evaluate(async () => {
     await navigator.serviceWorker.ready;
   });
   await page.reload();
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+
+  await page
+    .getByRole("link", { name: "Find my next partnership" })
+    .click();
+  await expect(page).toHaveURL(/\/join$/);
+  await waitForProductHydration(page);
+  await expect(
+    page.getByRole("heading", { name: "Find the right partnership moment." }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Log in" }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await waitForProductHydration(page);
+  await expect(
+    page.getByRole("heading", { name: "Welcome back." }),
+  ).toBeVisible();
+  await page.goto(`${PWA_BASE_URL}/`);
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+  await verifyLandingKeyboardInteractions(page);
 
   const cachedShell = await page.evaluate(async () => {
     const cacheNames = (await caches.keys()).filter((name) =>
@@ -361,15 +383,29 @@ async function provePublicOnlyOfflineBoundary(
   ).toEqual([]);
 
   await context.setOffline(true);
-  await page.goto("/");
+  await page.goto(`${PWA_BASE_URL}/`);
   await expect(
     page.getByRole("heading", {
       name: "One partnership can change a company. We find the right one.",
     }),
   ).toBeVisible();
   await expectNoHorizontalOverflow(page);
+  expect(browserErrors).toEqual([]);
+  const menu = page.locator('button[aria-controls="primary-navigation"]');
+  await menu.click();
+  await expect(menu).toHaveAttribute("aria-expanded", "true");
+  await menu.click();
+  await expect(menu).toHaveAttribute("aria-expanded", "false");
 
-  await page.goto("/dashboard");
+  await page
+    .getByRole("button", { name: /Open case study:/ })
+    .first()
+    .click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  await page.goto(`${PWA_BASE_URL}/dashboard`);
   await expect(
     page.getByRole("heading", {
       name: "Get online to see your partnerships.",
@@ -386,6 +422,39 @@ async function provePublicOnlyOfflineBoundary(
   await expect(page.getByText("Curated for this moment")).toHaveCount(0);
   await expect(page.getByText("Profiles awaiting review.")).toHaveCount(0);
   await auditResponsiveState(page, "offline member fallback");
+
+  // The built Vinext server proves the public PWA boundary above. Authenticated
+  // local Postgres RSC routes are exercised on the development server below.
+  await context.setOffline(false);
+  await page.goto(`${BASE_URL}/dashboard`);
+  await expect(
+    page.getByRole("heading", { name: "Your profile is verified." }),
+  ).toBeVisible();
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+  });
+  await page.reload();
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+
+  await context.setOffline(true);
+  await page.goto(`${BASE_URL}/dashboard`);
+  await expect(
+    page.getByRole("heading", {
+      name: "Get online to see your partnerships.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText(profileName)).toHaveCount(0);
+  await expect(page.getByText(websiteHost)).toHaveCount(0);
+  await expect(page.getByText("Curated for this moment")).toHaveCount(0);
+
+  const recoveryErrorStart = browserErrors.length;
+  await context.setOffline(false);
+  await page.getByRole("link", { name: "Try again" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Your profile is verified." }),
+  ).toBeVisible();
+  await waitForProductHydration(page);
+  expect(browserErrors.slice(recoveryErrorStart)).toEqual([]);
 }
 
 async function waitForProductHydration(page: Page) {
@@ -416,4 +485,29 @@ function requireDedicatedAdminAllowlist(value: string | undefined) {
       `Refusing mobile E2E: add only ${ADMIN_EMAIL} to the ignored local ADMIN_EMAILS allowlist.`,
     );
   }
+}
+
+function requireProductionPwaBaseUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("PLAYWRIGHT_PWA_BASE_URL must be an exact loopback URL.");
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (
+    url.protocol !== "http:" ||
+    !["localhost", "127.0.0.1", "::1"].includes(hostname) ||
+    url.port !== "4002" ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash ||
+    url.username ||
+    url.password
+  ) {
+    throw new Error(
+      "PLAYWRIGHT_PWA_BASE_URL must be an exact loopback origin on port 4002.",
+    );
+  }
+  return url.origin;
 }

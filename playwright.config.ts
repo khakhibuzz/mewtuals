@@ -14,6 +14,12 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   outputDir: "output/playwright/test-results",
   reporter: "line",
+  webServer: {
+    command: "npm run build && npm start -- --port 4002",
+    url: "http://localhost:4002/",
+    reuseExistingServer: false,
+    timeout: 120_000,
+  },
   use: {
     baseURL,
     channel: process.env.PLAYWRIGHT_CHANNEL ?? "chrome",
