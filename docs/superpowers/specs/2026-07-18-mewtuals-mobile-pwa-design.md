@@ -147,14 +147,18 @@ The service worker uses versioned caches and the narrowest useful rules:
 
 - precache the public landing URL, offline fallback URL, manifest, icons, and
   existing public landing imagery;
-- cache only same-origin public static scripts, styles, fonts, and explicitly
-  listed landing assets;
+- cache only same-origin build assets under `/assets/` plus the explicitly
+  listed manifest, icons, favicon, and landing graph images; do not use a broad
+  destination-based runtime cache for arbitrary future assets;
 - use network-first navigation for `/`, falling back to the cached landing page;
 - use network-only behavior for `/join`, `/login`, `/auth/verify`, every
   onboarding route, `/dashboard`, `/admin/verifications`, and future non-root
   application routes;
 - when a non-root navigation fails because the device is offline, return the
   cached offline page;
+- keep API requests network-only and preserve their existing response contract;
+  the branded offline heading applies only to browser document navigations, not
+  direct API calls;
 - never cache API requests, non-GET requests, authenticated page HTML, redirect
   responses, session material, form submissions, or database-backed payloads.
 
