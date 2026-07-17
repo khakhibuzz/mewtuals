@@ -184,12 +184,22 @@ rendered-browser gate in a second terminal:
 npm run test:e2e
 ```
 
-The Playwright test uses Google Chrome by default, drives the complete fresh
-member journey through the actual forms and cookies, reloads persisted state,
-logs out and back in, verifies the signed-out dashboard redirect, and fails on
-console or uncaught page errors. It refuses a non-loopback base URL and refuses
-database cleanup unless `.env.local` points to the project-owned application
-database at `127.0.0.1:55432/mewtuals`.
+Add `mewtuals-mobile-e2e@example.test` only to the ignored local `ADMIN_EMAILS`
+allowlist before running the gate. The test refuses to use any other account as
+its administrator and deletes only its reserved disposable accounts.
+
+The Playwright test uses Google Chrome by default and drives the complete fresh
+member and administrator journey through the actual forms and cookies. It
+checks 320×740, 390×844, 767×900, and 1440×1100 layouts, touch targets,
+page-level overflow, protected redirects, and console errors. It refuses a
+non-loopback base URL and refuses database cleanup unless `.env.local` points to
+the project-owned application database at `127.0.0.1:55432/mewtuals`.
+
+The gate also builds and starts an isolated production-mode origin at
+`http://localhost:4002` for installable-PWA and real-offline assertions. The
+test runner owns that server; do not start or reuse a process on port 4002 while
+the gate is running. Development behavior on port 4000 alone is not sufficient
+evidence for service-worker caching.
 
 If Google Chrome is unavailable, install Playwright's Chromium and select it:
 
@@ -202,7 +212,48 @@ For release QA, also inspect the actual browser at 1440×1100 and 390×844,
 complete the flow with a fresh email, use keyboard navigation, confirm there are
 no console errors, and verify protected page redirects while signed out.
 
-## 6. Security and operating behavior
+## 6. PWA and offline operations
+
+The installable app intentionally has a narrow offline boundary:
+
+- `/` and the public landing shell may be cached after a successful online
+  service-worker installation;
+- `/offline` is the only fallback for failed non-root document navigation and
+  is headed `Get online to see your partnerships.`;
+- API requests, member/onboarding/admin HTML, authenticated responses, profile
+  data, partnership data, and transactional state are never cached;
+- member actions and background synchronization remain unavailable offline.
+
+The `/sw.js` response uses `Cache-Control: no-cache`, so browsers revalidate it.
+Its cache name is derived from the complete worker template, so a policy or
+allowlist change creates a new `mewtuals-*` cache revision. If an allowlisted
+asset changes at the same URL, deliberately revise the worker source or version
+the asset URL; otherwise an existing cache-first installation can retain the old
+bytes. Installation stages the complete public shell; if any required response
+fails, the new cache is removed and the current worker continues serving. After
+successful activation, the worker deletes only stale `mewtuals-*` revisions. An
+online root navigation refreshes required assets before replacing the cached
+landing HTML, retaining the prior shell if refresh fails.
+
+Service-worker activation follows browser lifecycle rules. A newly installed
+revision may wait until controlled tabs and installed-app windows close. To
+force a clean support check, close Mewtuals everywhere, clear the origin's site
+data in browser settings (or unregister the worker and clear storage in browser
+developer tools), then revisit `/` online before testing offline. Clearing site
+data also removes the session cookie and signs the member out.
+
+Installation UI, update timing, and standalone-window behavior vary by browser
+and operating system. A deployed PWA requires HTTPS; loopback `localhost` is
+accepted for local testing. Verify the target browser/device rather than
+assuming an install prompt will be shown.
+
+The release gate must prove the public landing works offline, `/dashboard`
+shows only the network-required fallback, cached paths contain no member/API
+routes, no private member text appears, and the application recovers after the
+network returns. Keep the port-4000 member server running and let
+`npm run test:e2e` manage the built port-4002 PWA server.
+
+## 7. Security and operating behavior
 
 - Magic links expire after 15 minutes and are single-use.
 - A recipient can receive one issued link per 60 seconds; a new issued link
@@ -227,7 +278,7 @@ age, migration errors, database connection saturation, and introduction-request
 state age. Never log raw magic links, session cookies, `SESSION_SECRET`, Resend
 credentials, or the full managed database URL.
 
-## 7. Hosting notes
+## 8. Hosting notes
 
 `npm run build` produces the Sites-compatible bundle. A successful static build
 does not prove the authenticated deployed flow is operational. Do not describe a

@@ -66,6 +66,32 @@ After submitting a profile for verification, the same local-only mode exposes
 the development approval action. Neither shortcut is available in production
 or on a non-loopback preview host.
 
+## Installable app and offline behavior
+
+Mewtuals can be installed from a supported browser after one completed online
+visit. In production it must be served over HTTPS; `localhost` is accepted as a
+secure development origin. Browser and operating-system install controls vary,
+so use the available Install or Add to Home Screen action rather than expecting
+an in-page prompt.
+
+Offline support is deliberately public-only. The landing page and its approved
+static assets remain usable after the service worker finishes installing. Every
+member, onboarding, administrator, and transactional route remains network-only
+and falls back to `Get online to see your partnerships.` No API response,
+profile, partnership, or account data is stored for offline use.
+
+Validate install and offline behavior against a built origin, not development
+behavior alone:
+
+```bash
+npm run build
+npm start -- --port 4002
+```
+
+Open [http://localhost:4002](http://localhost:4002), wait for the first online
+load to complete, then test installation and offline navigation. The automated
+browser gate manages this built origin itself.
+
 ## Verification commands
 
 ```bash
@@ -83,10 +109,13 @@ signals, curated picks, idempotent advancement, persistence, logout/re-login,
 protected access, and token-at-rest assertions.
 
 `test:e2e` expects Mewtuals to already be running at
-`http://localhost:4000`. It drives the rendered forms in Google Chrome, checks
-logout/re-login persistence and protected redirects, and fails on browser
-console errors. Set `PLAYWRIGHT_CHANNEL=chromium` after installing Playwright's
-Chromium binary if Google Chrome is unavailable.
+`http://localhost:4000`. It drives the rendered member and administrator forms,
+checks responsive layouts and protected redirects, and fails on browser or
+offline-boundary errors. It also builds and starts a separate production-mode
+server at `http://localhost:4002` for service-worker checks. Add
+`mewtuals-mobile-e2e@example.test` only to the ignored local `ADMIN_EMAILS`
+allowlist before running the gate. Set `PLAYWRIGHT_CHANNEL=chromium` after
+installing Playwright's Chromium binary if Google Chrome is unavailable.
 
 ## Database commands
 
