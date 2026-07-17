@@ -615,20 +615,27 @@
 
   .headerLink {
     display: inline-flex;
+    min-width: 44px;
     min-height: 44px;
     align-items: center;
+    justify-content: center;
   }
 
   .headerButton {
     display: inline-flex;
+    min-width: 44px;
     min-height: 44px;
     align-items: center;
+    justify-content: center;
   }
 
   .main {
     width: 100%;
     min-height: calc(100svh - 4.25rem);
-    padding: 2.5rem var(--page-gutter) 3.5rem;
+    padding-top: 2.5rem;
+    padding-right: var(--page-gutter-end);
+    padding-bottom: 3.5rem;
+    padding-left: var(--page-gutter);
   }
 
   .panel {
@@ -686,10 +693,6 @@
   .confirmation {
     min-height: 48px;
     padding: 0.25rem 0;
-  }
-
-  .main {
-    padding-top: 2.5rem;
   }
 
   .memberSummary {

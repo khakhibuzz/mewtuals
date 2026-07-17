@@ -80,10 +80,26 @@ describe("member and admin mobile responsive contract", () => {
       "padding-left: var(--page-gutter)",
       "padding-right: var(--page-gutter-end)",
     ]);
-    expectRule(mobile, ".headerLink", ["display: inline-flex", "min-height: 44px"]);
-    expectRule(mobile, ".headerButton", ["display: inline-flex", "min-height: 44px"]);
+    expectRule(mobile, ".headerLink", [
+      "display: inline-flex",
+      "min-width: 44px",
+      "min-height: 44px",
+      "justify-content: center",
+    ]);
+    expectRule(mobile, ".headerButton", [
+      "display: inline-flex",
+      "min-width: 44px",
+      "min-height: 44px",
+      "justify-content: center",
+    ]);
 
-    expectRule(mobile, ".main", ["width: 100%", "padding:"]);
+    expectRule(mobile, ".main", [
+      "width: 100%",
+      "padding-top: 2.5rem",
+      "padding-right: var(--page-gutter-end)",
+      "padding-bottom: 3.5rem",
+      "padding-left: var(--page-gutter)",
+    ]);
     expectRule(mobile, ".panel", ["width: 100%", "padding:"]);
     expectRule(mobile, ".title", ["font-size: clamp(2rem, 12vw, 3rem)"]);
 
