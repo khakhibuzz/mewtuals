@@ -4,9 +4,7 @@ export const PUBLIC_ASSET_PATHS = [
   "/icons/mewtuals-192.png",
   "/icons/mewtuals-512.png",
   "/icons/apple-touch-icon.png",
-  "/hero-opportunity-graph.png",
   "/hero-opportunity-graph.webp",
-  "/hero-opportunity-graph-mobile.png",
   "/hero-opportunity-graph-mobile.webp",
 ] as const;
 

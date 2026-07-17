@@ -134,7 +134,11 @@ test("fresh member completes and retains the product-v1 journey", async ({
   await page
     .getByLabel("A useful note (optional)")
     .fill("Ready for a browser-verified distribution pilot.");
-  await page.getByRole("button", { name: "Save my signal" }).click();
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: "domcontentloaded" }),
+    page.getByRole("button", { name: "Save my signal" }).click(),
+  ]);
+  await waitForProductHydration(page);
 
   const firstPick = page.getByTestId("curated-opportunity").first();
   await expect(firstPick).toBeVisible();

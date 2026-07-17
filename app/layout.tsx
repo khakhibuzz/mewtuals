@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import PwaRegistration from "./pwa/PwaRegistration";
@@ -17,7 +17,7 @@ const title = "Mewtuals — Partnerships for internet-native companies";
 const description =
   "Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands.";
 const socialImage = {
-  url: "/og.png",
+  url: "https://mewtuals.com/og.png",
   width: 1200,
   height: 630,
   alt: "Mewtuals — One partnership can change a company. We find the right one.",
@@ -27,7 +27,6 @@ export const metadata: Metadata = {
   title,
   description,
   manifest: "/manifest.webmanifest",
-  themeColor: "#11110f",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
@@ -46,6 +45,10 @@ export const metadata: Metadata = {
     description,
     images: [socialImage.url],
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#11110f",
 };
 
 export default function RootLayout({

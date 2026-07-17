@@ -7,7 +7,7 @@ vi.mock("next/font/google", () => ({
 }));
 
 import manifest from "../app/manifest";
-import { metadata } from "../app/layout";
+import { metadata, viewport } from "../app/layout";
 import OfflinePage from "../app/offline/page";
 import PwaRegistration from "../app/pwa/PwaRegistration";
 import {
@@ -24,9 +24,7 @@ const expectedPublicAssetPaths = [
   "/icons/mewtuals-192.png",
   "/icons/mewtuals-512.png",
   "/icons/apple-touch-icon.png",
-  "/hero-opportunity-graph.png",
   "/hero-opportunity-graph.webp",
-  "/hero-opportunity-graph-mobile.png",
   "/hero-opportunity-graph-mobile.webp",
 ];
 
@@ -284,9 +282,9 @@ describe("public-only PWA metadata", () => {
   it("adds install metadata, Apple metadata, and an Apple icon to the root layout", () => {
     expect(metadata).toMatchObject({
       manifest: "/manifest.webmanifest",
-      themeColor: "#11110f",
       appleWebApp: { capable: true, statusBarStyle: "default", title: "Mewtuals" },
     });
+    expect(viewport).toMatchObject({ themeColor: "#11110f" });
     expect(metadata.icons).toMatchObject({
       icon: "/favicon.svg",
       apple: "/icons/apple-touch-icon.png",
@@ -294,7 +292,7 @@ describe("public-only PWA metadata", () => {
     expect(metadata.openGraph).toMatchObject({
       images: [
         {
-          url: "/og.png",
+          url: "https://mewtuals.com/og.png",
           width: 1200,
           height: 630,
           alt: "Mewtuals — One partnership can change a company. We find the right one.",
@@ -303,7 +301,7 @@ describe("public-only PWA metadata", () => {
     });
     expect(metadata.twitter).toMatchObject({
       card: "summary_large_image",
-      images: ["/og.png"],
+      images: ["https://mewtuals.com/og.png"],
     });
   });
 });

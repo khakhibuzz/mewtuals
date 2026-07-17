@@ -106,6 +106,18 @@ test("server-renders the complete Mewtuals landing page", async () => {
   );
   assert.match(
     html,
+    /<meta(?=[^>]*\bname=["']theme-color["'])(?=[^>]*\bcontent=["']#11110f["'])[^>]*>/i,
+  );
+  assert.match(
+    html,
+    /<meta(?=[^>]*\bproperty=["']og:image["'])(?=[^>]*\bcontent=["']https:\/\/mewtuals\.com\/og\.png["'])[^>]*>/i,
+  );
+  assert.match(
+    html,
+    /<meta(?=[^>]*\bname=["']twitter:image["'])(?=[^>]*\bcontent=["']https:\/\/mewtuals\.com\/og\.png["'])[^>]*>/i,
+  );
+  assert.match(
+    html,
     /<link(?=[^>]*\brel=["']icon["'])(?=[^>]*\bhref=["']\/favicon\.svg["'])[^>]*>/i,
   );
 

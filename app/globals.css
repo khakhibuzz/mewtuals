@@ -1021,6 +1021,12 @@ main {
     scroll-snap-align: start;
   }
 
+  .startups-cta {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
   .apply-section {
     gap: 70px;
   }
@@ -1264,6 +1270,12 @@ main {
 
   .offline-content {
     padding-block: 72px;
+  }
+
+  .offline-wordmark {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
   }
 
   .offline-actions {

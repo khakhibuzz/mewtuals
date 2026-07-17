@@ -175,7 +175,11 @@ test("mobile member and administrator journey stays responsive and private offli
   await page
     .getByLabel("A useful note (optional)")
     .fill("Ready for a mobile browser-verified distribution pilot.");
-  await page.getByRole("button", { name: "Save my signal" }).click();
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: "domcontentloaded" }),
+    page.getByRole("button", { name: "Save my signal" }).click(),
+  ]);
+  await waitForProductHydration(page);
   await expect(page.getByLabel("Distribution partnerships")).toBeChecked();
 
   const firstPick = page.getByTestId("curated-opportunity").first();
@@ -229,11 +233,15 @@ async function expectNoHorizontalOverflow(page: Page) {
 
 async function expectTouchControls(page: Page) {
   const controls = page.locator(
-    'button, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), select, textarea',
+    'a, button, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), select, textarea',
   );
   for (const control of await controls.all()) {
     if (!(await control.isVisible())) continue;
-    expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    const height = (await control.boundingBox())?.height ?? 0;
+    const label = `${await control.evaluate((element) => element.tagName.toLowerCase())}: ${(
+      await control.innerText().catch(() => "")
+    ).trim()}`;
+    expect(height, label).toBeGreaterThanOrEqual(44);
   }
 
   const toggles = page.locator('input[type="checkbox"], input[type="radio"]');

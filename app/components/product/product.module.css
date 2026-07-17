@@ -725,6 +725,12 @@
     overflow-wrap: anywhere;
   }
 
+  .queueEvidence a {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
   .sectionHeadingRow {
     align-items: flex-start;
     flex-direction: column;
