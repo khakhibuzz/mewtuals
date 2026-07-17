@@ -30,6 +30,11 @@ describe("magic-link verification route", () => {
     expect(html).toContain('name="token"');
     expect(html).toContain(`value="${validToken}"`);
     expect(html).toContain("Continue to Mewtuals");
+    expect(html).toContain("@media (max-width: 767px)");
+    expect(html).toContain("padding: 2rem 20px");
+    expect(html).toContain("width: 100%");
+    expect(html).toContain("min-height: 48px");
+    expect(html).toContain("clamp(2rem, 11vw, 3rem)");
     expect(response.headers.get("set-cookie")).toBeNull();
   });
 

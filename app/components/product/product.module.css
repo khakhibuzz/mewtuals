@@ -600,26 +600,127 @@
   font-size: 0.84rem;
 }
 
-@media (max-width: 620px) {
+@media (max-width: 767px) {
   .shell {
-    background: var(--paper);
+    background:
+      linear-gradient(to right, transparent calc(50% - 0.5px), var(--line) 50%, transparent calc(50% + 0.5px)),
+      var(--paper);
+  }
+
+  .header {
+    min-height: 4.25rem;
+    padding-left: var(--page-gutter);
+    padding-right: var(--page-gutter-end);
+  }
+
+  .headerLink {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .headerButton {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .main {
+    width: 100%;
+    min-height: calc(100svh - 4.25rem);
+    padding: 2.5rem var(--page-gutter) 3.5rem;
+  }
+
+  .panel {
+    width: 100%;
+    padding: 1.5rem 0 2.5rem;
+  }
+
+  .title {
+    font-size: clamp(2rem, 12vw, 3rem);
+  }
+
+  .form {
+    gap: 1.25rem;
+    margin-top: 2.25rem;
+  }
+
+  .input {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .select {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .textarea {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .button {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .secondaryButton {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .status {
+    line-height: 1.55;
   }
 
   .choices {
     grid-template-columns: 1fr;
   }
 
-  .main {
-    padding-top: 3rem;
+  .choice {
+    min-height: 48px;
+    padding: 0.85rem;
   }
 
-  .memberSummary,
-  .opportunityMeta,
+  .confirmation {
+    min-height: 48px;
+    padding: 0.25rem 0;
+  }
+
+  .main {
+    padding-top: 2.5rem;
+  }
+
+  .memberSummary {
+    grid-template-columns: 1fr;
+  }
+
+  .opportunityMeta {
+    grid-template-columns: 1fr;
+  }
+
   .queueEvidence {
     grid-template-columns: 1fr;
   }
 
-  .sectionHeadingRow,
+  .memberSummary dd {
+    overflow-wrap: anywhere;
+  }
+
+  .opportunityMeta dd {
+    overflow-wrap: anywhere;
+  }
+
+  .queueEvidence dd {
+    overflow-wrap: anywhere;
+  }
+
+  .sectionHeadingRow {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .developmentAction {
     align-items: flex-start;
     flex-direction: column;
@@ -629,8 +730,14 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .inlineChoices,
-  .interestGrid,
+  .inlineChoices {
+    grid-template-columns: 1fr;
+  }
+
+  .interestGrid {
+    grid-template-columns: 1fr;
+  }
+
   .opportunityDetails {
     grid-template-columns: 1fr;
   }
@@ -638,5 +745,38 @@
   .cardHeader {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .exampleCard {
+    width: 100%;
+    padding: 1.25rem;
+  }
+
+  .opportunityCard {
+    width: 100%;
+    padding: 1.25rem;
+  }
+
+  .queueCard {
+    width: 100%;
+    padding: 1.25rem;
+  }
+
+  .compactChoice {
+    min-height: 48px;
+  }
+
+  .reviewActions {
+    flex-direction: column;
+  }
+
+  .reviewActions > * {
+    width: 100%;
+  }
+
+  @media (max-width: 360px) {
+    .placeholderGrid {
+      grid-template-columns: 1fr;
+    }
   }
 }

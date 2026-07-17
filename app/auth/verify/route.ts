@@ -93,6 +93,12 @@ function verificationPage(content: string, status = 200): NextResponse {
       button, a { color: inherit; }
       button { margin-top: 1.5rem; border: 1px solid #1c1b18; background: #1c1b18; color: #f3efe5; padding: 0.85rem 1.2rem; cursor: pointer; font: inherit; }
       a { text-underline-offset: 0.2em; }
+      @media (max-width: 767px) {
+        body { display: block; padding: 2rem 20px; }
+        main { width: 100%; padding: 2rem 0; }
+        h1 { font: 500 clamp(2rem, 11vw, 3rem)/1 Georgia, serif; }
+        button { width: 100%; min-height: 48px; }
+      }
     </style>
   </head>
   <body><main>${content}</main></body>
