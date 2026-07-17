@@ -80,6 +80,11 @@ describe("member and admin mobile responsive contract", () => {
       "padding-left: var(--page-gutter)",
       "padding-right: var(--page-gutter-end)",
     ]);
+    expectRule(mobile, ".wordmark", [
+      "display: inline-flex",
+      "min-height: 44px",
+      "align-items: center",
+    ]);
     expectRule(mobile, ".headerLink", [
       "display: inline-flex",
       "min-width: 44px",
@@ -105,7 +110,7 @@ describe("member and admin mobile responsive contract", () => {
 
     expectRule(mobile, ".input", ["min-height: 48px", "width: 100%"]);
     expectRule(mobile, ".select", ["min-height: 48px", "width: 100%"]);
-    expectRule(mobile, ".textarea", ["min-height: 48px", "width: 100%"]);
+    expectRule(mobile, ".textarea", ["min-height: 6.5rem", "width: 100%"]);
     expectRule(mobile, ".button", ["min-height: 48px", "width: 100%"]);
     expectRule(mobile, ".secondaryButton", ["min-height: 48px", "width: 100%"]);
     expectRule(mobile, ".form", ["gap:"]);

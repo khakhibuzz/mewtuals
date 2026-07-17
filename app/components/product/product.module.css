@@ -613,6 +613,12 @@
     padding-right: var(--page-gutter-end);
   }
 
+  .wordmark {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
   .headerLink {
     display: inline-flex;
     min-width: 44px;
@@ -664,7 +670,7 @@
 
   .textarea {
     width: 100%;
-    min-height: 48px;
+    min-height: 6.5rem;
   }
 
   .button {
