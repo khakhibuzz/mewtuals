@@ -35,6 +35,7 @@ type WorkerRequest = {
   mode: string;
   url: string;
 };
+type WorkerRequestLike = WorkerRequest | Request;
 
 type WorkerHarness = {
   cache: (name?: string) => FakeCache;
@@ -58,19 +59,19 @@ class FakeCache {
 
   constructor(private readonly failPut?: (key: string) => boolean) {}
 
-  async match(request: string | WorkerRequest) {
+  async match(request: string | WorkerRequestLike) {
     const response = this.entries.get(cacheKey(request));
     return response?.clone();
   }
 
-  async put(request: string | WorkerRequest, response: Response) {
+  async put(request: string | WorkerRequestLike, response: Response) {
     const key = cacheKey(request);
     if (this.failPut?.(key)) throw new Error(`cache write failed for ${key}`);
     this.entries.set(key, response.clone());
   }
 }
 
-function cacheKey(request: string | WorkerRequest) {
+function cacheKey(request: string | WorkerRequestLike) {
   if (typeof request === "string") return request;
   const url = new URL(request.url);
   return url.pathname + url.search;
@@ -93,7 +94,10 @@ function assetRequest(pathname: string): WorkerRequest {
 }
 
 function createWorkerHarness(options: {
-  fetchResponse: (pathname: string) => Promise<Response> | Response;
+  fetchResponse: (
+    pathname: string,
+    request: string | WorkerRequestLike,
+  ) => Promise<Response> | Response;
   failPut?: (key: string) => boolean;
   initialCaches?: Map<string, FakeCache>;
 }): WorkerHarness {
@@ -120,10 +124,10 @@ function createWorkerHarness(options: {
     clients: { claim: vi.fn().mockResolvedValue(undefined) },
     location: { origin: "https://mewtuals.test" },
   };
-  const fetch = async (request: string | WorkerRequest) => {
+  const fetch = async (request: string | WorkerRequestLike) => {
     const pathname = typeof request === "string" ? request : cacheKey(request);
     fetchCalls.push(pathname);
-    return options.fetchResponse(pathname);
+    return options.fetchResponse(pathname, request);
   };
 
   new Function("self", "caches", "fetch", "Response", createServiceWorkerSource())(
@@ -172,11 +176,25 @@ function createWorkerHarness(options: {
   };
 }
 
-function publicShellResponder(pathname: string): Response {
+function publicShellResponder(
+  pathname: string,
+  request?: string | WorkerRequestLike,
+): Response {
   if (pathname === "/") {
-    return new Response('<script src="/assets/landing-public.js"></script>', { status: 200 });
+    return new Response(
+      '<link rel="stylesheet" href="/app/globals.css"><script src="/assets/landing-public.js"></script>',
+      { status: 200 },
+    );
   }
   if (pathname === "/offline") return new Response("offline page", { status: 200 });
+  if (pathname === "/app/globals.css") {
+    const accept = !request || typeof request === "string" ? null :
+      "headers" in request ? request.headers.get("accept") : null;
+    return new Response(
+      accept?.includes("text/css") ? "public styles" : "development css module",
+      { status: 200 },
+    );
+  }
   if (pathname === "/assets/landing-public.js") return new Response("landing asset", { status: 200 });
   if (expectedPublicAssetPaths.includes(pathname)) return new Response("public asset", { status: 200 });
   throw new Error(`unexpected network request for ${pathname}`);
@@ -330,9 +348,44 @@ describe("service worker cache behavior", () => {
         "/",
         "/offline",
         ...expectedPublicAssetPaths,
+        "/app/globals.css",
         "/assets/landing-public.js",
       ]),
     );
+  });
+
+  it("serves only a discovered public stylesheet outside the production assets path", async () => {
+    let offline = false;
+    const worker = createWorkerHarness({
+      fetchResponse: (pathname, request) => {
+        if (offline) throw new Error(`offline request for ${pathname}`);
+        return publicShellResponder(pathname, request);
+      },
+    });
+    await worker.dispatchLifecycle("install");
+    offline = true;
+
+    const result = await worker.dispatchFetch(assetRequest("/app/globals.css"));
+
+    expect(result.intercepted).toBe(true);
+    await expect(result.response?.text()).resolves.toBe("public styles");
+  });
+
+  it("never writes an unreferenced same-origin stylesheet to the public cache", async () => {
+    const worker = createWorkerHarness({
+      fetchResponse: (pathname) =>
+        pathname === "/app/member-private.css"
+          ? new Response("member styles", { status: 200 })
+          : publicShellResponder(pathname),
+    });
+    await worker.dispatchLifecycle("install");
+    const cachedBefore = [...worker.cache().entries.keys()].sort();
+
+    const result = await worker.dispatchFetch(assetRequest("/app/member-private.css"));
+
+    expect(result.intercepted).toBe(true);
+    await expect(result.response?.text()).resolves.toBe("member styles");
+    expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
   });
 
   it("does not cache unknown login or product assets after they are fetched", async () => {

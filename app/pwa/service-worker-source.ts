@@ -47,11 +47,32 @@ function extractSameOriginAssetPaths(html) {
     }
   }
 
+  const linkTags = html.matchAll(/<link\b[^>]*>/gi);
+  for (const [linkTag] of linkTags) {
+    const rel = linkTag.match(/\brel\s*=\s*["']([^"']+)["']/i)?.[1];
+    const href = linkTag.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (!rel || !href || !rel.toLowerCase().split(/\s+/).includes("stylesheet")) {
+      continue;
+    }
+
+    const url = new URL(href, self.location.origin);
+    if (url.origin === self.location.origin) {
+      assetPaths.add(url.pathname + url.search);
+    }
+  }
+
   return [...assetPaths];
 }
 
 async function fetchRequired(pathname) {
-  const response = await fetch(pathname, { credentials: "same-origin" });
+  const url = new URL(pathname, self.location.origin);
+  const request = url.pathname.endsWith(".css")
+    ? new Request(url, {
+        credentials: "same-origin",
+        headers: { Accept: "text/css,*/*;q=0.1" },
+      })
+    : pathname;
+  const response = await fetch(request, { credentials: "same-origin" });
   if (!isCacheableResponse(response)) {
     throw new Error("Public shell response was not cacheable: " + pathname);
   }
@@ -183,7 +204,10 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname.startsWith("/assets/")) {
     event.respondWith(stagedAssetOrNetwork(request));
+    return;
   }
+
+  event.respondWith(stagedAssetOrNetwork(request));
 });
 `;
 
