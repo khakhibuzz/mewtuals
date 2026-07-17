@@ -33,7 +33,7 @@ function isCacheableResponse(response) {
 }
 
 function isPublicAssetPath(pathname) {
-  return pathname.startsWith("/assets/") || PUBLIC_ASSET_PATHS.includes(pathname);
+  return PUBLIC_ASSET_PATHS.includes(pathname);
 }
 
 function extractSameOriginAssetPaths(html) {
@@ -101,18 +101,42 @@ async function cacheFirst(request) {
   return response;
 }
 
-async function rootNavigation(request) {
+async function stagedAssetOrNetwork(request) {
   const cache = await caches.open(CACHE_NAME);
+  return (await cache.match(request)) || fetch(request);
+}
 
+async function refreshRootShell(response) {
   try {
-    const response = await fetch(request);
-    if (isCacheableResponse(response)) {
-      await cache.put("/", response.clone());
-    }
-    return response;
+    const cache = await caches.open(CACHE_NAME);
+    const assetPaths = extractSameOriginAssetPaths(await response.clone().text());
+    const assetResponses = await Promise.all(assetPaths.map(fetchRequired));
+
+    await Promise.all(
+      assetResponses.map((assetResponse, index) =>
+        cache.put(assetPaths[index], assetResponse.clone()),
+      ),
+    );
+    await cache.put("/", response.clone());
   } catch {
-    return (await cache.match("/")) || (await cache.match("/offline")) || Response.error();
+    // The current navigation already has a valid network response; retain the old shell on refresh failure.
   }
+}
+
+function rootNavigation(event) {
+  const request = event.request;
+  const networkResponse = fetch(request);
+
+  event.waitUntil(
+    networkResponse
+      .then((response) => (isCacheableResponse(response) ? refreshRootShell(response.clone()) : undefined))
+      .catch(() => undefined),
+  );
+
+  return networkResponse.catch(async () => {
+    const cache = await caches.open(CACHE_NAME);
+    return (await cache.match("/")) || (await cache.match("/offline")) || Response.error();
+  });
 }
 
 async function networkOnlyDocument(request) {
@@ -148,12 +172,17 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
 
   if (request.mode === "navigate") {
-    event.respondWith(url.pathname === "/" ? rootNavigation(request) : networkOnlyDocument(request));
+    event.respondWith(url.pathname === "/" ? rootNavigation(event) : networkOnlyDocument(request));
     return;
   }
 
   if (isPublicAssetPath(url.pathname)) {
     event.respondWith(cacheFirst(request));
+    return;
+  }
+
+  if (url.pathname.startsWith("/assets/")) {
+    event.respondWith(stagedAssetOrNetwork(request));
   }
 });
 `;
