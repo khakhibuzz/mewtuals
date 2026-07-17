@@ -13,10 +13,19 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const title = "Mewtuals — Partnerships for internet-native companies";
+const description =
+  "Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands.";
+const socialImage = {
+  url: "/og.png",
+  width: 1200,
+  height: 630,
+  alt: "Mewtuals — One partnership can change a company. We find the right one.",
+};
+
 export const metadata: Metadata = {
-  title: "Mewtuals — Partnerships for internet-native companies",
-  description:
-    "Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands.",
+  title,
+  description,
   manifest: "/manifest.webmanifest",
   themeColor: "#11110f",
   appleWebApp: {
@@ -25,6 +34,18 @@ export const metadata: Metadata = {
     title: "Mewtuals",
   },
   icons: { icon: "/favicon.svg", apple: "/icons/apple-touch-icon.png" },
+  openGraph: {
+    title,
+    description,
+    type: "website",
+    images: [socialImage],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+    images: [socialImage.url],
+  },
 };
 
 export default function RootLayout({
