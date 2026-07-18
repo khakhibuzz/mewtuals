@@ -98,6 +98,7 @@ function verificationPage(content: string, status = 200): NextResponse {
         main { width: 100%; padding: 2rem 0; }
         h1 { font: 500 clamp(2rem, 11vw, 3rem)/1 Georgia, serif; }
         button { width: 100%; min-height: 48px; }
+        a { display: inline-flex; min-height: 44px; align-items: center; }
       }
     </style>
   </head>

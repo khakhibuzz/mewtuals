@@ -687,6 +687,13 @@
     line-height: 1.55;
   }
 
+  .status a,
+  .error a {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
   .choices {
     grid-template-columns: 1fr;
   }
