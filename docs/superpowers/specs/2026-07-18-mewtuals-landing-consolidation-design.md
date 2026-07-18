@@ -34,7 +34,7 @@ The standalone About headline and explanatory copy are not duplicated into the m
 
 ## Application route
 
-The application form is removed from the landing page and remains available at `/apply` as a directly shareable page. `/apply` reuses the existing form and validation behavior. The contextual `Apply with this path` action in a case study leads to `/apply`; the landing header does not advertise the route.
+The application form is removed from the landing page and becomes available through a new `/apply` page. That directly shareable route reuses the existing form and validation behavior. The contextual `Apply with this path` action in a case study leads to `/apply`; the landing header does not advertise the route.
 
 The public-offline boundary does not expand: only the landing page remains available offline, while `/apply` requires a network connection.
 
