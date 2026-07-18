@@ -43,6 +43,9 @@ individual features. Product requirements and implementation history belong in
 - Member and transactional routes stay network-only. When their navigation
   fails offline, show the public fallback headed exactly
   `Get online to see your partnerships.` without rendering member data.
+- Keep the public application form at the directly shareable `/apply` route,
+  outside the landing-page navigation. It is transactional and therefore
+  network-only under the same offline fallback contract.
 - Change service-worker behavior through
   `app/pwa/service-worker-source.ts` and its executable tests. Keep the public
   asset allowlist explicit; do not hand-maintain a second worker implementation.

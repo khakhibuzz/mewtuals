@@ -80,20 +80,14 @@ describe("CaseStudies", () => {
     expect(document.body.style.overflow).toBe("");
   });
 
-  it("moves focus into the application after choosing a study path", async () => {
+  it("links the decision gate to the standalone application route", async () => {
     const user = userEvent.setup();
-    render(
-      <>
-        <CaseStudies />
-        <label htmlFor="company-url">Company URL</label>
-        <input id="company-url" />
-      </>,
-    );
+    render(<CaseStudies />);
 
     await user.click(screen.getAllByRole("button", { name: /Open case study/ })[0]);
-    await user.click(screen.getByRole("link", { name: "Apply with this path" }));
 
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Company URL")).toHaveFocus();
+    expect(
+      screen.getByRole("link", { name: "Apply with this path" }),
+    ).toHaveAttribute("href", "/apply");
   });
 });

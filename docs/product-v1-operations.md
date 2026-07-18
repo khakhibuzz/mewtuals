@@ -220,6 +220,8 @@ The installable app intentionally has a narrow offline boundary:
   service-worker installation;
 - `/offline` is the only fallback for failed non-root document navigation and
   is headed `Get online to see your partnerships.`;
+- `/apply` is a directly shareable, online-only application form and is not
+  linked from the landing-page navigation;
 - API requests, member/onboarding/admin HTML, authenticated responses, profile
   data, partnership data, and transactional state are never cached;
 - member actions and background synchronization remain unavailable offline.

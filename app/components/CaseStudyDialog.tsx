@@ -4,7 +4,6 @@ import { useEffect, useRef } from "react";
 import { CaseStudy } from "../data/caseStudies";
 
 type CaseStudyDialogProps = {
-  onApply: () => void;
   onClose: () => void;
   study: CaseStudy;
 };
@@ -13,7 +12,6 @@ const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function CaseStudyDialog({
-  onApply,
   onClose,
   study,
 }: CaseStudyDialogProps) {
@@ -129,7 +127,7 @@ export function CaseStudyDialog({
           <p className="section-label">The handoff</p>
           <h3>Human decision gate</h3>
           <p>{study.decisionGate}</p>
-          <a className="primary-button" href="#apply" onClick={onApply}>
+          <a className="primary-button" href="/apply">
             Apply with this path
           </a>
         </section>

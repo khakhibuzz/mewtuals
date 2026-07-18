@@ -77,17 +77,60 @@ test("mobile member and administrator journey stays responsive and private offli
   await auditResponsiveState(page, "landing", { desktop: true });
   await verifyLandingKeyboardInteractions(page);
 
+  const primaryNavigation = page.locator("#primary-navigation");
+  const primaryLinks = primaryNavigation.locator("a");
+  await expect(primaryLinks).toHaveCount(5);
+  await expect(primaryLinks).toHaveText([
+    "How it works",
+    "For startups",
+    "For creators",
+    "Join Mewtuals",
+    "Log in",
+  ]);
+  await expect(primaryLinks.filter({ hasText: /^About$/ })).toHaveCount(0);
+  await expect(primaryLinks.filter({ hasText: /^Apply$/ })).toHaveCount(0);
+
+  await page
+    .getByRole("button", { name: /Open case study:/ })
+    .first()
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("link", { name: "Apply with this path" })
+    .click();
+  await expect(page).toHaveURL(/\/apply$/);
+  await expect(
+    page.getByRole("heading", { name: "Put Mewtuals on your company’s side." }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Company URL")).toBeVisible();
+  await expect(
+    page.locator("#primary-navigation a").filter({ hasText: /^How it works$/ }),
+  ).toHaveAttribute("href", "/#how-it-works");
+  await auditResponsiveState(page, "application page", { desktop: true });
+
   await page.goto("/join");
   await waitForProductHydration(page);
   await expect(
     page.getByRole("heading", { name: "Find the right partnership moment." }),
   ).toBeVisible();
   await auditResponsiveState(page, "join");
+  await page.getByLabel("Email address").fill(memberEmail);
+  await page.getByRole("button", { name: "Join Mewtuals" }).click();
+  await expect(
+    page.getByRole("link", { name: "Open local sign-in link" }),
+  ).toBeVisible();
+  await auditResponsiveState(page, "join magic-link result");
 
   await page.goto("/login");
   await waitForProductHydration(page);
   await expect(page.getByRole("heading", { name: "Welcome back." })).toBeVisible();
   await auditResponsiveState(page, "login");
+
+  await page.goto("/auth/verify?token=invalid");
+  await expect(
+    page.getByRole("heading", { name: "This sign-in link is not valid." }),
+  ).toBeVisible();
+  await auditResponsiveState(page, "invalid magic link");
 
   await openLocalMagicLink(page, memberEmail, runId);
   await expect(
@@ -100,11 +143,30 @@ test("mobile member and administrator journey stays responsive and private offli
   await expect(page).toHaveURL(/\/onboarding\/identity$/);
   await waitForProductHydration(page);
   await auditResponsiveState(page, "onboarding identity");
+  await page.route(
+    "**/api/onboarding/identity",
+    async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Your session expired." }),
+      });
+    },
+    { times: 1 },
+  );
   await page.getByLabel("Which best describes you?").selectOption("startup");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("link", { name: "Sign in" })).toBeVisible();
+  await auditResponsiveState(page, "expired session alert");
   await page.getByRole("button", { name: "Continue" }).click();
 
   await expect(page).toHaveURL(/\/onboarding\/source$/);
   await waitForProductHydration(page);
+  expect(memberErrors).toEqual([
+    "Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+  ]);
+  memberErrors.length = 0;
   await auditResponsiveState(page, "onboarding source");
   await page.getByLabel("Website").fill(`https://${websiteHost}`);
   await page.getByRole("button", { name: "Build my profile" }).click();
@@ -383,6 +445,7 @@ async function provePublicOnlyOfflineBoundary(
         "/api/",
         "/auth/",
         "/dashboard",
+        "/apply",
         "/join",
         "/login",
         "/onboarding/",
@@ -430,6 +493,18 @@ async function provePublicOnlyOfflineBoundary(
   await expect(page.getByText("Curated for this moment")).toHaveCount(0);
   await expect(page.getByText("Profiles awaiting review.")).toHaveCount(0);
   await auditResponsiveState(page, "offline member fallback");
+
+  await page.goto(`${PWA_BASE_URL}/apply`);
+  await expect(
+    page.getByRole("heading", {
+      name: "Get online to see your partnerships.",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Put Mewtuals on your company’s side." }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel("Company URL")).toHaveCount(0);
+  await auditResponsiveState(page, "offline application fallback");
 
   // The built Vinext server proves the public PWA boundary above. Authenticated
   // local Postgres RSC routes are exercised on the development server below.

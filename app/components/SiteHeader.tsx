@@ -2,19 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const links = [
-  { href: "#how-it-works", label: "How it works" },
-  { href: "#for-startups", label: "For startups" },
-  { href: "#about", label: "About" },
-  { href: "#apply", label: "Apply" },
-  { href: "/join", label: "For creators", productEntry: true },
-  { href: "/join", label: "Join Mewtuals", primary: true },
-  { href: "/login", label: "Log in", productEntry: true },
-] as const;
+function navigationLinks(anchorBase: "" | "/") {
+  return [
+    { href: `${anchorBase}#how-it-works`, label: "How it works" },
+    { href: `${anchorBase}#for-startups`, label: "For startups" },
+    { href: "/join", label: "For creators", productEntry: true },
+    { href: "/join", label: "Join Mewtuals", primary: true },
+    { href: "/login", label: "Log in", productEntry: true },
+  ] as const;
+}
 
-export function SiteHeader() {
+export function SiteHeader({ anchorBase = "" }: { anchorBase?: "" | "/" }) {
   const [isOpen, setIsOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
+  const links = navigationLinks(anchorBase);
 
   useEffect(() => {
     if (!isOpen) return;

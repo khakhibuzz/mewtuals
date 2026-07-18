@@ -9,26 +9,25 @@ import { SiteHeader } from "../app/components/SiteHeader";
 const navigation = [
   ["How it works", "#how-it-works"],
   ["For startups", "#for-startups"],
-  ["About", "#about"],
-  ["Apply", "#apply"],
   ["For creators", "/join"],
   ["Join Mewtuals", "/join"],
   ["Log in", "/login"],
 ] as const;
 
 describe("SiteHeader", () => {
-  it("keeps the intentional page sections and adds product entry points", () => {
+  it("renders exactly the five approved landing destinations in order", () => {
     render(<SiteHeader />);
 
     const header = within(screen.getByRole("banner"));
-    expect(header.getAllByRole("link")).toHaveLength(navigation.length);
+    const links = header.getAllByRole("link");
+    expect(links).toHaveLength(navigation.length);
 
-    for (const [label, href] of navigation) {
-      expect(header.getByRole("link", { name: label })).toHaveAttribute(
-        "href",
-        href,
-      );
-    }
+    navigation.forEach(([label, href], index) => {
+      expect(links[index]).toHaveAccessibleName(label);
+      expect(links[index]).toHaveAttribute("href", href);
+    });
+    expect(header.queryByRole("link", { name: "About" })).not.toBeInTheDocument();
+    expect(header.queryByRole("link", { name: "Apply" })).not.toBeInTheDocument();
   });
 
   it("opens the compact menu and closes it after a destination is chosen", async () => {
@@ -58,6 +57,17 @@ describe("SiteHeader", () => {
     expect(menu).toHaveAttribute("aria-expanded", "false");
     expect(menu).toHaveFocus();
   });
+
+  it("prefixes landing fragments when the header is rendered off the homepage", () => {
+    render(<SiteHeader anchorBase="/" />);
+
+    expect(
+      screen.getByRole("link", { name: "How it works" }),
+    ).toHaveAttribute("href", "/#how-it-works");
+    expect(
+      screen.getByRole("link", { name: "For startups" }),
+    ).toHaveAttribute("href", "/#for-startups");
+  });
 });
 
 describe("landing product entry points", () => {
@@ -73,13 +83,33 @@ describe("landing product entry points", () => {
     );
   });
 
-  it("offers startups a restrained route into the working join flow", () => {
+  it("merges the startup positioning with the two-part partnership map", () => {
     render(<ForStartups />);
 
+    expect(
+      screen.getByRole("heading", {
+        name: "Built for companies that move at internet speed.",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByText("Less corporate theatre. More useful movement."),
+    ).toBeVisible();
     expect(screen.getByRole("link", { name: "Join Mewtuals" })).toHaveAttribute(
       "href",
       "/join",
     );
+    const comparison = screen.getByLabelText(
+      "How Mewtuals changes the business map",
+    );
+    expect(within(comparison).getByText("The usual map")).toBeVisible();
+    expect(
+      within(comparison).getByText("Who are you competing with?"),
+    ).toBeVisible();
+    expect(within(comparison).getByText("The Mewtuals map")).toBeVisible();
+    expect(
+      within(comparison).getByText("What becomes possible together?"),
+    ).toBeVisible();
+    expect(screen.queryByText("Vision in motion")).not.toBeInTheDocument();
   });
 
   it("continues a qualified prototype application into the join flow", async () => {

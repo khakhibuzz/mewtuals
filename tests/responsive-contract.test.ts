@@ -59,12 +59,20 @@ describe("public landing mobile responsive contract", () => {
     expectRule(mobile, ".execution-list", ["grid-template-columns: 1fr"]);
     expectRule(mobile, ".dialog-equation", ["flex-wrap: wrap"]);
 
-    expectRule(mobile, ".startup-stages", ["overflow-x: auto", "scroll-snap-type: x mandatory"]);
     expectRule(mobile, ".about-comparison", ["grid-template-columns: 1fr"]);
     expectRule(mobile, ".apply-section", ["grid-template-columns: 1fr"]);
     expectRule(mobile, ".application-form .primary-button", ["width: 100%"]);
     expectRule(mobile, ".offline-actions", ["flex-direction: column"]);
     expectRule(mobile, ".offline-actions > *", ["width: 100%", "min-height: 44px"]);
+
+    for (const obsoleteSelector of [
+      ".startup-stages",
+      ".about-section",
+      ".about-layout",
+      ".about-copy",
+    ]) {
+      expect(css).not.toContain(obsoleteSelector);
+    }
   });
 });
 

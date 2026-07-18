@@ -19,13 +19,19 @@ export function ForStartups() {
           </a>
         </div>
       </div>
-      <ol aria-label="A startup’s changing needs" className="startup-stages">
-        <li><span>01</span>Idea</li>
-        <li><span>02</span>Product</li>
-        <li><span>03</span>Customers</li>
-        <li><span>04</span>Next constraint</li>
-        <li><span>05</span>Vision in motion</li>
-      </ol>
+      <div
+        aria-label="How Mewtuals changes the business map"
+        className="about-comparison"
+      >
+        <div>
+          <span>The usual map</span>
+          <strong>Who are you competing with?</strong>
+        </div>
+        <div>
+          <span>The Mewtuals map</span>
+          <strong>What becomes possible together?</strong>
+        </div>
+      </div>
     </section>
   );
 }

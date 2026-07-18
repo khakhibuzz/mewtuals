@@ -12,8 +12,10 @@ Product v1 supports four directions:
 - creator ↔ creator
 - startup ↔ distribution partner
 
-The public landing page remains available without an account. The member flow
-starts at `/join`; returning members use `/login`.
+The public landing page remains available without an account. The standalone
+application form is directly shareable at `/apply` but intentionally absent
+from the landing-page navigation. The member flow starts at `/join`; returning
+members use `/login`.
 
 ## Local setup
 
@@ -76,9 +78,10 @@ an in-page prompt.
 
 Offline support is deliberately public-only. The landing page and its approved
 static assets remain usable after the service worker finishes installing. Every
-member, onboarding, administrator, and transactional route remains network-only
-and falls back to `Get online to see your partnerships.` No API response,
-profile, partnership, or account data is stored for offline use.
+member, onboarding, administrator, and transactional route—including
+`/apply`—remains network-only and falls back to
+`Get online to see your partnerships.` No API response, profile, partnership,
+or account data is stored for offline use.
 
 Validate install and offline behavior against a built origin, not development
 behavior alone:
