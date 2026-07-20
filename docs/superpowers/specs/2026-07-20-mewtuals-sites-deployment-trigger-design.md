@@ -104,10 +104,11 @@ the branch moved. The GitHub repository is never force-pushed.
 A source rollback does not roll back Sites environment values or secrets,
 D1/R2 state, PostgreSQL schema or data, email configuration, or any other
 external dependency. Before publishing a non-fast-forward target, Codex must
-show that limitation, compare the target's migration inventory and hosting
-bindings with the currently live source, and obtain explicit rollback
-confirmation. A difference that cannot be shown compatible blocks the publish;
-the script still may prepare the commit for inspection.
+show that limitation, identify and fetch the currently deployed version's exact
+commit, compare the target's migration inventory and hosting bindings with that
+live commit, and obtain explicit rollback confirmation. If the live commit
+cannot be verified, or a difference cannot be shown compatible, the publish is
+blocked; the script still may prepare the commit for inspection.
 
 ## Failure behavior
 

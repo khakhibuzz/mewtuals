@@ -298,5 +298,51 @@ The deployment order is:
 6. verify the admin review flow and one member signal/pick flow;
 7. confirm logs and database records contain no plaintext credentials.
 
+### Exact-commit Sites release
+
+Prepare a release request from the latest local commit, a tag/branch, or a full
+SHA:
+
+```bash
+npm run prepare:sites
+npm run prepare:sites -- website-v3
+npm run prepare:sites -- <full-sha>
+```
+
+Preparation checks out only the resolved commit in an isolated worktree, runs
+the locked install and release gates, and writes an ignored archive plus
+`request.json`. Dirty files are excluded. The command never publishes. Trigger
+the authenticated step by asking Codex `Deploy Mewtuals` or
+`Deploy Mewtuals at <commit-ish>`.
+
+The publisher must:
+
+1. reuse Sites project `appgprj_6a56979ca26c8191b26abf2a5cd9dc51`;
+2. require the request SHA to exist, the archive to be a regular non-symlinked
+   file, and a recomputed SHA-256 to equal `request.json`;
+3. request a short-lived Sites source credential, use only its returned remote
+   and branch, never persist it, and verify that branch's remote head equals the
+   target SHA after pushing;
+4. save one version, then pass the public-deploy authorization gate—approval in
+   an earlier task is not reusable—and poll the deployment to a terminal state;
+5. require the active deployment to reference the newly saved version and
+   target SHA;
+6. require active routing and SSL plus HTTP 200 from both
+   `https://mewtuals.com` and `https://www.mewtuals.com`, then verify `/apply`
+   includes the release-specific text `Put Mewtuals on your company’s side.`;
+7. record that the GitHub commit, Sites source head, saved Sites version, and
+   production deployment all identify the same target SHA.
+
+An older target is an application-source rollback only. It does not roll back
+Sites environment values or secrets, PostgreSQL schema/data, D1/R2 state, email
+configuration, or other external dependencies. Before a non-fast-forward
+publish, read the connector-reported live version, obtain and fetch its exact
+commit, and compare its complete `drizzle/` path and blob-hash inventories plus
+hosting bindings with the rollback target. Block the release if that live
+commit is unknown or compatibility cannot be shown, and obtain explicit
+rollback confirmation. `--force-with-lease` is allowed only for the
+credential-returned Sites source branch using its observed SHA; never
+force-push the GitHub repository.
+
 Google OAuth is not a launch dependency for product v1. Its two placeholders
 exist only to make the deferred integration explicit.

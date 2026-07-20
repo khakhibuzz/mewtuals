@@ -106,6 +106,24 @@ npm run lint
 npm run build
 ```
 
+## Sites deployment preparation
+
+Prepare the latest local commit, a named release, or an exact commit:
+
+```bash
+npm run prepare:sites
+npm run prepare:sites -- website-v3
+npm run prepare:sites -- <full-sha>
+```
+
+The command validates, builds, and packages that exact committed source into an
+ignored request artifact. It never publishes or includes uncommitted files.
+Ask Codex `Deploy Mewtuals` or `Deploy Mewtuals at <commit-ish>` to perform the
+separate authenticated Sites release. Codex must reuse the existing Sites
+project, verify the archive digest and Sites source head, obtain authorization
+before a public deploy when the active request does not already provide it, and
+verify both `https://mewtuals.com` and `https://www.mewtuals.com` afterward.
+
 `test:acceptance` runs the complete durable member journey against PostgreSQL:
 magic-link confirmation, onboarding, pending verification, local approval,
 signals, curated picks, idempotent advancement, persistence, logout/re-login,

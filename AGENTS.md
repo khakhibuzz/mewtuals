@@ -54,6 +54,17 @@ individual features. Product requirements and implementation history belong in
 
 ## Verification and local artifacts
 
+Sites releases must reuse project
+`appgprj_6a56979ca26c8191b26abf2a5cd9dc51`. Prepare an exact committed target
+with `npm run prepare:sites -- [commit-ish]`; the command never publishes and
+never includes dirty files. The authenticated publisher must validate the
+generated request and digest, prove the credential-returned Sites source branch
+points at the target SHA, obtain any required public-deploy authorization, and
+verify active routing, SSL, and HTTP 200 for both `mewtuals.com` and
+`www.mewtuals.com`. Never persist Sites source credentials. A rollback may use
+`--force-with-lease` only on the credential-returned Sites source branch after
+an exact live-commit compatibility check; never force-push GitHub.
+
 Run the proportionate focused test while editing, then use the complete release
 gate before delivery:
 
