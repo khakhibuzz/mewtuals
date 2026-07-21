@@ -642,6 +642,12 @@ describe("discovery URL normalization", () => {
     "http://240.0.0.1/profile",
     "http://[64:ff9b:1::1]/profile",
     "http://[::ffff:0:7f00:1]/profile",
+    "http://[100::1]/profile",
+    "http://[100:0:0:1::1]/profile",
+    "http://[2001:20::1]/profile",
+    "http://[2002:7f00:1::]/profile",
+    "http://[3fff::1]/profile",
+    "http://[5f00::1]/profile",
     "http://[2001:db8::1]/profile",
     "http://[fc00::1]/profile",
     "http://[fe80::1]/profile",
@@ -652,10 +658,17 @@ describe("discovery URL normalization", () => {
     );
   });
 
-  it("accepts a globally routable IPv6 literal", () => {
-    expect(normalizeDiscoveryUrl("https://[2606:4700:4700::1111]/profile")).toBe(
-      "https://[2606:4700:4700::1111]/profile",
-    );
+  it.each([
+    "https://[64:ff9b::1]/profile",
+    "https://[2001:1::1]/profile",
+    "https://[2001:1::2]/profile",
+    "https://[2001:1::3]/profile",
+    "https://[2001:3::1]/profile",
+    "https://[2001:4:112::1]/profile",
+    "https://[2001:30::1]/profile",
+    "https://[2606:4700:4700::1111]/profile",
+  ])("accepts globally reachable IPv6 literal %s", (value) => {
+    expect(normalizeDiscoveryUrl(value)).toBe(value);
   });
 
   it("rejects search-result canonical URLs", () => {

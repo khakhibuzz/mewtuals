@@ -378,19 +378,32 @@ type Ipv6Cidr = {
   prefixLength: number;
 };
 
+// IANA IPv6 Special-Purpose Address Space registry, updated 2025-10-09:
+// https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml
+const globallyReachableIpv6Cidrs: readonly Ipv6Cidr[] = [
+  { network: "64:ff9b::", prefixLength: 96 },
+  { network: "2001:1::1", prefixLength: 128 },
+  { network: "2001:1::2", prefixLength: 128 },
+  { network: "2001:1::3", prefixLength: 128 },
+  { network: "2001:3::", prefixLength: 32 },
+  { network: "2001:4:112::", prefixLength: 48 },
+  { network: "2001:30::", prefixLength: 28 },
+];
+
 const nonGlobalIpv6Cidrs: readonly Ipv6Cidr[] = [
   { network: "::", prefixLength: 128 },
   { network: "::1", prefixLength: 128 },
   { network: "::", prefixLength: 96 },
   { network: "::ffff:0:0", prefixLength: 96 },
   { network: "::ffff:0:0:0", prefixLength: 96 },
-  { network: "64:ff9b::", prefixLength: 96 },
   { network: "64:ff9b:1::", prefixLength: 48 },
   { network: "100::", prefixLength: 64 },
-  { network: "2001:2::", prefixLength: 48 },
+  { network: "100:0:0:1::", prefixLength: 64 },
+  { network: "2001::", prefixLength: 23 },
   { network: "2001:db8::", prefixLength: 32 },
-  { network: "2001:10::", prefixLength: 28 },
-  { network: "2001:20::", prefixLength: 28 },
+  { network: "2002::", prefixLength: 16 },
+  { network: "3fff::", prefixLength: 20 },
+  { network: "5f00::", prefixLength: 16 },
   { network: "fc00::", prefixLength: 7 },
   { network: "fe80::", prefixLength: 10 },
   { network: "fec0::", prefixLength: 10 },
@@ -408,6 +421,13 @@ function isIpv6WithinCidr(address: string, cidr: Ipv6Cidr): boolean {
 
 function isNonGlobalIpv6(hostname: string): boolean {
   const address = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (
+    globallyReachableIpv6Cidrs.some((cidr) =>
+      isIpv6WithinCidr(address, cidr),
+    )
+  ) {
+    return false;
+  }
   return nonGlobalIpv6Cidrs.some((cidr) => isIpv6WithinCidr(address, cidr));
 }
 
