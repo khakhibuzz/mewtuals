@@ -352,11 +352,19 @@ function isArticleOnlyUrl(url: URL): boolean {
     "articles",
     "blog",
     "news",
+    "post",
+    "posts",
     "story",
   ]);
   const datedArticlePath = /^\/\d{4}\/\d{1,2}\/\d{1,2}\/.+/.test(url.pathname);
+  const mediumArticlePath =
+    url.hostname === "medium.com" &&
+    segments.length > 1 &&
+    segments[0]?.startsWith("@");
   return (
-    datedArticlePath || segments.some((segment) => articleSegments.has(segment))
+    datedArticlePath ||
+    mediumArticlePath ||
+    segments.some((segment) => articleSegments.has(segment))
   );
 }
 

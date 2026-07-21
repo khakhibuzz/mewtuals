@@ -583,4 +583,24 @@ describe("discovery URL normalization", () => {
       ),
     ).toThrow("Canonical URL must identify a stable public profile.");
   });
+
+  it("accepts Medium profiles but rejects Medium article canonicals", () => {
+    expect(normalizeDiscoveryUrl("https://medium.com/@writer")).toBe(
+      "https://medium.com/@writer",
+    );
+    expect(() =>
+      normalizeDiscoveryUrl("https://medium.com/@writer/article-slug"),
+    ).toThrow("Canonical URL must identify a stable public profile.");
+  });
+
+  it("rejects post path segments as article-only canonicals", () => {
+    for (const value of [
+      "https://example.com/post/article-slug",
+      "https://example.com/posts/article-slug",
+    ]) {
+      expect(() => normalizeDiscoveryUrl(value)).toThrow(
+        "Canonical URL must identify a stable public profile.",
+      );
+    }
+  });
 });
