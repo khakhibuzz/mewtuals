@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export type EnvironmentSource = Readonly<Record<string, string | undefined>>;
+
 const optionalTrimmedString = z.preprocess(
   (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
   z.string().trim().min(1).optional(),
@@ -51,7 +53,7 @@ export type ServerEnvironment = {
 };
 
 export function readServerEnvironment(
-  source: NodeJS.ProcessEnv = process.env,
+  source: EnvironmentSource = process.env,
 ): ServerEnvironment {
   const result = serverEnvironmentSchema.safeParse(source);
   if (!result.success) {
