@@ -286,7 +286,7 @@ describe("discovery candidate identity", () => {
     const identifiers = candidateIdentifiers({
       ...candidate({
         canonicalUrl: "https://www.signal-studio.com/About",
-        websiteUrl: null,
+        websiteUrl: "https://signal-studio.com",
       }),
       type: "company",
       rawMetadata: {},
@@ -323,6 +323,52 @@ describe("discovery candidate identity", () => {
         value: "https://linkedin.com/in/signal-studio",
       },
       { kind: "website_host", value: "signal-studio.com" },
+    ]);
+  });
+
+  it("ranks LinkedIn before a creator canonical that shares the website host", () => {
+    const identifiers = candidateIdentifiers({
+      ...candidate({
+        type: "creator",
+        canonicalUrl: "https://adabuilds.in/about",
+        primarySocialUrl: null,
+        linkedinUrl: "https://linkedin.com/in/ada-builds",
+        websiteUrl: "https://www.adabuilds.in/work",
+      }),
+      type: "creator",
+      rawMetadata: {},
+    });
+
+    expect(identifiers).toEqual([
+      {
+        kind: "linkedin_url",
+        value: "https://linkedin.com/in/ada-builds",
+      },
+      { kind: "website_host", value: "adabuilds.in" },
+    ]);
+  });
+
+  it("ranks LinkedIn before a company non-root canonical directory profile", () => {
+    const identifiers = candidateIdentifiers({
+      ...candidate({
+        canonicalUrl: "https://producthunt.com/products/signal-studio",
+        websiteUrl: null,
+        primarySocialUrl: null,
+        linkedinUrl: "https://linkedin.com/company/signal-studio",
+      }),
+      type: "company",
+      rawMetadata: {},
+    });
+
+    expect(identifiers).toEqual([
+      {
+        kind: "linkedin_url",
+        value: "https://linkedin.com/company/signal-studio",
+      },
+      {
+        kind: "canonical",
+        value: "https://producthunt.com/products/signal-studio",
+      },
     ]);
   });
 });

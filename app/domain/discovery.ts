@@ -431,33 +431,20 @@ const socialHosts = new Set([
 ]);
 
 function canonicalIdentifier(
-  type: DiscoveryCandidateInput["type"],
   canonicalUrl: string,
+  websiteUrl: string | null | undefined,
 ): CandidateIdentifier {
   const value = normalizeDiscoveryUrl(canonicalUrl);
   const url = new URL(value);
   const host = url.hostname;
-  const firstPathSegment = url.pathname
-    .split("/")
-    .filter(Boolean)[0]
-    ?.toLowerCase();
+  const websiteHost = websiteUrl
+    ? new URL(normalizeDiscoveryUrl(websiteUrl)).hostname
+    : null;
 
   if (host === "linkedin.com") return { kind: "linkedin_url", value };
   if (socialHosts.has(host)) return { kind: "social_url", value };
-  if (
-    [
-      "companies",
-      "company",
-      "creators",
-      "organisation",
-      "organization",
-      "people",
-      "profile",
-    ].includes(firstPathSegment ?? "")
-  ) {
-    return { kind: "canonical", value };
-  }
-  if (type === "creator") return { kind: "canonical", value };
+  if (host === websiteHost) return { kind: "website_host", value: host };
+  if (url.pathname !== "/") return { kind: "canonical", value };
   return { kind: "website_host", value: host };
 }
 
@@ -489,7 +476,7 @@ export function candidateIdentifiers(
           },
         ]
       : []),
-    canonicalIdentifier(input.type, input.canonicalUrl),
+    canonicalIdentifier(input.canonicalUrl, input.websiteUrl),
   ];
   const priority =
     input.type === "company"
