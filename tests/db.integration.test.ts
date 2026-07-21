@@ -16,11 +16,16 @@ import { closeDb, getDb, type MewtualsDatabase } from "../db/client";
 import { createAuthRepository } from "../db/repositories/auth-repository";
 import { createOnboardingRepository } from "../db/repositories/onboarding-repository";
 import { createOpportunityRepository } from "../db/repositories/opportunity-repository";
+import { createDiscoveryRepository } from "../db/repositories/discovery-repository";
 import { createVerificationRepository } from "../db/repositories/verification-repository";
 import { opportunitySeedData } from "../db/seed-data";
 import * as databaseSchema from "../db/schema";
 import {
   magicLinks,
+  discoveryCandidateIdentifiers,
+  discoveryCandidates,
+  discoveryCandidateSources,
+  discoveryRuns,
   onboardingDrafts,
   opportunities,
   profileOpportunities,
@@ -137,7 +142,15 @@ async function waitForLockWaiters(
   );
 }
 
+async function cleanDiscoveryRows() {
+  await db.delete(discoveryCandidateSources);
+  await db.delete(discoveryCandidateIdentifiers);
+  await db.delete(discoveryCandidates);
+  await db.delete(discoveryRuns);
+}
+
 async function cleanTestRows() {
+  await cleanDiscoveryRows();
   await db.delete(magicLinks).where(like(magicLinks.email, `${emailPrefix}%`));
   await db.delete(users).where(like(users.email, `${emailPrefix}%`));
 }
@@ -1538,5 +1551,938 @@ describe("PostgreSQL authentication repository", () => {
     } finally {
       await closeIndependentDatabases(connections);
     }
+  });
+
+  it("queues discovery runs idempotently by external key", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const input = {
+      externalRunKey: `discovery-queue-${testRun}`,
+      trigger: "manual" as const,
+      now: new Date("2026-07-22T03:00:00.000Z"),
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+      requestedByEmail: "admin@mewtuals.com",
+    };
+
+    const first = await discoveryRepository.queueRun(input);
+    const replay = await discoveryRepository.queueRun(input);
+
+    expect(replay).toEqual(first);
+    expect(first).toMatchObject({
+      externalRunKey: input.externalRunKey,
+      status: "queued",
+      requestedCount: 20,
+    });
+    expect(
+      await db
+        .select()
+        .from(discoveryRuns)
+        .where(eq(discoveryRuns.externalRunKey, input.externalRunKey)),
+    ).toHaveLength(1);
+  });
+
+  it("claims the oldest manual discovery run and refuses a second active lease", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const baseInput = {
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    };
+    const scheduled = await discoveryRepository.queueRun({
+      ...baseInput,
+      externalRunKey: `discovery-claim-scheduled-${testRun}`,
+      trigger: "scheduled",
+      now: new Date("2026-07-22T03:00:00.000Z"),
+    });
+    const manual = await discoveryRepository.queueRun({
+      ...baseInput,
+      externalRunKey: `discovery-claim-manual-${testRun}`,
+      trigger: "manual",
+      now: new Date("2026-07-22T03:01:00.000Z"),
+    });
+
+    const claimed = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T03:02:00.000Z"),
+      leaseTokenHash: "lease-hash-claim",
+      leaseExpiresAt: new Date("2026-07-22T05:02:00.000Z"),
+    });
+    const noWork = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T03:03:00.000Z"),
+      leaseTokenHash: "lease-hash-second",
+      leaseExpiresAt: new Date("2026-07-22T05:03:00.000Z"),
+    });
+
+    expect(claimed).toMatchObject({ id: manual.id, status: "running" });
+    expect(noWork).toBeNull();
+    expect(
+      await db.select().from(discoveryRuns).where(eq(discoveryRuns.id, scheduled.id)),
+    ).toMatchObject([{ status: "queued" }]);
+  });
+
+  it("completes a leased discovery run with one new candidate and its evidence", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    await discoveryRepository.queueRun({
+      externalRunKey: `discovery-complete-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T04:00:00.000Z"),
+      geography: "India",
+      candidateType: "both",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    });
+    const run = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T04:01:00.000Z"),
+      leaseTokenHash: "lease-hash-complete",
+      leaseExpiresAt: new Date("2026-07-22T06:01:00.000Z"),
+    });
+    expect(run).not.toBeNull();
+
+    const result = await discoveryRepository.completeRun({
+      runId: run!.id,
+      leaseTokenHash: "lease-hash-complete",
+      submissionHash: "submission-hash-complete",
+      now: new Date("2026-07-22T04:02:00.000Z"),
+      candidates: [
+        {
+          type: "company",
+          name: "Acme India",
+          canonicalUrl: "https://acme.example.com",
+          websiteUrl: "https://acme.example.com",
+          primarySocialUrl: null,
+          linkedinUrl: "https://linkedin.com/company/acme-india",
+          discoveredDescription: "An evidence-supported company candidate.",
+          category: "technology",
+          subcategory: "software",
+          geography: "India",
+          sourceName: "codex_web",
+          sourceUrl: "https://directory.example.com/acme-india",
+          discoveryScore: 82,
+          rawMetadata: { result: 1 },
+        },
+      ],
+      sourceErrors: [],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "completed",
+      run: {
+        status: "succeeded",
+        foundCount: 1,
+        newCount: 1,
+        duplicateCount: 0,
+      },
+    });
+    const storedCandidates = await db.select().from(discoveryCandidates);
+    expect(storedCandidates).toHaveLength(1);
+    expect(storedCandidates[0]).toMatchObject({
+      name: "Acme India",
+      canonicalIdentityKey: "website_host:acme.example.com",
+      discoveryScore: 82,
+      status: "discovered",
+    });
+    expect(await db.select().from(discoveryCandidateIdentifiers)).toHaveLength(2);
+    expect(await db.select().from(discoveryCandidateSources)).toMatchObject([
+      { candidateId: storedCandidates[0]!.id, sourceName: "codex_web" },
+    ]);
+  });
+
+  it("deduplicates by stored aliases while preserving status and upgrading stronger identity", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const queueAndClaim = async (suffix: string, minute: number, leaseHash: string) => {
+      await discoveryRepository.queueRun({
+        externalRunKey: `discovery-dedupe-${suffix}-${testRun}`,
+        trigger: "trial",
+        now: new Date(`2026-07-22T05:${String(minute).padStart(2, "0")}:00.000Z`),
+        geography: "India",
+        candidateType: "company",
+        sourcesUsed: ["codex_web"],
+        requestedCount: 10,
+        companyPercentage: 100,
+      });
+      return discoveryRepository.claimRun({
+        now: new Date(`2026-07-22T05:${String(minute + 1).padStart(2, "0")}:00.000Z`),
+        leaseTokenHash: leaseHash,
+        leaseExpiresAt: new Date("2026-07-22T07:00:00.000Z"),
+      });
+    };
+    const firstRun = await queueAndClaim("first", 0, "dedupe-first-lease");
+    expect(firstRun).not.toBeNull();
+    await discoveryRepository.completeRun({
+      runId: firstRun!.id,
+      leaseTokenHash: "dedupe-first-lease",
+      submissionHash: "dedupe-first-submission",
+      now: new Date("2026-07-22T05:02:00.000Z"),
+      candidates: [
+        {
+          type: "company",
+          name: "Alias Labs",
+          canonicalUrl: "https://linkedin.com/company/alias-labs",
+          websiteUrl: null,
+          primarySocialUrl: null,
+          linkedinUrl: "https://linkedin.com/company/alias-labs",
+          discoveredDescription: "Initial directory evidence.",
+          category: "technology",
+          subcategory: null,
+          geography: "India",
+          sourceName: "directory_one",
+          sourceUrl: "https://directory.example.com/alias-labs",
+          discoveryScore: 70,
+          rawMetadata: { source: 1 },
+        },
+      ],
+      sourceErrors: [],
+    });
+    const [initial] = await db.select().from(discoveryCandidates);
+    expect(initial).toBeDefined();
+    await db
+      .update(discoveryCandidates)
+      .set({ status: "shortlisted" })
+      .where(eq(discoveryCandidates.id, initial!.id));
+
+    const secondRun = await queueAndClaim("second", 3, "dedupe-second-lease");
+    expect(secondRun).not.toBeNull();
+    const result = await discoveryRepository.completeRun({
+      runId: secondRun!.id,
+      leaseTokenHash: "dedupe-second-lease",
+      submissionHash: "dedupe-second-submission",
+      now: new Date("2026-07-22T05:05:00.000Z"),
+      candidates: [
+        {
+          type: "company",
+          name: "Alias Labs India",
+          canonicalUrl: "https://aliaslabs.example.com",
+          websiteUrl: "https://aliaslabs.example.com",
+          primarySocialUrl: "https://instagram.com/aliaslabs",
+          linkedinUrl: "https://linkedin.com/company/alias-labs",
+          discoveredDescription: "Official website and social evidence.",
+          category: "AI",
+          subcategory: "agents",
+          geography: "India",
+          sourceName: "directory_two",
+          sourceUrl: "https://another.example.com/alias-labs",
+          discoveryScore: 91,
+          rawMetadata: { source: 2 },
+        },
+      ],
+      sourceErrors: [],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "completed",
+      run: { foundCount: 1, newCount: 0, duplicateCount: 1 },
+    });
+    expect(await db.select().from(discoveryCandidates)).toMatchObject([
+      {
+        id: initial!.id,
+        canonicalIdentityKey:
+          "linkedin_url:https://linkedin.com/company/alias-labs",
+        canonicalUrl: "https://aliaslabs.example.com",
+        websiteUrl: "https://aliaslabs.example.com",
+        status: "shortlisted",
+        discoveryScore: 91,
+        mostRecentRunId: secondRun!.id,
+      },
+    ]);
+    expect(await db.select().from(discoveryCandidateIdentifiers)).toHaveLength(3);
+    expect(await db.select().from(discoveryCandidateSources)).toHaveLength(2);
+  });
+
+  it("replays the exact discovery submission without writing twice", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    await discoveryRepository.queueRun({
+      externalRunKey: `discovery-replay-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T06:00:00.000Z"),
+      geography: "India",
+      candidateType: "creator",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 10,
+      companyPercentage: 0,
+    });
+    const run = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T06:01:00.000Z"),
+      leaseTokenHash: "replay-lease",
+      leaseExpiresAt: new Date("2026-07-22T08:00:00.000Z"),
+    });
+    expect(run).not.toBeNull();
+    const submission = {
+      runId: run!.id,
+      leaseTokenHash: "replay-lease",
+      submissionHash: "replay-submission",
+      candidates: [
+        {
+          type: "creator" as const,
+          name: "Replay Creator",
+          canonicalUrl: "https://youtube.com/@replaycreator",
+          websiteUrl: null,
+          primarySocialUrl: "https://youtube.com/@replaycreator",
+          linkedinUrl: null,
+          discoveredDescription: "A creator discovered once.",
+          category: "technology",
+          subcategory: null,
+          geography: "India",
+          sourceName: "codex_web",
+          sourceUrl: "https://youtube.com/@replaycreator/about",
+          discoveryScore: 76,
+          rawMetadata: {},
+        },
+      ],
+      sourceErrors: [],
+    };
+    const first = await discoveryRepository.completeRun({
+      ...submission,
+      now: new Date("2026-07-22T06:02:00.000Z"),
+    });
+    const replay = await discoveryRepository.completeRun({
+      ...submission,
+      now: new Date("2026-07-22T06:10:00.000Z"),
+    });
+    const changedReplay = await discoveryRepository.completeRun({
+      ...submission,
+      submissionHash: "changed-replay-submission",
+      now: new Date("2026-07-22T06:11:00.000Z"),
+    });
+
+    expect(first).toMatchObject({ outcome: "completed" });
+    expect(replay).toMatchObject({
+      outcome: "replayed",
+      run: { foundCount: 1, newCount: 1, duplicateCount: 0 },
+    });
+    expect(changedReplay).toMatchObject({
+      outcome: "conflict",
+      reason: "submission_mismatch",
+    });
+    expect(await db.select().from(discoveryCandidates)).toHaveLength(1);
+    expect(await db.select().from(discoveryCandidateSources)).toHaveLength(1);
+  });
+
+  it("fails a leased discovery run and safely replays the same failure", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    await discoveryRepository.queueRun({
+      externalRunKey: `discovery-fail-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T07:00:00.000Z"),
+      geography: "India",
+      candidateType: "both",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    });
+    const run = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T07:01:00.000Z"),
+      leaseTokenHash: "fail-lease",
+      leaseExpiresAt: new Date("2026-07-22T09:00:00.000Z"),
+    });
+    expect(run).not.toBeNull();
+
+    const failed = await discoveryRepository.failRun({
+      runId: run!.id,
+      leaseTokenHash: "fail-lease",
+      now: new Date("2026-07-22T07:02:00.000Z"),
+      message: "Provider returned no usable response.",
+    });
+    const replay = await discoveryRepository.failRun({
+      runId: run!.id,
+      leaseTokenHash: "fail-lease",
+      now: new Date("2026-07-22T07:03:00.000Z"),
+      message: "Provider returned no usable response.",
+    });
+
+    expect(failed).toMatchObject({
+      outcome: "failed",
+      run: {
+        status: "failed",
+        completedAt: new Date("2026-07-22T07:02:00.000Z"),
+        errorSummary: {
+          failure: {
+            code: "worker_failed",
+            message: "Provider returned no usable response.",
+          },
+        },
+      },
+    });
+    expect(replay).toMatchObject({ outcome: "replayed" });
+  });
+
+  it("updates candidate status optimistically and returns typed stale and missing outcomes", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const run = await discoveryRepository.queueRun({
+      externalRunKey: `discovery-status-${testRun}`,
+      trigger: "manual",
+      now: new Date("2026-07-22T08:00:00.000Z"),
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 10,
+      companyPercentage: 100,
+    });
+    const [candidate] = await db
+      .insert(discoveryCandidates)
+      .values({
+        type: "company",
+        name: "Status Labs",
+        normalizedName: "status labs",
+        canonicalIdentityKey: "website_host:status.example.com",
+        canonicalUrl: "https://status.example.com",
+        websiteUrl: "https://status.example.com",
+        discoveredDescription: "Status transition fixture.",
+        category: "technology",
+        geography: "India",
+        firstSourceName: "codex_web",
+        firstSourceUrl: "https://directory.example.com/status-labs",
+        discoveredAt: new Date("2026-07-22T08:00:00.000Z"),
+        lastSeenAt: new Date("2026-07-22T08:00:00.000Z"),
+        createdAt: new Date("2026-07-22T08:00:00.000Z"),
+        updatedAt: new Date("2026-07-22T08:00:00.000Z"),
+        mostRecentRunId: run.id,
+        discoveryScore: 80,
+      })
+      .returning();
+    expect(candidate).toBeDefined();
+
+    const updated = await discoveryRepository.updateCandidateStatus({
+      candidateId: candidate!.id,
+      status: "shortlisted",
+      expectedUpdatedAt: candidate!.updatedAt,
+      now: new Date("2026-07-22T08:01:00.000Z"),
+    });
+    const conflict = await discoveryRepository.updateCandidateStatus({
+      candidateId: candidate!.id,
+      status: "rejected",
+      expectedUpdatedAt: candidate!.updatedAt,
+      now: new Date("2026-07-22T08:02:00.000Z"),
+    });
+    const notFound = await discoveryRepository.updateCandidateStatus({
+      candidateId: randomUUID(),
+      status: "rejected",
+      expectedUpdatedAt: candidate!.updatedAt,
+      now: new Date("2026-07-22T08:02:00.000Z"),
+    });
+
+    expect(updated).toMatchObject({
+      outcome: "updated",
+      candidate: { status: "shortlisted" },
+    });
+    expect(conflict).toMatchObject({
+      outcome: "conflict",
+      candidate: { status: "shortlisted" },
+    });
+    expect(notFound).toEqual({ outcome: "not_found" });
+  });
+
+  it("returns a filtered discovery admin snapshot without secret hashes", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    await discoveryRepository.queueRun({
+      externalRunKey: `discovery-admin-${testRun}`,
+      trigger: "manual",
+      now: new Date("2026-07-22T09:00:00.000Z"),
+      geography: "India",
+      candidateType: "both",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 2,
+      companyPercentage: 50,
+      requestedByEmail: "admin@mewtuals.com",
+    });
+    const run = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T09:01:00.000Z"),
+      leaseTokenHash: "admin-secret-lease-hash",
+      leaseExpiresAt: new Date("2026-07-22T11:00:00.000Z"),
+    });
+    expect(run).not.toBeNull();
+    await discoveryRepository.completeRun({
+      runId: run!.id,
+      leaseTokenHash: "admin-secret-lease-hash",
+      submissionHash: "admin-secret-submission-hash",
+      now: new Date("2026-07-22T09:02:00.000Z"),
+      candidates: [
+        {
+          type: "company",
+          name: "Admin Company",
+          canonicalUrl: "https://admin-company.example.com",
+          websiteUrl: "https://admin-company.example.com",
+          primarySocialUrl: null,
+          linkedinUrl: null,
+          discoveredDescription: "Company for filtered admin view.",
+          category: "technology",
+          subcategory: null,
+          geography: "India",
+          sourceName: "source_a",
+          sourceUrl: "https://source.example.com/admin-company",
+          discoveryScore: 80,
+          rawMetadata: {},
+        },
+        {
+          type: "creator",
+          name: "Admin Creator",
+          canonicalUrl: "https://youtube.com/@admincreator",
+          websiteUrl: null,
+          primarySocialUrl: "https://youtube.com/@admincreator",
+          linkedinUrl: null,
+          discoveredDescription: "Creator for summary counts.",
+          category: "technology",
+          subcategory: null,
+          geography: "India",
+          sourceName: "source_b",
+          sourceUrl: "https://source.example.com/admin-creator",
+          discoveryScore: 75,
+          rawMetadata: {},
+        },
+      ],
+      sourceErrors: [],
+    });
+    const [company] = await db
+      .select()
+      .from(discoveryCandidates)
+      .where(eq(discoveryCandidates.type, "company"));
+    await discoveryRepository.updateCandidateStatus({
+      candidateId: company!.id,
+      status: "shortlisted",
+      expectedUpdatedAt: company!.updatedAt,
+      now: new Date("2026-07-22T09:03:00.000Z"),
+    });
+
+    const snapshot = await discoveryRepository.getAdminSummary({
+      type: "company",
+      geography: "India",
+      category: "technology",
+      source: "source_a",
+      status: "shortlisted",
+      discoveredFrom: new Date("2026-07-22T00:00:00.000Z"),
+      discoveredTo: new Date("2026-07-23T00:00:00.000Z"),
+      todayStart: new Date("2026-07-22T00:00:00.000Z"),
+      page: 1,
+      pageSize: 10,
+      runLimit: 10,
+    });
+
+    expect(snapshot.summary).toEqual({
+      totalCompanies: 1,
+      totalCreators: 1,
+      discoveredToday: 2,
+      latestRunStatus: "succeeded",
+      latestRunCompletedAt: new Date("2026-07-22T09:02:00.000Z"),
+      latestRunDuplicateCount: 0,
+    });
+    expect(snapshot.candidates).toMatchObject({
+      total: 1,
+      page: 1,
+      pageSize: 10,
+      items: [{ id: company!.id, status: "shortlisted" }],
+    });
+    expect(snapshot.runs).toHaveLength(1);
+    expect(snapshot.evidence).toMatchObject([
+      { candidateId: company!.id, sourceName: "source_a" },
+    ]);
+    expect(JSON.stringify(snapshot)).not.toContain("admin-secret-lease-hash");
+    expect(JSON.stringify(snapshot)).not.toContain("admin-secret-submission-hash");
+  });
+
+  it("allows only one concurrent discovery claimant without leaking the active-run race", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const queueInput = {
+      trigger: "trial" as const,
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    };
+    await discoveryRepository.queueRun({
+      ...queueInput,
+      externalRunKey: `discovery-race-one-${testRun}`,
+      now: new Date("2026-07-22T10:00:00.000Z"),
+    });
+    await discoveryRepository.queueRun({
+      ...queueInput,
+      externalRunKey: `discovery-race-two-${testRun}`,
+      now: new Date("2026-07-22T10:01:00.000Z"),
+    });
+    const connections = [
+      createIndependentDatabase(`discovery-claim-a-${testRun}`),
+      createIndependentDatabase(`discovery-claim-b-${testRun}`),
+    ];
+    try {
+      const results = await Promise.all(
+        connections.map(({ database }, index) =>
+          createDiscoveryRepository(database).claimRun({
+            now: new Date("2026-07-22T10:02:00.000Z"),
+            leaseTokenHash: `race-lease-${index}`,
+            leaseExpiresAt: new Date("2026-07-22T12:02:00.000Z"),
+          }),
+        ),
+      );
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(results.filter((result) => result === null)).toHaveLength(1);
+      const runs = await db
+        .select({ status: discoveryRuns.status })
+        .from(discoveryRuns)
+        .orderBy(discoveryRuns.createdAt);
+      expect(runs.map(({ status }) => status).sort()).toEqual([
+        "queued",
+        "running",
+      ]);
+    } finally {
+      await closeIndependentDatabases(connections);
+    }
+  });
+
+  it("records an identity conflict without merging candidates owned by different aliases", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const fixtureRun = await discoveryRepository.queueRun({
+      externalRunKey: `discovery-collision-fixture-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T11:00:00.000Z"),
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 2,
+      companyPercentage: 100,
+    });
+    await db
+      .update(discoveryRuns)
+      .set({
+        status: "succeeded",
+        completedAt: new Date("2026-07-22T11:01:00.000Z"),
+      })
+      .where(eq(discoveryRuns.id, fixtureRun.id));
+    const fixtureCandidates = await db
+      .insert(discoveryCandidates)
+      .values([
+        {
+          type: "company" as const,
+          name: "Collision A",
+          normalizedName: "collision a",
+          canonicalIdentityKey: "website_host:collision-a.example.com",
+          canonicalUrl: "https://collision-a.example.com",
+          websiteUrl: "https://collision-a.example.com",
+          discoveredDescription: "First collision owner.",
+          category: "technology",
+          geography: "India",
+          firstSourceName: "fixture",
+          firstSourceUrl: "https://directory.example.com/collision-a",
+          discoveredAt: new Date("2026-07-22T11:00:00.000Z"),
+          lastSeenAt: new Date("2026-07-22T11:00:00.000Z"),
+          mostRecentRunId: fixtureRun.id,
+          discoveryScore: 70,
+        },
+        {
+          type: "company" as const,
+          name: "Collision B",
+          normalizedName: "collision b",
+          canonicalIdentityKey:
+            "linkedin_url:https://linkedin.com/company/collision-b",
+          canonicalUrl: "https://linkedin.com/company/collision-b",
+          linkedinUrl: "https://linkedin.com/company/collision-b",
+          discoveredDescription: "Second collision owner.",
+          category: "technology",
+          geography: "India",
+          firstSourceName: "fixture",
+          firstSourceUrl: "https://directory.example.com/collision-b",
+          discoveredAt: new Date("2026-07-22T11:00:00.000Z"),
+          lastSeenAt: new Date("2026-07-22T11:00:00.000Z"),
+          mostRecentRunId: fixtureRun.id,
+          discoveryScore: 71,
+        },
+      ])
+      .returning();
+    await db.insert(discoveryCandidateIdentifiers).values([
+      {
+        candidateId: fixtureCandidates[0]!.id,
+        candidateType: "company",
+        kind: "website_host",
+        normalizedValue: "collision-a.example.com",
+      },
+      {
+        candidateId: fixtureCandidates[1]!.id,
+        candidateType: "company",
+        kind: "linkedin_url",
+        normalizedValue: "https://linkedin.com/company/collision-b",
+      },
+    ]);
+    await discoveryRepository.queueRun({
+      externalRunKey: `discovery-collision-target-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T11:02:00.000Z"),
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 100,
+    });
+    const targetRun = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T11:03:00.000Z"),
+      leaseTokenHash: "collision-lease",
+      leaseExpiresAt: new Date("2026-07-22T13:00:00.000Z"),
+    });
+    expect(targetRun).not.toBeNull();
+
+    const result = await discoveryRepository.completeRun({
+      runId: targetRun!.id,
+      leaseTokenHash: "collision-lease",
+      submissionHash: "collision-submission",
+      now: new Date("2026-07-22T11:04:00.000Z"),
+      candidates: [
+        {
+          type: "company",
+          name: "Unsafe Combined Identity",
+          canonicalUrl: "https://collision-a.example.com",
+          websiteUrl: "https://collision-a.example.com",
+          primarySocialUrl: null,
+          linkedinUrl: "https://linkedin.com/company/collision-b",
+          discoveredDescription: "Conflicting aliases must not merge.",
+          category: "technology",
+          subcategory: null,
+          geography: "India",
+          sourceName: "codex_web",
+          sourceUrl: "https://source.example.com/collision",
+          discoveryScore: 99,
+          rawMetadata: {},
+        },
+      ],
+      sourceErrors: [],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "completed",
+      run: {
+        status: "partial",
+        foundCount: 1,
+        newCount: 0,
+        duplicateCount: 0,
+        errorSummary: { identityConflicts: [expect.any(Object)] },
+      },
+    });
+    expect(await db.select().from(discoveryCandidates)).toHaveLength(2);
+    expect(await db.select().from(discoveryCandidateSources)).toHaveLength(0);
+  });
+
+  it("rolls back the whole discovery completion when a later candidate is invalid", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    await discoveryRepository.queueRun({
+      externalRunKey: `discovery-rollback-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T12:00:00.000Z"),
+      geography: "India",
+      candidateType: "both",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 2,
+      companyPercentage: 50,
+    });
+    const run = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T12:01:00.000Z"),
+      leaseTokenHash: "rollback-lease",
+      leaseExpiresAt: new Date("2026-07-22T14:00:00.000Z"),
+    });
+    expect(run).not.toBeNull();
+    const common = {
+      websiteUrl: null,
+      primarySocialUrl: null,
+      linkedinUrl: null,
+      discoveredDescription: "Transactional completion fixture.",
+      category: "technology",
+      subcategory: null,
+      geography: "India",
+      sourceName: "codex_web",
+      discoveryScore: 80,
+      rawMetadata: {},
+    };
+
+    await expect(
+      discoveryRepository.completeRun({
+        runId: run!.id,
+        leaseTokenHash: "rollback-lease",
+        submissionHash: "rollback-submission",
+        now: new Date("2026-07-22T12:02:00.000Z"),
+        candidates: [
+          {
+            ...common,
+            type: "company",
+            name: "Valid First Candidate",
+            canonicalUrl: "https://valid-first.example.com",
+            sourceUrl: "https://source.example.com/valid-first",
+          },
+          {
+            ...common,
+            type: "creator",
+            name: "Invalid Second Candidate",
+            canonicalUrl: "http://127.0.0.1/private",
+            sourceUrl: "https://source.example.com/invalid-second",
+          },
+        ],
+        sourceErrors: [],
+      }),
+    ).rejects.toThrow("public host");
+    expect(await db.select().from(discoveryCandidates)).toHaveLength(0);
+    expect(
+      await db.select().from(discoveryRuns).where(eq(discoveryRuns.id, run!.id)),
+    ).toMatchObject([{ status: "running", submissionHash: null }]);
+  });
+
+  it("fails an expired discovery lease before claiming the next queued run", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const base = {
+      trigger: "trial" as const,
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    };
+    const expiredRun = await discoveryRepository.queueRun({
+      ...base,
+      externalRunKey: `discovery-expired-${testRun}`,
+      now: new Date("2026-07-22T13:00:00.000Z"),
+    });
+    await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T13:01:00.000Z"),
+      leaseTokenHash: "expired-lease",
+      leaseExpiresAt: new Date("2026-07-22T13:02:00.000Z"),
+    });
+    const nextRun = await discoveryRepository.queueRun({
+      ...base,
+      externalRunKey: `discovery-after-expired-${testRun}`,
+      now: new Date("2026-07-22T13:02:30.000Z"),
+    });
+
+    const claimed = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T13:03:00.000Z"),
+      leaseTokenHash: "replacement-lease",
+      leaseExpiresAt: new Date("2026-07-22T15:03:00.000Z"),
+    });
+
+    expect(claimed).toMatchObject({ id: nextRun.id, status: "running" });
+    expect(
+      await db
+        .select()
+        .from(discoveryRuns)
+        .where(eq(discoveryRuns.id, expiredRun.id)),
+    ).toMatchObject([
+      {
+        status: "failed",
+        completedAt: new Date("2026-07-22T13:03:00.000Z"),
+        errorSummary: { failure: { code: "lease_expired" } },
+      },
+    ]);
+  });
+
+  it("marks a processed batch partial and bounds its source-error summary", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    await discoveryRepository.queueRun({
+      externalRunKey: `discovery-partial-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T14:00:00.000Z"),
+      geography: "India",
+      candidateType: "creator",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 0,
+    });
+    const run = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T14:01:00.000Z"),
+      leaseTokenHash: "partial-lease",
+      leaseExpiresAt: new Date("2026-07-22T16:00:00.000Z"),
+    });
+    expect(run).not.toBeNull();
+    const result = await discoveryRepository.completeRun({
+      runId: run!.id,
+      leaseTokenHash: "partial-lease",
+      submissionHash: "partial-submission",
+      now: new Date("2026-07-22T14:02:00.000Z"),
+      candidates: [
+        {
+          type: "creator",
+          name: "Partial Creator",
+          canonicalUrl: "https://youtube.com/@partialcreator",
+          websiteUrl: null,
+          primarySocialUrl: "https://youtube.com/@partialcreator",
+          linkedinUrl: null,
+          discoveredDescription: "Candidate retained despite one source error.",
+          category: "technology",
+          subcategory: null,
+          geography: "India",
+          sourceName: "working_source",
+          sourceUrl: "https://source.example.com/partial-creator",
+          discoveryScore: 73,
+          rawMetadata: {},
+        },
+      ],
+      sourceErrors: [
+        { sourceName: "failed_source", message: "x".repeat(1_500) },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "completed",
+      run: {
+        status: "partial",
+        foundCount: 1,
+        newCount: 1,
+        duplicateCount: 0,
+      },
+    });
+    if (result.outcome !== "completed") return;
+    const summary = result.run.errorSummary as {
+      sourceErrors: Array<{ sourceName: string; message: string }>;
+    };
+    expect(summary.sourceErrors[0]?.message).toHaveLength(1_000);
+  });
+
+  it("marks an empty completed discovery batch failed", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    await discoveryRepository.queueRun({
+      externalRunKey: `discovery-empty-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T15:00:00.000Z"),
+      geography: "India",
+      candidateType: "both",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    });
+    const run = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T15:01:00.000Z"),
+      leaseTokenHash: "empty-lease",
+      leaseExpiresAt: new Date("2026-07-22T17:00:00.000Z"),
+    });
+    expect(run).not.toBeNull();
+
+    const result = await discoveryRepository.completeRun({
+      runId: run!.id,
+      leaseTokenHash: "empty-lease",
+      submissionHash: "empty-submission",
+      now: new Date("2026-07-22T15:02:00.000Z"),
+      candidates: [],
+      sourceErrors: [],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "completed",
+      run: {
+        status: "failed",
+        foundCount: 0,
+        newCount: 0,
+        duplicateCount: 0,
+      },
+    });
   });
 });

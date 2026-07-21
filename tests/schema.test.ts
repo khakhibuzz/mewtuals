@@ -6,6 +6,16 @@ import { openToInterests } from "../app/domain/signal";
 import {
   availabilityEnum,
   creatorSubtypeEnum,
+  discoveryCandidates,
+  discoveryCandidateStatusEnum,
+  discoveryCandidateTypeEnum,
+  discoveryCandidateIdentifiers,
+  discoveryCandidateSources,
+  discoveryIdentifierKindEnum,
+  discoveryRuns,
+  discoveryRunCandidateTypeEnum,
+  discoveryRunStatusEnum,
+  discoveryRunTriggerEnum,
   identityKindEnum,
   introductionRequests,
   introductionStateEnum,
@@ -125,6 +135,167 @@ describe("Mewtuals PostgreSQL schema", () => {
       "creator_creator",
       "startup_distribution_partner",
     ]);
+  });
+
+  it("exposes the constrained discovery vocabulary", () => {
+    expect(discoveryCandidateTypeEnum.enumValues).toEqual(["company", "creator"]);
+    expect(discoveryCandidateStatusEnum.enumValues).toEqual([
+      "discovered",
+      "shortlisted",
+      "rejected",
+      "queued_for_profile",
+    ]);
+    expect(discoveryRunStatusEnum.enumValues).toEqual([
+      "queued",
+      "running",
+      "succeeded",
+      "partial",
+      "failed",
+    ]);
+    expect(discoveryRunTriggerEnum.enumValues).toEqual([
+      "scheduled",
+      "manual",
+      "trial",
+    ]);
+    expect(discoveryRunCandidateTypeEnum.enumValues).toEqual([
+      "company",
+      "creator",
+      "both",
+    ]);
+    expect(discoveryIdentifierKindEnum.enumValues).toEqual([
+      "canonical",
+      "website_host",
+      "social_url",
+      "linkedin_url",
+    ]);
+  });
+
+  it("models leased discovery runs with one global active-run backstop", () => {
+    expect(configFor(discoveryRuns).name).toBe("discovery_runs");
+    expect(columnNames(discoveryRuns)).toEqual(
+      expect.arrayContaining([
+        "external_run_key",
+        "trigger",
+        "status",
+        "lease_token_hash",
+        "lease_expires_at",
+        "submission_hash",
+        "sources_used",
+        "requested_count",
+        "company_percentage",
+        "found_count",
+        "new_count",
+        "duplicate_count",
+        "error_summary",
+      ]),
+    );
+    expect(discoveryRuns.externalRunKey.isUnique).toBe(true);
+    expect(indexNames(discoveryRuns)).toEqual(
+      expect.arrayContaining([
+        "discovery_runs_one_running_idx",
+        "discovery_runs_claim_idx",
+        "discovery_runs_lease_expiry_idx",
+      ]),
+    );
+    expect(hasUniqueIndex(discoveryRuns, "discovery_runs_one_running_idx")).toBe(
+      true,
+    );
+  });
+
+  it("models discovery candidates with immutable identity and review indexes", () => {
+    expect(configFor(discoveryCandidates).name).toBe("discovery_candidates");
+    expect(columnNames(discoveryCandidates)).toEqual(
+      expect.arrayContaining([
+        "type",
+        "name",
+        "normalized_name",
+        "canonical_identity_key",
+        "canonical_url",
+        "website_url",
+        "primary_social_url",
+        "linkedin_url",
+        "discovered_description",
+        "category",
+        "subcategory",
+        "geography",
+        "first_source_name",
+        "first_source_url",
+        "discovered_at",
+        "last_seen_at",
+        "most_recent_run_id",
+        "discovery_score",
+        "status",
+        "raw_metadata",
+      ]),
+    );
+    expect(uniqueConstraintNames(discoveryCandidates)).toContain(
+      "discovery_candidates_type_canonical_identity_unique",
+    );
+    expect(indexNames(discoveryCandidates)).toEqual(
+      expect.arrayContaining([
+        "discovery_candidates_type_idx",
+        "discovery_candidates_geography_idx",
+        "discovery_candidates_category_idx",
+        "discovery_candidates_source_idx",
+        "discovery_candidates_status_idx",
+        "discovery_candidates_discovered_at_idx",
+        "discovery_candidates_recent_run_idx",
+      ]),
+    );
+  });
+
+  it("assigns each stable discovery identifier to one candidate", () => {
+    expect(configFor(discoveryCandidateIdentifiers).name).toBe(
+      "discovery_candidate_identifiers",
+    );
+    expect(columnNames(discoveryCandidateIdentifiers)).toEqual(
+      expect.arrayContaining([
+        "candidate_id",
+        "candidate_type",
+        "kind",
+        "normalized_value",
+      ]),
+    );
+    expect(uniqueConstraintNames(discoveryCandidateIdentifiers)).toContain(
+      "discovery_candidate_identifiers_type_value_unique",
+    );
+    expect(indexNames(discoveryCandidateIdentifiers)).toContain(
+      "discovery_candidate_identifiers_candidate_idx",
+    );
+    expect(
+      configFor(discoveryCandidateIdentifiers).foreignKeys[0]?.onDelete,
+    ).toBe("cascade");
+  });
+
+  it("retains per-run discovery source evidence", () => {
+    expect(configFor(discoveryCandidateSources).name).toBe(
+      "discovery_candidate_sources",
+    );
+    expect(columnNames(discoveryCandidateSources)).toEqual(
+      expect.arrayContaining([
+        "candidate_id",
+        "discovery_run_id",
+        "source_name",
+        "source_url",
+        "first_seen_at",
+        "last_seen_at",
+        "raw_metadata",
+      ]),
+    );
+    expect(uniqueConstraintNames(discoveryCandidateSources)).toContain(
+      "discovery_candidate_sources_evidence_unique",
+    );
+    expect(indexNames(discoveryCandidateSources)).toEqual(
+      expect.arrayContaining([
+        "discovery_candidate_sources_candidate_idx",
+        "discovery_candidate_sources_run_idx",
+      ]),
+    );
+    expect(
+      configFor(discoveryCandidateSources).foreignKeys.some(
+        (foreignKey) => foreignKey.onDelete === "cascade",
+      ),
+    ).toBe(true);
   });
 
   it("enforces identity ownership and idempotent workflow writes", () => {

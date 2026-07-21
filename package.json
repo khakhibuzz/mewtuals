@@ -13,6 +13,7 @@
     "test": "npm run test:unit && npm run test:render",
     "test:unit": "vitest run --exclude tests/db.integration.test.ts --exclude tests/product-v1.acceptance.integration.test.ts --exclude tests/e2e/**",
     "test:db": "npm run db:test:prepare && DATABASE_URL=postgresql://127.0.0.1:55432/mewtuals_test vitest run tests/db.integration.test.ts tests/product-v1.acceptance.integration.test.ts",
+    "test:migrations": "npm run db:start && node scripts/test-discovery-migrations.mjs",
     "test:acceptance": "npm run db:test:prepare && DATABASE_URL=postgresql://127.0.0.1:55432/mewtuals_test vitest run tests/product-v1.acceptance.integration.test.ts",
     "test:e2e": "playwright test tests/e2e/product-v1.spec.ts",
     "test:watch": "vitest",
