@@ -148,15 +148,19 @@ server validates the complete batch before writing. Inside a transaction it:
 1. Normalizes names and URLs.
 2. Resolves candidates by stable canonical identity.
 3. Inserts genuinely new candidates.
-4. Updates `last_seen_at`, latest run, maximum confidence, and evidence for
+4. Adds every newly observed stable identifier to the candidate's identifier
+   set and upgrades display URLs when stronger evidence is found.
+5. Updates `last_seen_at`, latest run, maximum confidence, and evidence for
    known candidates without resetting an administrator decision.
-5. Upserts source evidence so multiple sources remain inspectable.
-6. Completes the run with found/new/duplicate counts and source errors.
+6. Upserts source evidence so multiple sources remain inspectable.
+7. Completes the run with found/new/duplicate counts and source errors.
 
-Submission is idempotent. Replaying the same completed run returns its recorded
-result and does not write candidates again. Partial source failures produce a
-`partial` run when at least one candidate was processed and `failed` when none
-could be processed.
+Submission is idempotent. The run stores a hash of the validated submission and
+retains the hashed lease token after completion. Replaying the same body with
+the same lease returns its recorded result and does not write candidates
+again; a different body for a completed run is rejected. Partial source
+failures produce a `partial` run when at least one candidate was processed and
+`failed` when none could be processed.
 
 ### Local Worker Commands
 
@@ -164,6 +168,7 @@ Repository scripts wrap claim and submit operations so the scheduled prompt
 does not reimplement authentication or HTTP details:
 
 - `npm run discovery:claim`
+- `npm run discovery:claim -- --trigger trial` for the explicit first run
 - `npm run discovery:validate -- --file <batch.json>`
 - `npm run discovery:submit -- --run-id <id> --lease-token <token> --file <batch.json>`
 - `npm run discovery:fail -- --run-id <id> --lease-token <token> --message <message>`
@@ -206,6 +211,30 @@ or LinkedIn URL can also match an existing candidate. Name-only equality is not
 allowed to merge two records because it can collapse unrelated people or
 companies.
 
+The original canonical identity key is immutable after insertion. When a later
+source supplies a stronger identity, the repository adds that value to
+`discovery_candidate_identifiers` and may upgrade the candidate's display
+`canonical_url` and optional website/social/LinkedIn fields according to the
+hierarchy above. It never rewrites the immutable key. Future runs resolve by
+any stored identifier, so the stronger official URL deduplicates correctly.
+If a new identifier is already owned by another candidate, the transaction
+records an identity conflict in the run summary and does not silently merge or
+overwrite either administrator-visible record.
+
+### `discovery_candidate_identifiers`
+
+- UUID primary key
+- candidate foreign key
+- candidate type
+- identifier kind: `canonical | website_host | social_url | linkedin_url`
+- normalized identifier value
+- created timestamp
+- unique `(candidate_type, normalized_value)` constraint
+
+Every accepted candidate stores all stable identifiers present in its batch,
+not only the identity selected as its original key. This table is the primary
+deduplication lookup; the candidate key remains a durable creation anchor.
+
 ### `discovery_candidate_sources`
 
 - UUID primary key
@@ -226,6 +255,7 @@ a concurrency-sensitive source of truth.
 - status: `queued | running | succeeded | partial | failed`
 - started, completed, created, and updated timestamps
 - lease token hash and lease expiry
+- validated submission hash for exact replay protection
 - geography and candidate type (`company | creator | both`)
 - sources used
 - requested count and company percentage
@@ -352,6 +382,8 @@ into a continuously available server-side worker.
 - migration/schema constraints
 - new candidate insertion
 - canonical URL and identifier deduplication
+- stronger-identity upgrades without canonical-key mutation
+- identifier collision handling without automatic record merges
 - multi-source evidence upsert
 - last-seen and confidence updates
 - administrator status preservation
