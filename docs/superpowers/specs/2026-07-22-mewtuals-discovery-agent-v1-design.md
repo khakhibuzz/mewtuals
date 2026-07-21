@@ -67,6 +67,10 @@ worker run. Initial defaults are deliberately bounded:
   lifestyle, wellness, fashion, finance, podcasts/interviews
 - Run cadence: daily at 08:30 Asia/Kolkata
 
+The company count is `round(total * companyPercentage / 100)`, clamped to the
+inclusive range from zero to the total. The creator count is the remainder, so
+allocation always adds up to the requested total even when the total is odd.
+
 Environment variables may override geography, category lists, total count,
 company percentage, enabled sources, worker secret, and worker API base URL.
 Changing these values must not change discovery service logic.
@@ -85,6 +89,12 @@ The worker calls a secret-protected claim endpoint. The server:
 5. Refuses a second active run while a valid lease exists.
 6. Returns the run id, lease token, structured configuration, prompt version,
    and output schema.
+
+An authenticated claim may explicitly request `trial` instead of `scheduled`.
+That creates a unique trial run and is used only by the documented first-run
+command and acceptance test. Administrator requests create `manual` runs;
+scheduled claims consume those queued runs before creating their normal daily
+run.
 
 The daily run has a stable external key, so repeated scheduled invocations do
 not create repeated runs. A lease expires after two hours so a crashed Codex
@@ -112,6 +122,23 @@ Every candidate includes:
 
 The worker is instructed to return fewer candidates when evidence is weak. It
 must never pad a batch or invent profile-enrichment data.
+
+The submitted `DiscoveryBatch` envelope is:
+
+```json
+{
+  "runId": "uuid",
+  "leaseToken": "opaque token",
+  "promptVersion": "codex-web-v1",
+  "candidates": [],
+  "sourceErrors": [
+    { "sourceName": "string", "message": "bounded failure summary" }
+  ]
+}
+```
+
+The server rejects mismatched run ids, lease tokens, prompt versions, and
+batches larger than the claimed allocation before persistence begins.
 
 ### Submit
 
@@ -166,13 +193,18 @@ state outside PostgreSQL.
 - unique `(type, canonical_identity_key)` constraint
 - indexes for type, geography, category, source, status, and discovery date
 
-The canonical identity key is the normalized company website host for a
-company and a normalized stable creator profile URL for a creator. URL
-normalization lowercases hosts, removes `www`, fragments, default ports,
-tracking parameters, duplicate trailing slashes, and sorts retained query
-parameters. A website, social URL, or LinkedIn URL can also match an existing
-candidate. Name-only equality is not allowed to merge two records because it
-can collapse unrelated people or companies.
+The canonical identity hierarchy is explicit. For a company, prefer its
+official website host, then a normalized LinkedIn company profile, then a
+stable primary social or public-directory organisation profile. For a creator,
+prefer a stable YouTube, podcast, or primary social profile, then a personal
+website or LinkedIn profile. Search-result, news-article, and generic directory
+listing pages are evidence URLs, not candidate identities, and a candidate
+without one acceptable identity is rejected. URL normalization lowercases
+hosts, removes `www`, fragments, default ports, tracking parameters, duplicate
+trailing slashes, and sorts retained query parameters. A website, social URL,
+or LinkedIn URL can also match an existing candidate. Name-only equality is not
+allowed to merge two records because it can collapse unrelated people or
+companies.
 
 ### `discovery_candidate_sources`
 
