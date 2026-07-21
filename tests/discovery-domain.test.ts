@@ -297,6 +297,34 @@ describe("discovery candidate identity", () => {
       value: "signal-studio.com",
     });
   });
+
+  it("prioritizes an unknown-host creator canonical profile before LinkedIn and website", () => {
+    const identifiers = candidateIdentifiers({
+      ...candidate({
+        type: "creator",
+        canonicalUrl:
+          "https://podcasts.apple.com/in/podcast/signal-studio/id1234567890",
+        primarySocialUrl: null,
+        linkedinUrl: "https://linkedin.com/in/signal-studio",
+        websiteUrl: "https://signal-studio.com/about",
+      }),
+      type: "creator",
+      rawMetadata: {},
+    });
+
+    expect(identifiers.slice(0, 3)).toEqual([
+      {
+        kind: "canonical",
+        value:
+          "https://podcasts.apple.com/in/podcast/signal-studio/id1234567890",
+      },
+      {
+        kind: "linkedin_url",
+        value: "https://linkedin.com/in/signal-studio",
+      },
+      { kind: "website_host", value: "signal-studio.com" },
+    ]);
+  });
 });
 
 describe("candidate allocation", () => {
@@ -318,6 +346,19 @@ describe("discovery batch validation", () => {
       promptVersion: "codex-web-v1",
       sourceErrors: [],
     });
+  });
+
+  it("rejects an unapproved discovery prompt version", () => {
+    const result = discoveryBatchSchema.safeParse(
+      batch({ promptVersion: "wrong-version" }),
+    );
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe(
+        "Discovery prompt version must be codex-web-v1.",
+      );
+    }
   });
 
   it("limits a batch to 50 candidates", () => {

@@ -186,7 +186,9 @@ export const discoverySourceErrorSchema = z.object({
 const discoveryBatchObjectSchema = z.object({
   runId: z.string().uuid({ message: "Discovery run id must be a valid UUID." }),
   leaseToken: boundedRequiredString("Discovery lease token", 512),
-  promptVersion: boundedRequiredString("Discovery prompt version", 100),
+  promptVersion: z.literal("codex-web-v1", {
+    error: "Discovery prompt version must be codex-web-v1.",
+  }),
   candidates: z.array(discoveryCandidateInputSchema).max(50, {
     message: "Discovery batch must contain at most 50 candidates.",
   }),
@@ -428,7 +430,10 @@ const socialHosts = new Set([
   "youtube.com",
 ]);
 
-function canonicalIdentifier(canonicalUrl: string): CandidateIdentifier {
+function canonicalIdentifier(
+  type: DiscoveryCandidateInput["type"],
+  canonicalUrl: string,
+): CandidateIdentifier {
   const value = normalizeDiscoveryUrl(canonicalUrl);
   const url = new URL(value);
   const host = url.hostname;
@@ -452,6 +457,7 @@ function canonicalIdentifier(canonicalUrl: string): CandidateIdentifier {
   ) {
     return { kind: "canonical", value };
   }
+  if (type === "creator") return { kind: "canonical", value };
   return { kind: "website_host", value: host };
 }
 
@@ -483,12 +489,12 @@ export function candidateIdentifiers(
           },
         ]
       : []),
-    canonicalIdentifier(input.canonicalUrl),
+    canonicalIdentifier(input.type, input.canonicalUrl),
   ];
   const priority =
     input.type === "company"
       ? ["website_host", "linkedin_url", "social_url", "canonical"]
-      : ["social_url", "linkedin_url", "website_host", "canonical"];
+      : ["social_url", "canonical", "linkedin_url", "website_host"];
   proposed.sort(
     (left, right) => priority.indexOf(left.kind) - priority.indexOf(right.kind),
   );
