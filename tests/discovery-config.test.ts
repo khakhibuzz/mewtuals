@@ -104,6 +104,22 @@ describe("discovery configuration", () => {
     );
   });
 
+  it.each(["PRODUCTION", "staging", "prodution"])(
+    "rejects unsupported NODE_ENV value %s",
+    (NODE_ENV) => {
+      expect(() => readDiscoveryConfig({ NODE_ENV })).toThrow(
+        "Invalid discovery configuration: NODE_ENV must be development, test, or production.",
+      );
+    },
+  );
+
+  it.each(["development", "test"])(
+    "allows an omitted worker secret only in explicit %s mode",
+    (NODE_ENV) => {
+      expect(readDiscoveryConfig({ NODE_ENV }).workerSecret).toBeUndefined();
+    },
+  );
+
   it("reads process.env when no source is injected", () => {
     const previousNodeEnv = process.env.NODE_ENV;
     const previousWorkerSecret = process.env.DISCOVERY_WORKER_SECRET;

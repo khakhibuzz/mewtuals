@@ -257,6 +257,30 @@ describe("discovery candidate normalization", () => {
       ).success,
     ).toBe(true);
   });
+
+  it("rejects an impossible-to-fit metadata array without enumerating it", () => {
+    let inspectedElements = 0;
+    const values = new Proxy(Array.from({ length: 4_096 }, () => 0), {
+      getOwnPropertyDescriptor(target, property) {
+        if (typeof property === "string" && /^\d+$/.test(property)) {
+          inspectedElements += 1;
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+
+    const result = discoveryCandidateInputSchema.safeParse(
+      candidate({ rawMetadata: { values } }),
+    );
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe(
+        "Candidate raw metadata must be at most 8192 bytes.",
+      );
+    }
+    expect(inspectedElements).toBeLessThan(10);
+  });
 });
 
 describe("discovery candidate identity", () => {
@@ -616,6 +640,8 @@ describe("discovery URL normalization", () => {
     "http://198.51.100.1/profile",
     "http://203.0.113.1/profile",
     "http://240.0.0.1/profile",
+    "http://[64:ff9b:1::1]/profile",
+    "http://[::ffff:0:7f00:1]/profile",
     "http://[2001:db8::1]/profile",
     "http://[fc00::1]/profile",
     "http://[fe80::1]/profile",
@@ -623,6 +649,12 @@ describe("discovery URL normalization", () => {
   ])("rejects non-global IP literal %s", (value) => {
     expect(() => normalizeDiscoveryUrl(value)).toThrow(
       "Discovery URL must use a public host.",
+    );
+  });
+
+  it("accepts a globally routable IPv6 literal", () => {
+    expect(normalizeDiscoveryUrl("https://[2606:4700:4700::1111]/profile")).toBe(
+      "https://[2606:4700:4700::1111]/profile",
     );
   });
 

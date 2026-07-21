@@ -8,6 +8,10 @@ export const candidateStatuses = [
   "queued_for_profile",
 ] as const;
 export const MAX_DISCOVERY_BATCH_BYTES = 512 * 1_024;
+const MAX_RAW_METADATA_BYTES = 8_192;
+const MAX_MINIMAL_ARRAY_ELEMENTS = Math.floor(
+  (MAX_RAW_METADATA_BYTES - 1) / 2,
+);
 export const candidateTypeSchema = z.enum(candidateTypes);
 export const candidateStatusSchema = z.enum(candidateStatuses);
 
@@ -68,11 +72,19 @@ const metadataIssueMessages = {
   keys: "Candidate raw metadata must contain at most 20 keys.",
   keyLength: "Candidate raw metadata keys must be at most 64 characters.",
   depth: "Candidate raw metadata must have JSON depth at most 3.",
+  bytes: "Candidate raw metadata must be at most 8192 bytes.",
 } as const;
 
 type MetadataInspectionTask =
   | { action: "visit"; value: unknown; depth: number }
-  | { action: "leave"; value: object };
+  | { action: "leave"; value: object }
+  | {
+      action: "array-element";
+      value: unknown[];
+      index: number;
+      length: number;
+      depth: number;
+    };
 
 function inspectRawMetadata(metadata: Record<string, unknown>): string | null {
   const activeObjects = new Set<object>();
@@ -80,6 +92,7 @@ function inspectRawMetadata(metadata: Record<string, unknown>): string | null {
     { action: "visit", value: metadata, depth: 1 },
   ];
   let keyCount = 0;
+  let workUnits = 0;
 
   try {
     while (tasks.length > 0) {
@@ -88,6 +101,32 @@ function inspectRawMetadata(metadata: Record<string, unknown>): string | null {
 
       if (task.action === "leave") {
         activeObjects.delete(task.value);
+        continue;
+      }
+
+      workUnits += 1;
+      if (workUnits > MAX_RAW_METADATA_BYTES) {
+        return metadataIssueMessages.bytes;
+      }
+
+      if (task.action === "array-element") {
+        if (task.index + 1 < task.length) {
+          tasks.push({
+            ...task,
+            index: task.index + 1,
+          });
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(
+          task.value,
+          task.index,
+        );
+        if (!descriptor) continue;
+        if (!("value" in descriptor)) return metadataIssueMessages.invalid;
+        tasks.push({
+          action: "visit",
+          value: descriptor.value,
+          depth: task.depth,
+        });
         continue;
       }
 
@@ -119,13 +158,16 @@ function inspectRawMetadata(metadata: Record<string, unknown>): string | null {
 
       if (array) {
         if (Object.hasOwn(value, "toJSON")) return metadataIssueMessages.invalid;
-        for (let index = value.length - 1; index >= 0; index -= 1) {
-          const descriptor = Object.getOwnPropertyDescriptor(value, index);
-          if (!descriptor) continue;
-          if (!("value" in descriptor)) return metadataIssueMessages.invalid;
+        const length = value.length;
+        if (length > MAX_MINIMAL_ARRAY_ELEMENTS) {
+          return metadataIssueMessages.bytes;
+        }
+        if (length > 0) {
           tasks.push({
-            action: "visit",
-            value: descriptor.value,
+            action: "array-element",
+            value,
+            index: 0,
+            length,
             depth: depth + 1,
           });
         }
@@ -179,10 +221,10 @@ export const rawMetadataSchema = z
       });
       return;
     }
-    if (serializedByteLength(metadata) > 8_192) {
+    if (serializedByteLength(metadata) > MAX_RAW_METADATA_BYTES) {
       context.addIssue({
         code: "custom",
-        message: "Candidate raw metadata must be at most 8192 bytes.",
+        message: metadataIssueMessages.bytes,
       });
     }
   });
@@ -322,50 +364,51 @@ function expandIpv6(address: string): number[] | null {
   ].map((group) => Number.parseInt(group || "0", 16));
 }
 
-function embeddedIpv4(address: string): string | null {
+function ipv6Value(address: string): bigint | null {
   const groups = expandIpv6(address);
   if (!groups || groups.length !== 8) return null;
+  return groups.reduce(
+    (value, group) => (value << BigInt(16)) | BigInt(group),
+    BigInt(0),
+  );
+}
 
-  const mapped =
-    groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
-  const compatible = groups.slice(0, 6).every((group) => group === 0);
-  if (!mapped && !compatible) return null;
+type Ipv6Cidr = {
+  network: string;
+  prefixLength: number;
+};
 
-  return [
-    groups[6] >> 8,
-    groups[6] & 0xff,
-    groups[7] >> 8,
-    groups[7] & 0xff,
-  ].join(".");
+const nonGlobalIpv6Cidrs: readonly Ipv6Cidr[] = [
+  { network: "::", prefixLength: 128 },
+  { network: "::1", prefixLength: 128 },
+  { network: "::", prefixLength: 96 },
+  { network: "::ffff:0:0", prefixLength: 96 },
+  { network: "::ffff:0:0:0", prefixLength: 96 },
+  { network: "64:ff9b::", prefixLength: 96 },
+  { network: "64:ff9b:1::", prefixLength: 48 },
+  { network: "100::", prefixLength: 64 },
+  { network: "2001:2::", prefixLength: 48 },
+  { network: "2001:db8::", prefixLength: 32 },
+  { network: "2001:10::", prefixLength: 28 },
+  { network: "2001:20::", prefixLength: 28 },
+  { network: "fc00::", prefixLength: 7 },
+  { network: "fe80::", prefixLength: 10 },
+  { network: "fec0::", prefixLength: 10 },
+  { network: "ff00::", prefixLength: 8 },
+];
+
+function isIpv6WithinCidr(address: string, cidr: Ipv6Cidr): boolean {
+  const addressValue = ipv6Value(address);
+  const networkValue = ipv6Value(cidr.network);
+  if (addressValue === null || networkValue === null) return false;
+
+  const suffixLength = BigInt(128 - cidr.prefixLength);
+  return addressValue >> suffixLength === networkValue >> suffixLength;
 }
 
 function isNonGlobalIpv6(hostname: string): boolean {
   const address = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const ipv4 = embeddedIpv4(address);
-  const groups = expandIpv6(address);
-  const discardOnly =
-    groups?.[0] === 0x100 && groups.slice(1, 4).every((group) => group === 0);
-  const benchmarking =
-    groups?.[0] === 0x2001 &&
-    groups[1] === 0x2 &&
-    groups[2] === 0;
-  const orchid =
-    groups?.[0] === 0x2001 &&
-    ((groups[1] & 0xfff0) === 0x10 || (groups[1] & 0xfff0) === 0x20);
-  return (
-    address === "::" ||
-    address === "::1" ||
-    address.startsWith("fc") ||
-    address.startsWith("fd") ||
-    /^fe[89ab]/.test(address) ||
-    /^fe[c-f]/.test(address) ||
-    address.startsWith("ff") ||
-    address.startsWith("2001:db8:") ||
-    discardOnly ||
-    benchmarking ||
-    orchid ||
-    (ipv4 !== null && isNonGlobalIpv4(ipv4))
-  );
+  return nonGlobalIpv6Cidrs.some((cidr) => isIpv6WithinCidr(address, cidr));
 }
 
 function assertPublicHostname(hostname: string): void {

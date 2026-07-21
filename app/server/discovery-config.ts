@@ -27,6 +27,8 @@ const defaultCreatorCategories = [
   "podcasts/interviews",
 ] as const;
 
+const discoveryEnvironments = new Set(["development", "test", "production"]);
+
 export type DiscoveryConfig = {
   geographies: readonly string[];
   companyCategories: readonly string[];
@@ -83,6 +85,11 @@ export function readDiscoveryConfig(
   source: EnvironmentSource = process.env,
 ): DiscoveryConfig {
   const environment = source.NODE_ENV?.trim() || "production";
+  if (!discoveryEnvironments.has(environment)) {
+    throw new Error(
+      "Invalid discovery configuration: NODE_ENV must be development, test, or production.",
+    );
+  }
   const workerSecret = source.DISCOVERY_WORKER_SECRET?.trim() || undefined;
   if (environment === "production" && !workerSecret) {
     throw new Error(
