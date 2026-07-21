@@ -380,8 +380,13 @@ type Ipv6Cidr = {
 
 // IANA IPv6 Special-Purpose Address Space registry, updated 2025-10-09:
 // https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml
+const wellKnownNat64Ipv6Cidr: Ipv6Cidr = {
+  network: "64:ff9b::",
+  prefixLength: 96,
+};
+
 const globallyReachableIpv6Cidrs: readonly Ipv6Cidr[] = [
-  { network: "64:ff9b::", prefixLength: 96 },
+  wellKnownNat64Ipv6Cidr,
   { network: "2001:1::1", prefixLength: 128 },
   { network: "2001:1::2", prefixLength: 128 },
   { network: "2001:1::3", prefixLength: 128 },
@@ -419,8 +424,25 @@ function isIpv6WithinCidr(address: string, cidr: Ipv6Cidr): boolean {
   return addressValue >> suffixLength === networkValue >> suffixLength;
 }
 
+function embeddedNat64Ipv4(address: string): string | null {
+  if (!isIpv6WithinCidr(address, wellKnownNat64Ipv6Cidr)) return null;
+
+  const groups = expandIpv6(address);
+  if (!groups) return null;
+
+  // RFC 6052 section 3.1 places the IPv4 address in the low 32 bits for /96.
+  return [
+    groups[6] >> 8,
+    groups[6] & 0xff,
+    groups[7] >> 8,
+    groups[7] & 0xff,
+  ].join(".");
+}
+
 function isNonGlobalIpv6(hostname: string): boolean {
   const address = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const nat64Ipv4 = embeddedNat64Ipv4(address);
+  if (nat64Ipv4 !== null && isNonGlobalIpv4(nat64Ipv4)) return true;
   if (
     globallyReachableIpv6Cidrs.some((cidr) =>
       isIpv6WithinCidr(address, cidr),

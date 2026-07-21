@@ -659,7 +659,19 @@ describe("discovery URL normalization", () => {
   });
 
   it.each([
-    "https://[64:ff9b::1]/profile",
+    "http://[64:ff9b::7f00:1]/profile",
+    "http://[64:ff9b::a00:1]/profile",
+    "http://[64:ff9b::a9fe:1]/profile",
+    "http://[64:ff9b::c0a8:101]/profile",
+    "http://[64:ff9b::c000:201]/profile",
+  ])("rejects NAT64 hosts embedding non-global IPv4 %s", (value) => {
+    expect(() => normalizeDiscoveryUrl(value)).toThrow(
+      "Discovery URL must use a public host.",
+    );
+  });
+
+  it.each([
+    "https://[64:ff9b::808:808]/profile",
     "https://[2001:1::1]/profile",
     "https://[2001:1::2]/profile",
     "https://[2001:1::3]/profile",
