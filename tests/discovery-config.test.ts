@@ -98,6 +98,61 @@ describe("discovery configuration", () => {
     ).toBe("worker-secret");
   });
 
+  it("treats a missing NODE_ENV as production", () => {
+    expect(() => readDiscoveryConfig({})).toThrow(
+      "Invalid discovery configuration: DISCOVERY_WORKER_SECRET is required in production.",
+    );
+  });
+
+  it("reads process.env when no source is injected", () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousWorkerSecret = process.env.DISCOVERY_WORKER_SECRET;
+    const previousGeographies = process.env.DISCOVERY_GEOGRAPHIES;
+
+    try {
+      process.env.NODE_ENV = "test";
+      delete process.env.DISCOVERY_WORKER_SECRET;
+      process.env.DISCOVERY_GEOGRAPHIES = "India,Singapore";
+
+      expect(readDiscoveryConfig().geographies).toEqual(["India", "Singapore"]);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousWorkerSecret === undefined) {
+        delete process.env.DISCOVERY_WORKER_SECRET;
+      } else {
+        process.env.DISCOVERY_WORKER_SECRET = previousWorkerSecret;
+      }
+      if (previousGeographies === undefined) {
+        delete process.env.DISCOVERY_GEOGRAPHIES;
+      } else {
+        process.env.DISCOVERY_GEOGRAPHIES = previousGeographies;
+      }
+    }
+  });
+
+  it("requires the worker secret for a no-arg default-production read", () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousWorkerSecret = process.env.DISCOVERY_WORKER_SECRET;
+
+    try {
+      delete process.env.NODE_ENV;
+      delete process.env.DISCOVERY_WORKER_SECRET;
+
+      expect(() => readDiscoveryConfig()).toThrow(
+        "Invalid discovery configuration: DISCOVERY_WORKER_SECRET is required in production.",
+      );
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousWorkerSecret === undefined) {
+        delete process.env.DISCOVERY_WORKER_SECRET;
+      } else {
+        process.env.DISCOVERY_WORKER_SECRET = previousWorkerSecret;
+      }
+    }
+  });
+
   it("returns a public worker config without the secret", () => {
     const config = readDiscoveryConfig({
       NODE_ENV: "production",

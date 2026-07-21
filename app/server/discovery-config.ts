@@ -80,10 +80,11 @@ function boundedInteger(
 }
 
 export function readDiscoveryConfig(
-  source: EnvironmentSource = {},
+  source: EnvironmentSource = process.env,
 ): DiscoveryConfig {
+  const environment = source.NODE_ENV?.trim() || "production";
   const workerSecret = source.DISCOVERY_WORKER_SECRET?.trim() || undefined;
-  if (source.NODE_ENV === "production" && !workerSecret) {
+  if (environment === "production" && !workerSecret) {
     throw new Error(
       "Invalid discovery configuration: DISCOVERY_WORKER_SECRET is required in production.",
     );

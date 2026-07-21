@@ -7,6 +7,7 @@ export const candidateStatuses = [
   "rejected",
   "queued_for_profile",
 ] as const;
+export const MAX_DISCOVERY_BATCH_BYTES = 512 * 1_024;
 export const candidateTypeSchema = z.enum(candidateTypes);
 export const candidateStatusSchema = z.enum(candidateStatuses);
 
@@ -61,46 +62,102 @@ const canonicalDiscoveryUrlSchema = z.string().transform((value, context) => {
   }
 });
 
-function jsonKeys(value: unknown): string[] {
-  if (Array.isArray(value)) return value.flatMap(jsonKeys);
-  if (value === null || typeof value !== "object") return [];
+const metadataIssueMessages = {
+  invalid:
+    "Candidate raw metadata must contain only JSON-compatible values.",
+  keys: "Candidate raw metadata must contain at most 20 keys.",
+  keyLength: "Candidate raw metadata keys must be at most 64 characters.",
+  depth: "Candidate raw metadata must have JSON depth at most 3.",
+} as const;
 
-  return Object.entries(value).flatMap(([key, nestedValue]) => [
-    key,
-    ...jsonKeys(nestedValue),
-  ]);
-}
+type MetadataInspectionTask =
+  | { action: "visit"; value: unknown; depth: number }
+  | { action: "leave"; value: object };
 
-function isJsonValue(value: unknown, ancestors = new Set<object>()): boolean {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
-    return true;
+function inspectRawMetadata(metadata: Record<string, unknown>): string | null {
+  const activeObjects = new Set<object>();
+  const tasks: MetadataInspectionTask[] = [
+    { action: "visit", value: metadata, depth: 1 },
+  ];
+  let keyCount = 0;
+
+  try {
+    while (tasks.length > 0) {
+      const task = tasks.pop();
+      if (!task) break;
+
+      if (task.action === "leave") {
+        activeObjects.delete(task.value);
+        continue;
+      }
+
+      const { value, depth } = task;
+      if (
+        value === null ||
+        typeof value === "string" ||
+        typeof value === "boolean"
+      ) {
+        continue;
+      }
+      if (typeof value === "number") {
+        if (!Number.isFinite(value)) return metadataIssueMessages.invalid;
+        continue;
+      }
+      if (typeof value !== "object" || activeObjects.has(value)) {
+        return metadataIssueMessages.invalid;
+      }
+      if (depth > 3) return metadataIssueMessages.depth;
+
+      const array = Array.isArray(value);
+      const prototype = Object.getPrototypeOf(value);
+      if (!array && prototype !== Object.prototype && prototype !== null) {
+        return metadataIssueMessages.invalid;
+      }
+
+      activeObjects.add(value);
+      tasks.push({ action: "leave", value });
+
+      if (array) {
+        if (Object.hasOwn(value, "toJSON")) return metadataIssueMessages.invalid;
+        for (let index = value.length - 1; index >= 0; index -= 1) {
+          const descriptor = Object.getOwnPropertyDescriptor(value, index);
+          if (!descriptor) continue;
+          if (!("value" in descriptor)) return metadataIssueMessages.invalid;
+          tasks.push({
+            action: "visit",
+            value: descriptor.value,
+            depth: depth + 1,
+          });
+        }
+        continue;
+      }
+
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      if (Object.hasOwn(descriptors, "toJSON")) {
+        return metadataIssueMessages.invalid;
+      }
+      const entries = Object.entries(descriptors).filter(
+        ([, descriptor]) => descriptor.enumerable,
+      );
+      keyCount += entries.length;
+      if (keyCount > 20) return metadataIssueMessages.keys;
+
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [key, descriptor] = entries[index];
+        if (key.length > 64) return metadataIssueMessages.keyLength;
+        if (!("value" in descriptor)) return metadataIssueMessages.invalid;
+        tasks.push({
+          action: "visit",
+          value: descriptor.value,
+          depth: depth + 1,
+        });
+      }
+    }
+  } catch {
+    return metadataIssueMessages.invalid;
   }
-  if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value !== "object" || ancestors.has(value)) return false;
 
-  const isArray = Array.isArray(value);
-  const prototype = Object.getPrototypeOf(value);
-  if (!isArray && prototype !== Object.prototype && prototype !== null) {
-    return false;
-  }
-
-  ancestors.add(value);
-  const nestedValues = isArray ? value : Object.values(value);
-  const valid = nestedValues.every((nestedValue) =>
-    isJsonValue(nestedValue, ancestors),
-  );
-  ancestors.delete(value);
-  return valid;
-}
-
-function jsonDepth(value: unknown): number {
-  if (value === null || typeof value !== "object") return 0;
-  const nestedValues = Array.isArray(value) ? value : Object.values(value);
-  return 1 + Math.max(0, ...nestedValues.map(jsonDepth));
+  return null;
 }
 
 function serializedByteLength(value: unknown): number {
@@ -114,32 +171,13 @@ function serializedByteLength(value: unknown): number {
 export const rawMetadataSchema = z
   .record(z.string(), z.unknown())
   .superRefine((metadata, context) => {
-    if (!isJsonValue(metadata)) {
+    const inspectionIssue = inspectRawMetadata(metadata);
+    if (inspectionIssue) {
       context.addIssue({
         code: "custom",
-        message:
-          "Candidate raw metadata must contain only JSON-compatible values.",
+        message: inspectionIssue,
       });
       return;
-    }
-    const keys = jsonKeys(metadata);
-    if (keys.length > 20) {
-      context.addIssue({
-        code: "custom",
-        message: "Candidate raw metadata must contain at most 20 keys.",
-      });
-    }
-    if (keys.some((key) => key.length > 64)) {
-      context.addIssue({
-        code: "custom",
-        message: "Candidate raw metadata keys must be at most 64 characters.",
-      });
-    }
-    if (jsonDepth(metadata) > 3) {
-      context.addIssue({
-        code: "custom",
-        message: "Candidate raw metadata must have JSON depth at most 3.",
-      });
     }
     if (serializedByteLength(metadata) > 8_192) {
       context.addIssue({
@@ -197,18 +235,15 @@ const discoveryBatchObjectSchema = z.object({
   }),
 });
 
-export const discoveryBatchSchema = z.preprocess(
-  (value, context) => {
-    if (serializedByteLength(value) > 512 * 1_024) {
+export const discoveryBatchSchema = discoveryBatchObjectSchema.superRefine(
+  (batch, context) => {
+    if (serializedByteLength(batch) > MAX_DISCOVERY_BATCH_BYTES) {
       context.addIssue({
         code: "custom",
         message: "Discovery batch must be at most 524288 bytes.",
       });
-      return z.NEVER;
     }
-    return value;
   },
-  discoveryBatchObjectSchema,
 );
 
 export type DiscoveryCandidateInput = z.input<
@@ -245,11 +280,11 @@ function parseIpv4(hostname: string): number[] | null {
   return octets;
 }
 
-function isPrivateIpv4(hostname: string): boolean {
+function isNonGlobalIpv4(hostname: string): boolean {
   const octets = parseIpv4(hostname);
   if (!octets) return false;
 
-  const [first, second] = octets;
+  const [first, second, third] = octets;
   return (
     first === 0 ||
     first === 10 ||
@@ -257,8 +292,11 @@ function isPrivateIpv4(hostname: string): boolean {
     (first === 100 && second >= 64 && second <= 127) ||
     (first === 169 && second === 254) ||
     (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 0 && (third === 0 || third === 2)) ||
     (first === 192 && second === 168) ||
     (first === 198 && (second === 18 || second === 19)) ||
+    (first === 198 && second === 51 && third === 100) ||
+    (first === 203 && second === 0 && third === 113) ||
     first >= 224
   );
 }
@@ -301,20 +339,38 @@ function embeddedIpv4(address: string): string | null {
   ].join(".");
 }
 
-function isPrivateIpv6(hostname: string): boolean {
+function isNonGlobalIpv6(hostname: string): boolean {
   const address = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   const ipv4 = embeddedIpv4(address);
+  const groups = expandIpv6(address);
+  const discardOnly =
+    groups?.[0] === 0x100 && groups.slice(1, 4).every((group) => group === 0);
+  const benchmarking =
+    groups?.[0] === 0x2001 &&
+    groups[1] === 0x2 &&
+    groups[2] === 0;
+  const orchid =
+    groups?.[0] === 0x2001 &&
+    ((groups[1] & 0xfff0) === 0x10 || (groups[1] & 0xfff0) === 0x20);
   return (
     address === "::" ||
     address === "::1" ||
     address.startsWith("fc") ||
     address.startsWith("fd") ||
     /^fe[89ab]/.test(address) ||
-    (ipv4 !== null && isPrivateIpv4(ipv4))
+    /^fe[c-f]/.test(address) ||
+    address.startsWith("ff") ||
+    address.startsWith("2001:db8:") ||
+    discardOnly ||
+    benchmarking ||
+    orchid ||
+    (ipv4 !== null && isNonGlobalIpv4(ipv4))
   );
 }
 
 function assertPublicHostname(hostname: string): void {
+  // This is a literal-address guard only. Fetch boundaries must resolve DNS and
+  // revalidate resolved addresses and every redirect target before connecting.
   const normalized = hostname
     .replace(/^\[|\]$/g, "")
     .replace(/\.+$/, "")
@@ -326,7 +382,11 @@ function assertPublicHostname(hostname: string): void {
       normalized.endsWith(suffix),
     );
 
-  if (privateName || isPrivateIpv4(normalized) || isPrivateIpv6(normalized)) {
+  if (
+    privateName ||
+    isNonGlobalIpv4(normalized) ||
+    isNonGlobalIpv6(normalized)
+  ) {
     throw new Error("Discovery URL must use a public host.");
   }
 }
@@ -446,7 +506,7 @@ function canonicalIdentifier(
   const url = new URL(value);
   const host = url.hostname;
   const websiteHost = websiteUrl
-    ? new URL(normalizeDiscoveryUrl(websiteUrl)).hostname
+    ? new URL(normalizePublicDiscoveryUrl(websiteUrl)).hostname
     : null;
 
   if (host === "linkedin.com") return { kind: "linkedin_url", value };
@@ -464,7 +524,8 @@ export function candidateIdentifiers(
       ? [
           {
             kind: "website_host" as const,
-            value: new URL(normalizeDiscoveryUrl(input.websiteUrl)).hostname,
+            value: new URL(normalizePublicDiscoveryUrl(input.websiteUrl))
+              .hostname,
           },
         ]
       : []),
@@ -472,7 +533,7 @@ export function candidateIdentifiers(
       ? [
           {
             kind: "linkedin_url" as const,
-            value: normalizeDiscoveryUrl(input.linkedinUrl),
+            value: normalizePublicDiscoveryUrl(input.linkedinUrl),
           },
         ]
       : []),
@@ -480,7 +541,7 @@ export function candidateIdentifiers(
       ? [
           {
             kind: "social_url" as const,
-            value: normalizeDiscoveryUrl(input.primarySocialUrl),
+            value: normalizePublicDiscoveryUrl(input.primarySocialUrl),
           },
         ]
       : []),

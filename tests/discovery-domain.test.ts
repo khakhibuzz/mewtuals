@@ -8,6 +8,7 @@ import {
   candidateTypes,
   discoveryBatchSchema,
   discoveryCandidateInputSchema,
+  MAX_DISCOVERY_BATCH_BYTES,
   normalizeDiscoveryUrl,
 } from "../app/domain/discovery";
 
@@ -223,6 +224,39 @@ describe("discovery candidate normalization", () => {
       );
     }
   });
+
+  it("handles adversarial deep, cyclic, and shared metadata without recursion", () => {
+    const deep: Record<string, unknown> = {};
+    let cursor = deep;
+    for (let depth = 0; depth < 10_000; depth += 1) {
+      const nested: Record<string, unknown> = {};
+      cursor.next = nested;
+      cursor = nested;
+    }
+
+    let deepResult: { success: boolean } | undefined;
+    expect(() => {
+      deepResult = discoveryCandidateInputSchema.safeParse(
+        candidate({ rawMetadata: deep }),
+      );
+    }).not.toThrow();
+    expect(deepResult?.success).toBe(false);
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(
+      discoveryCandidateInputSchema.safeParse(
+        candidate({ rawMetadata: cyclic }),
+      ).success,
+    ).toBe(false);
+
+    const shared = { label: "same evidence" };
+    expect(
+      discoveryCandidateInputSchema.safeParse(
+        candidate({ rawMetadata: { left: shared, right: shared } }),
+      ).success,
+    ).toBe(true);
+  });
 });
 
 describe("discovery candidate identity", () => {
@@ -371,6 +405,21 @@ describe("discovery candidate identity", () => {
       },
     ]);
   });
+
+  it("identifies parsed optional evidence URLs without canonical article checks", () => {
+    const parsed = discoveryCandidateInputSchema.parse(
+      candidate({
+        canonicalUrl: "https://directory.example.com/companies/signal-studio",
+        websiteUrl: "https://signal-studio.com/blog",
+      }),
+    );
+
+    expect(() => candidateIdentifiers(parsed)).not.toThrow();
+    expect(candidateIdentifiers(parsed)[0]).toEqual({
+      kind: "website_host",
+      value: "signal-studio.com",
+    });
+  });
 });
 
 describe("candidate allocation", () => {
@@ -481,17 +530,8 @@ describe("discovery batch validation", () => {
     }
   });
 
-  it("measures serialized limits before unknown fields are stripped", () => {
-    const result = discoveryBatchSchema.safeParse(
-      batch({ diagnostic: "x".repeat(512 * 1_024) }),
-    );
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.issues[0]?.message).toBe(
-        "Discovery batch must be at most 524288 bytes.",
-      );
-    }
+  it("exports the raw-body byte limit for route enforcement", () => {
+    expect(MAX_DISCOVERY_BATCH_BYTES).toBe(512 * 1_024);
   });
 });
 
@@ -568,6 +608,22 @@ describe("discovery URL normalization", () => {
     expect(() =>
       normalizeDiscoveryUrl("http://[::ffff:127.0.0.1]/profile"),
     ).toThrow("Discovery URL must use a public host.");
+  });
+
+  it.each([
+    "http://192.0.0.1/profile",
+    "http://192.0.2.1/profile",
+    "http://198.51.100.1/profile",
+    "http://203.0.113.1/profile",
+    "http://240.0.0.1/profile",
+    "http://[2001:db8::1]/profile",
+    "http://[fc00::1]/profile",
+    "http://[fe80::1]/profile",
+    "http://[ff02::1]/profile",
+  ])("rejects non-global IP literal %s", (value) => {
+    expect(() => normalizeDiscoveryUrl(value)).toThrow(
+      "Discovery URL must use a public host.",
+    );
   });
 
   it("rejects search-result canonical URLs", () => {
