@@ -101,6 +101,8 @@ const emptySnapshot: AdminSnapshot = {
     creators: 0,
     awaitingResearch: 0,
     linkedCandidates: 0,
+    pendingAcknowledgements: 0,
+    failedAcknowledgements: 0,
     sources: {},
   },
   requests: [],

@@ -968,6 +968,8 @@ describe("Opportunity Brief administrator persistence", () => {
       creators: 1,
       awaitingResearch: 2,
       linkedCandidates: 1,
+      pendingAcknowledgements: 3,
+      failedAcknowledgements: 0,
       sources: { "admin-alpha": 2, "admin-beta": 1 },
     });
     expect(snapshot).toMatchObject({ page: 1, pageSize: 100, totalPages: 1 });

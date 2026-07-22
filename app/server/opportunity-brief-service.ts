@@ -120,6 +120,8 @@ export type AdminSnapshot = {
     creators: number;
     awaitingResearch: number;
     linkedCandidates: number;
+    pendingAcknowledgements: number;
+    failedAcknowledgements: number;
     sources: Record<string, number>;
   };
   requests: AdminRequest[];

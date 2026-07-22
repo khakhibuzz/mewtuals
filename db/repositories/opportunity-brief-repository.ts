@@ -454,6 +454,12 @@ export function createOpportunityBriefRepository(
             linkedCandidates: sql<number>`count(*) filter (
               where ${opportunityBriefRequests.linkedCandidateId} is not null
             )::integer`,
+            pendingAcknowledgements: sql<number>`count(*) filter (
+              where ${opportunityBriefRequests.acknowledgementStatus} = 'pending'
+            )::integer`,
+            failedAcknowledgements: sql<number>`count(*) filter (
+              where ${opportunityBriefRequests.acknowledgementStatus} = 'failed'
+            )::integer`,
           })
           .from(opportunityBriefRequests);
         await dependencies.afterAdminSummaryRead?.();
@@ -490,6 +496,8 @@ export function createOpportunityBriefRepository(
             creators: counts?.creators ?? 0,
             awaitingResearch: counts?.awaitingResearch ?? 0,
             linkedCandidates: counts?.linkedCandidates ?? 0,
+            pendingAcknowledgements: counts?.pendingAcknowledgements ?? 0,
+            failedAcknowledgements: counts?.failedAcknowledgements ?? 0,
             sources: Object.fromEntries(
               sourceCounts
                 .filter(
