@@ -9,18 +9,18 @@ import {
   SHARE_DESTINATION,
 } from "../app/share/share-qr";
 
+function decodeQrDataUrl(dataUrl: string) {
+  const png = PNG.sync.read(Buffer.from(dataUrl.split(",")[1], "base64"));
+
+  return jsQR(new Uint8ClampedArray(png.data), png.width, png.height)?.data;
+}
+
 describe("conference share QR", () => {
   it("decodes to the public join destination", async () => {
     const dataUrl = await generateShareQrDataUrl();
-    const png = PNG.sync.read(Buffer.from(dataUrl.split(",")[1], "base64"));
-    const decoded = jsQR(
-      new Uint8ClampedArray(png.data),
-      png.width,
-      png.height,
-    );
 
     expect(SHARE_DESTINATION).toBe("https://mewtuals.com/join");
-    expect(decoded?.data).toBe("https://mewtuals.com/join");
+    expect(decodeQrDataUrl(dataUrl)).toBe(SHARE_DESTINATION);
   });
 
   it("presents the join invitation and fallback link", async () => {
@@ -29,9 +29,14 @@ describe("conference share QR", () => {
     expect(
       screen.getByRole("heading", { name: "Scan to join Mewtuals" }),
     ).toBeVisible();
-    expect(
-      screen.getByRole("img", { name: "QR code to join Mewtuals" }),
-    ).toBeVisible();
+    const qrImage = screen.getByRole<HTMLImageElement>("img", {
+      name: "QR code to join Mewtuals",
+    });
+    const renderedQrSrc = qrImage.getAttribute("src");
+
+    expect(qrImage).toBeVisible();
+    expect(renderedQrSrc).not.toBeNull();
+    expect(decodeQrDataUrl(renderedQrSrc ?? "")).toBe(SHARE_DESTINATION);
     expect(
       screen.getByRole("link", { name: "mewtuals.com/join" }),
     ).toHaveAttribute("href", "/join");
