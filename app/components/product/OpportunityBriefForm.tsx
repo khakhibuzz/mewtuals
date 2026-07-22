@@ -71,14 +71,15 @@ export function OpportunityBriefForm({
   const [values, setValues] = useState(initialValues);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [generalError, setGeneralError] = useState<string>();
+  const [errorFocusVersion, setErrorFocusVersion] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [submission, setSubmission] = useState<Submission>();
   const errorSummary = useRef<HTMLDivElement>(null);
   const successHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
-    if (generalError) errorSummary.current?.focus();
-  }, [generalError, errors]);
+    if (errorFocusVersion > 0) errorSummary.current?.focus();
+  }, [errorFocusVersion]);
 
   useEffect(() => {
     if (submission) successHeading.current?.focus();
@@ -103,6 +104,7 @@ export function OpportunityBriefForm({
     if (!parsed.success) {
       setErrors(fieldErrors(parsed.error));
       setGeneralError("Review the fields below.");
+      setErrorFocusVersion((current) => current + 1);
       return;
     }
 
@@ -122,11 +124,13 @@ export function OpportunityBriefForm({
             : (result.error ??
               "We could not save your request. Please try again."),
         );
+        setErrorFocusVersion((current) => current + 1);
         return;
       }
       setSubmission(result.submission);
     } catch {
       setGeneralError("We could not save your request. Please try again.");
+      setErrorFocusVersion((current) => current + 1);
     } finally {
       setSubmitting(false);
     }

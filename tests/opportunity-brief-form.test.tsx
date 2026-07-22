@@ -84,6 +84,27 @@ describe("public Opportunity Brief form", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("keeps focus in a field while correcting client validation errors", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn());
+    render(<OpportunityBriefForm tracking={tracking} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Get my opportunity brief" }),
+    );
+
+    const summary = await screen.findByRole("alert");
+    const profileUrl = screen.getByLabelText("Public profile URL");
+    expect(summary).toHaveFocus();
+
+    profileUrl.focus();
+    for (const character of "https://example.com") {
+      await user.type(profileUrl, character);
+      expect(profileUrl).toHaveFocus();
+      expect(summary).not.toHaveFocus();
+    }
+  });
+
   it("shows a disabled loading state while the public request is pending", async () => {
     const user = userEvent.setup();
     let resolveRequest!: (value: Response) => void;
@@ -120,6 +141,32 @@ describe("public Opportunity Brief form", () => {
       "Profile URL is invalid.",
     );
     expect(screen.getByLabelText("Public profile URL")).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("keeps focus in a field while correcting a server validation error", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      ok: false,
+      error: "Review the Opportunity Brief request.",
+      errors: { profileUrl: "Profile URL is invalid." },
+    }), { status: 400, headers: { "Content-Type": "application/json" } })));
+    render(<OpportunityBriefForm tracking={tracking} />);
+    await fillRequiredFields(user);
+
+    await user.click(
+      screen.getByRole("button", { name: "Get my opportunity brief" }),
+    );
+
+    const summary = await screen.findByRole("alert");
+    const profileUrl = screen.getByLabelText("Public profile URL");
+    expect(summary).toHaveFocus();
+
+    profileUrl.focus();
+    for (const character of "/corrected") {
+      await user.type(profileUrl, character);
+      expect(profileUrl).toHaveFocus();
+      expect(summary).not.toHaveFocus();
+    }
   });
 
   it("focuses the exact success confirmation and shows only the current submission", async () => {
