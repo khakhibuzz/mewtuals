@@ -212,6 +212,64 @@ describe("Mewtuals discovery control-plane acceptance", () => {
     }
   });
 
+  it("abandons a running discovery job when its private lease is irrecoverably lost", async () => {
+    let currentTime = new Date("2026-07-22T06:00:00.000Z");
+    const tokens = [`abandon-run-${testId}`, `abandon-lease-${testId}`];
+    const service = createDiscoveryService({
+      repository: createDiscoveryRepository(database),
+      adminEmails: [adminEmail],
+      workerSecret,
+      config: discoveryConfig,
+      now: () => currentTime,
+      token: () => {
+        const next = tokens.shift();
+        if (!next) throw new Error("Discovery abandonment token fixture exhausted.");
+        return next;
+      },
+    });
+
+    const queued = await service.queueManualRun(adminActor);
+    if (!queued.ok) throw new Error("Abandonment run was not queued.");
+    createdRunIds.add(queued.run.id);
+
+    currentTime = new Date(currentTime.getTime() + 1_000);
+    const claimed = await service.claimRun("scheduled");
+    expect(claimed).toMatchObject({
+      ok: true,
+      claimed: true,
+      runId: queued.run.id,
+    });
+
+    currentTime = new Date(currentTime.getTime() + 1_000);
+    const abandoned = await service.abandonRun(queued.run.id, {
+      runId: queued.run.id,
+      message: "Private lease was lost after a confirmed worker failure.",
+    });
+
+    expect(abandoned).toMatchObject({
+      ok: true,
+      outcome: "failed",
+      run: { id: queued.run.id, status: "failed" },
+    });
+    const [stored] = await database
+      .select({
+        status: discoveryRuns.status,
+        errorSummary: discoveryRuns.errorSummary,
+      })
+      .from(discoveryRuns)
+      .where(eq(discoveryRuns.id, queued.run.id))
+      .limit(1);
+    expect(stored).toEqual({
+      status: "failed",
+      errorSummary: {
+        failure: {
+          code: "worker_abandoned",
+          message: "Private lease was lost after a confirmed worker failure.",
+        },
+      },
+    });
+  });
+
   it("preserves an administrator decision across a complete Codex-worker discovery journey", async () => {
     let currentTime = new Date("2026-07-22T06:30:00.000Z");
     const tokens = [

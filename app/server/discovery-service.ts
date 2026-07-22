@@ -106,6 +106,15 @@ const discoveryFailureSchema = z.strictObject({
     .max(1_000, { message: "Discovery failure message is too long." }),
 });
 
+const discoveryAbandonmentSchema = z.strictObject({
+  runId: z.string().uuid({ message: "Discovery run id must be a valid UUID." }),
+  message: z
+    .string()
+    .trim()
+    .min(1, { message: "Discovery abandonment message is required." })
+    .max(1_000, { message: "Discovery abandonment message is too long." }),
+});
+
 const candidateIdSchema = z.string().uuid({
   message: "Discovery candidate id must be a valid UUID.",
 });
@@ -504,6 +513,33 @@ export function createDiscoveryService(
         message: parsed.data.message,
       });
       return runResult(result);
+    },
+
+    async abandonRun(routeRunId: string, input: unknown) {
+      const parsed = discoveryAbandonmentSchema.safeParse(input);
+      if (!parsed.success) {
+        return {
+          ok: false as const,
+          status: 400 as const,
+          error: "Submit a valid discovery abandonment.",
+          errors: validationDetails(parsed.error),
+        };
+      }
+      if (parsed.data.runId !== routeRunId) {
+        return {
+          ok: false as const,
+          status: 400 as const,
+          error: "Discovery route and abandonment run ids must match.",
+        };
+      }
+
+      return runResult(
+        await dependencies.repository.abandonRun({
+          runId: parsed.data.runId,
+          now: now(),
+          message: parsed.data.message,
+        }),
+      );
     },
 
     async updateCandidateStatus(

@@ -77,6 +77,12 @@ export type FailDiscoveryRunInput = {
   message: string;
 };
 
+export type AbandonDiscoveryRunInput = {
+  runId: string;
+  now: Date;
+  message: string;
+};
+
 export type UpdateCandidateStatusInput = {
   candidateId: string;
   status: (typeof candidateStatuses)[number];
@@ -149,6 +155,7 @@ export type DiscoveryRepository = {
   getRun(runId: string): Promise<DiscoveryRun | null>;
   completeRun(input: CompleteDiscoveryRunInput): Promise<DiscoveryRunResult>;
   failRun(input: FailDiscoveryRunInput): Promise<DiscoveryRunResult>;
+  abandonRun(input: AbandonDiscoveryRunInput): Promise<DiscoveryRunResult>;
   updateCandidateStatus(
     input: UpdateCandidateStatusInput,
   ): Promise<UpdateCandidateStatusResult>;
@@ -753,6 +760,45 @@ export function createDiscoveryRepository(
           .where(eq(discoveryRuns.id, run.id))
           .returning();
         if (!failed) throw new Error("Discovery run was not failed.");
+        return { outcome: "failed" as const, run: failed };
+      });
+    },
+
+    async abandonRun(input) {
+      return database.transaction(async (transaction) => {
+        const [run] = await transaction
+          .select()
+          .from(discoveryRuns)
+          .where(eq(discoveryRuns.id, input.runId))
+          .for("update")
+          .limit(1);
+        if (!run) return { outcome: "not_found" as const };
+
+        const message = input.message.trim().slice(0, 1_000);
+        if (run.status === "failed" && storedFailureMessage(run) === message) {
+          return { outcome: "replayed" as const, run };
+        }
+        if (run.status !== "running") {
+          return {
+            outcome: "conflict" as const,
+            reason: "invalid_state" as const,
+            run,
+          };
+        }
+
+        const [failed] = await transaction
+          .update(discoveryRuns)
+          .set({
+            status: "failed",
+            completedAt: input.now,
+            updatedAt: input.now,
+            errorSummary: {
+              failure: { code: "worker_abandoned", message },
+            },
+          })
+          .where(eq(discoveryRuns.id, run.id))
+          .returning();
+        if (!failed) throw new Error("Discovery run was not abandoned.");
         return { outcome: "failed" as const, run: failed };
       });
     },

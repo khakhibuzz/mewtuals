@@ -215,6 +215,39 @@ export function createWorkerFailHandler(dependencies: {
   };
 }
 
+export function createWorkerAbandonHandler(dependencies: {
+  authenticateWorker: (authorization: string | null) => boolean;
+  abandon: (runId: string, body: unknown) => Promise<DiscoveryHttpResult>;
+}) {
+  return async function POST(
+    request: Request,
+    context: { params: Promise<{ runId: string }> },
+  ) {
+    if (!dependencies.authenticateWorker(request.headers.get("authorization"))) {
+      return workerAuthenticationFailure();
+    }
+    if (!isJsonRequest(request)) return jsonContentTypeFailure();
+    const body = await readBoundedWorkerJson(request);
+    if (!body.ok) return body.response;
+    const { runId } = await context.params;
+    if (
+      !body.value ||
+      typeof body.value !== "object" ||
+      Array.isArray(body.value) ||
+      (body.value as { runId?: unknown }).runId !== runId
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Discovery route and abandonment run ids must match.",
+        },
+        { status: 400 },
+      );
+    }
+    return discoveryResponse(await dependencies.abandon(runId, body.value));
+  };
+}
+
 export function createAdminDiscoveryRunsPostHandler(dependencies: {
   getSession: SessionReader;
   queue: (actor: DiscoveryAdminActor) => Promise<DiscoveryHttpResult>;

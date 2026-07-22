@@ -5,6 +5,7 @@ import {
   createAdminDiscoveryCandidateHandler,
   createAdminDiscoveryRunsGetHandler,
   createAdminDiscoveryRunsPostHandler,
+  createWorkerAbandonHandler,
   createWorkerClaimHandler,
   createWorkerCompleteHandler,
   createWorkerFailHandler,
@@ -19,6 +20,7 @@ function createRouteRepository(): DiscoveryRepository {
     getRun: vi.fn(),
     completeRun: vi.fn(),
     failRun: vi.fn(),
+    abandonRun: vi.fn(),
     updateCandidateStatus: vi.fn(),
     getAdminSummary: vi.fn(),
   };
@@ -656,6 +658,38 @@ describe("discovery route adapters", () => {
     expect(fail).toHaveBeenCalledWith(runId, body);
   });
 
+  it("passes an authenticated orphaned-run abandonment to the discovery service", async () => {
+    const abandon = vi.fn(async () => ({
+      ok: true as const,
+      outcome: "failed",
+      run: { status: "failed" },
+    }));
+    const handler = createWorkerAbandonHandler({
+      authenticateWorker: () => true,
+      abandon,
+    });
+    const runId = "00000000-0000-4000-8000-000000000046";
+    const body = { runId, message: "Lost lease after a confirmed failure." };
+
+    const response = await handler(
+      new Request(
+        `https://mewtuals.com/api/discovery/worker/runs/${runId}/abandon`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer worker-secret",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        },
+      ),
+      { params: Promise.resolve({ runId }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(abandon).toHaveBeenCalledWith(runId, body);
+  });
+
   it("rejects cross-origin administrator queue mutations", async () => {
     const queue = vi.fn();
     const handler = createAdminDiscoveryRunsPostHandler({
@@ -898,10 +932,11 @@ describe("discovery route adapters", () => {
   });
 
   it("keeps production route modules as thin exported compositions", async () => {
-    const [claim, complete, fail, runs, candidate] = await Promise.all([
+    const [claim, complete, fail, abandon, runs, candidate] = await Promise.all([
       import("../app/api/discovery/worker/claim/route"),
       import("../app/api/discovery/worker/runs/[runId]/complete/route"),
       import("../app/api/discovery/worker/runs/[runId]/fail/route"),
+      import("../app/api/discovery/worker/runs/[runId]/abandon/route"),
       import("../app/api/admin/discovery/runs/route"),
       import("../app/api/admin/discovery/candidates/[candidateId]/route"),
     ]);
@@ -909,6 +944,7 @@ describe("discovery route adapters", () => {
     expect(claim.POST).toBeTypeOf("function");
     expect(complete.POST).toBeTypeOf("function");
     expect(fail.POST).toBeTypeOf("function");
+    expect(abandon.POST).toBeTypeOf("function");
     expect(runs.GET).toBeTypeOf("function");
     expect(runs.POST).toBeTypeOf("function");
     expect(candidate.PATCH).toBeTypeOf("function");

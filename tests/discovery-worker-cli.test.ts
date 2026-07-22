@@ -884,6 +884,60 @@ describe("discovery worker CLI", () => {
     expect(`${result.stdout}${result.stderr}`).not.toContain(batch.leaseToken);
   });
 
+  it("abandons an orphaned run without logging the recovery message", async () => {
+    const batch = validBatch();
+    const workerSecret = "abandon-worker-secret-never-print";
+    const recoveryMessage = "lost lease after confirmed submit failure";
+    const requests: CapturedRequest[] = [];
+    const apiBaseUrl = await startApiServer((request, response, body) => {
+      requests.push({
+        method: request.method,
+        url: request.url,
+        authorization: request.headers.authorization,
+        contentType: request.headers["content-type"],
+        body,
+      });
+      jsonResponse(response, 200, {
+        ok: true,
+        outcome: "failed",
+        run: { id: batch.runId, status: "failed" },
+      });
+    });
+
+    const result = await runWorker(
+      [
+        "abandon",
+        "--run-id",
+        batch.runId,
+        "--message",
+        recoveryMessage,
+      ],
+      {
+        DISCOVERY_API_BASE_URL: apiBaseUrl,
+        DISCOVERY_WORKER_SECRET: workerSecret,
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(requests).toEqual([
+      {
+        method: "POST",
+        url: `/api/discovery/worker/runs/${batch.runId}/abandon`,
+        authorization: `Bearer ${workerSecret}`,
+        contentType: "application/json",
+        body: JSON.stringify({ runId: batch.runId, message: recoveryMessage }),
+      },
+    ]);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      command: "abandon",
+      outcome: "failed",
+      run: { id: batch.runId, status: "failed" },
+    });
+    expect(`${result.stdout}${result.stderr}`).not.toContain(workerSecret);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(recoveryMessage);
+  });
+
   it("fails non-zero on a non-2xx API response without logging its body", async () => {
     const workerSecret = "rejected-worker-secret-never-print";
     const rejectedBodySecret = "rejected-server-body-never-print";

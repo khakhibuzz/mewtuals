@@ -329,7 +329,7 @@ function safeRunSummary(value: unknown): Record<string, unknown> {
 }
 
 function safeMutationResult(
-  command: "submit" | "fail",
+  command: "submit" | "fail" | "abandon",
   response: Record<string, unknown>,
   requestedRunId: string,
 ) {
@@ -441,6 +441,27 @@ async function fail(options: Map<string, string>) {
   );
 }
 
+async function abandon(options: Map<string, string>) {
+  assertAllowedOptions(options, ["--run-id", "--message"]);
+  const runId = requiredOption(options, "--run-id");
+  const message = requiredOption(options, "--message");
+  if (message.length > 1_000) {
+    throw new DiscoveryCliError(
+      "Worker option --message must be at most 1000 characters.",
+    );
+  }
+
+  return safeMutationResult(
+    "abandon",
+    await postWorkerJson(
+      "abandon",
+      `/api/discovery/worker/runs/${encodeURIComponent(runId)}/abandon`,
+      JSON.stringify({ runId, message }),
+    ),
+    runId,
+  );
+}
+
 async function main() {
   loadLocalEnvironment();
   const { command, options } = parseArguments(process.argv.slice(2));
@@ -451,12 +472,14 @@ async function main() {
         ? await claim(options)
         : command === "submit"
           ? await submit(options)
-          : command === "fail"
-            ? await fail(options)
-            : null;
+      : command === "fail"
+        ? await fail(options)
+        : command === "abandon"
+          ? await abandon(options)
+        : null;
   if (!result) {
     throw new DiscoveryCliError(
-      "Worker command must be one of: validate, claim, submit, fail.",
+      "Worker command must be one of: validate, claim, submit, fail, abandon.",
     );
   }
 

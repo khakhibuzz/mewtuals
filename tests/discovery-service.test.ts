@@ -20,6 +20,7 @@ function createRepositoryDouble(): DiscoveryRepository {
     }) as never),
     completeRun: vi.fn(),
     failRun: vi.fn(),
+    abandonRun: vi.fn(),
     updateCandidateStatus: vi.fn(),
     getAdminSummary: vi.fn(),
   };
@@ -780,6 +781,44 @@ describe("discovery service", () => {
     });
     expect(result).toMatchObject({ ok: true, outcome: "failed" });
     expect(JSON.stringify(result)).not.toContain("lease-token");
+  });
+
+  it("abandons an orphaned run without requiring its lost lease", async () => {
+    const repository = createRepositoryDouble() as DiscoveryRepository & {
+      abandonRun: ReturnType<typeof vi.fn>;
+    };
+    repository.abandonRun = vi.fn().mockResolvedValue({
+      outcome: "failed",
+      run: { status: "failed" },
+    });
+    const now = new Date("2026-07-22T03:30:00.000Z");
+    const service = createDiscoveryService({
+      repository,
+      adminEmails: [],
+      workerSecret: "worker-secret",
+      config: {
+        geographies: ["India"],
+        companyCategories: ["technology"],
+        creatorCategories: ["technology"],
+        totalCandidates: 20,
+        companyPercentage: 50,
+        enabledSources: ["codex_web"],
+      },
+      now: () => now,
+    });
+    const runId = "00000000-0000-4000-8000-000000000045";
+
+    const result = await service.abandonRun(runId, {
+      runId,
+      message: "  Lost lease after a confirmed submit failure.  ",
+    });
+
+    expect(repository.abandonRun).toHaveBeenCalledWith({
+      runId,
+      now,
+      message: "Lost lease after a confirmed submit failure.",
+    });
+    expect(result).toMatchObject({ ok: true, outcome: "failed" });
   });
 
   it("rejects unknown failure fields instead of hashing a stripped shape", async () => {
