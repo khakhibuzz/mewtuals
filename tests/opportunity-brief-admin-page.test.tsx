@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import OpportunityBriefAdminPage, {
@@ -155,8 +155,8 @@ describe("Opportunity Brief administrator page", () => {
 
   it.each([
     [400, "/admin/opportunity-briefs"],
-    [500, "/dashboard"],
-  ] as const)("distinguishes service status %s on the page", async (status, path) => {
+    [403, "/dashboard"],
+  ] as const)("redirects actual service status %s to %s", async (status, path) => {
     vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
     vi.mocked(getOpportunityBriefService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
@@ -170,6 +170,33 @@ describe("Opportunity Brief administrator page", () => {
     await expect(
       OpportunityBriefAdminPage({ searchParams: Promise.resolve({}) }),
     ).rejects.toThrow(`redirect:${path}`);
+  });
+
+  it("renders a safe administrator error with retry after an authorized snapshot failure", async () => {
+    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
+    vi.mocked(getOpportunityBriefService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
+      getAdminSnapshot: vi.fn(async () => ({
+        ok: false,
+        status: 500,
+        error: "database hostname and secret must not leak",
+      })),
+    } as never);
+
+    render(await OpportunityBriefAdminPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByRole("heading", { name: "Opportunity Brief requests." })).toBeVisible();
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("could not load Opportunity Brief requests");
+    expect(alert).not.toHaveTextContent("database hostname");
+    expect(within(alert).getByRole("link", { name: "Retry" })).toHaveAttribute(
+      "href",
+      "/admin/opportunity-briefs",
+    );
+    expect(screen.getByRole("link", { name: "Discovery" })).toHaveAttribute(
+      "href",
+      "/admin/discovery",
+    );
   });
 
   it("renders the normalized page returned by the service", async () => {

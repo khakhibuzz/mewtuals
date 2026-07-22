@@ -168,6 +168,224 @@ describe("Opportunity Brief dashboard", () => {
     expect(opener).toHaveFocus();
   });
 
+  it("reconciles an uncancelled PATCH after Escape closes the dialog", async () => {
+    const user = userEvent.setup();
+    const researchingRequest = {
+      ...request,
+      status: "researching" as const,
+      updatedAt: "2026-07-22T07:00:00.000Z",
+    };
+    const notedRequest = {
+      ...researchingRequest,
+      adminNotes: "Version check",
+      updatedAt: "2026-07-22T08:00:00.000Z",
+    };
+    let resolvePatch!: (response: Response) => void;
+    let resolveRefresh!: (response: Response) => void;
+    const patch = new Promise<Response>((resolve) => {
+      resolvePatch = resolve;
+    });
+    const refresh = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const fetchMock = vi.fn().mockReturnValueOnce(patch).mockReturnValueOnce(refresh);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.selectOptions(screen.getByLabelText("Status"), "researching");
+    await user.click(screen.getByRole("button", { name: "Save status" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeUndefined();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    resolvePatch(new Response(JSON.stringify({ request: researchingRequest }), { status: 200 }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent(
+        "Researching",
+      ),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    resolveRefresh(
+      new Response(
+        JSON.stringify({ snapshot: { ...snapshot, requests: [researchingRequest] } }),
+        { status: 200 },
+      ),
+    );
+
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request: notedRequest }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ snapshot: { ...snapshot, requests: [notedRequest] } }), {
+          status: 200,
+        }),
+      );
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.clear(screen.getByLabelText("Administrator notes"));
+    await user.type(screen.getByLabelText("Administrator notes"), "Version check");
+    await user.click(screen.getByRole("button", { name: "Save notes" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toMatchObject({
+      expectedUpdatedAt: researchingRequest.updatedAt,
+      notes: "Version check",
+    });
+  });
+
+  it("keeps a pending PATCH alive across a canonical view change without merging it", async () => {
+    const user = userEvent.setup();
+    const creatorRequest = {
+      ...request,
+      id: "00000000-0000-4000-8000-000000000303",
+      participantType: "creator" as const,
+      profileUrl: "https://youtube.com/@creator",
+      email: "creator@example.com",
+    };
+    const researchingRequest = {
+      ...request,
+      status: "researching" as const,
+      updatedAt: "2026-07-22T07:00:00.000Z",
+    };
+    let resolvePatch!: (response: Response) => void;
+    const patch = new Promise<Response>((resolve) => {
+      resolvePatch = resolve;
+    });
+    const fetchMock = vi.fn().mockReturnValueOnce(patch);
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.selectOptions(screen.getByLabelText("Status"), "researching");
+    await user.click(screen.getByRole("button", { name: "Save status" }));
+    const patchSignal = fetchMock.mock.calls[0]?.[1]?.signal;
+    rerender(
+      <OpportunityBriefDashboard
+        snapshot={{ ...snapshot, requests: [creatorRequest] }}
+        filters={{ participantType: "creator" }}
+      />,
+    );
+    resolvePatch(new Response(JSON.stringify({ request: researchingRequest }), { status: 200 }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent(
+        "creator@example.com",
+      ),
+    );
+    expect(patchSignal).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).not.toHaveTextContent(
+      "founder@example.com",
+    );
+  });
+
+  it("reconciles PATCH completion after a same-view authoritative snapshot rerender", async () => {
+    const user = userEvent.setup();
+    const researchingRequest = {
+      ...request,
+      status: "researching" as const,
+      updatedAt: "2026-07-22T07:00:00.000Z",
+    };
+    let resolvePatch!: (response: Response) => void;
+    const patch = new Promise<Response>((resolve) => {
+      resolvePatch = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(patch)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            snapshot: {
+              ...snapshot,
+              summary: { ...snapshot.summary, total: 8 },
+              requests: [researchingRequest],
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.selectOptions(screen.getByLabelText("Status"), "researching");
+    await user.click(screen.getByRole("button", { name: "Save status" }));
+    rerender(
+      <OpportunityBriefDashboard
+        snapshot={{
+          ...snapshot,
+          summary: { ...snapshot.summary, total: 8 },
+        }}
+        filters={{}}
+      />,
+    );
+    resolvePatch(new Response(JSON.stringify({ request: researchingRequest }), { status: 200 }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent(
+        "Researching",
+      ),
+    );
+    expect(screen.getByRole("group", { name: "Opportunity Brief summary" })).toHaveTextContent(
+      "Total requests8",
+    );
+  });
+
+  it("shows global recovery when PATCH outcome cannot be confirmed after close", async () => {
+    const user = userEvent.setup();
+    let rejectPatch!: (error: Error) => void;
+    const patch = new Promise<Response>((_resolve, reject) => {
+      rejectPatch = reject;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockReturnValueOnce(patch));
+    render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.click(screen.getByRole("button", { name: "Save notes" }));
+    await user.keyboard("{Escape}");
+    rejectPatch(new Error("network unavailable"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("could not confirm whether the update was saved");
+    expect(within(alert).getByRole("link", { name: "Reload queue" })).toHaveAttribute(
+      "href",
+      "/admin/opportunity-briefs",
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("reconciles authoritative 409 data globally after the dialog closes", async () => {
+    const user = userEvent.setup();
+    const current = {
+      ...request,
+      status: "rejected" as const,
+      updatedAt: "2026-07-22T07:00:00.000Z",
+    };
+    let resolvePatch!: (response: Response) => void;
+    const patch = new Promise<Response>((resolve) => {
+      resolvePatch = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockReturnValueOnce(patch));
+    render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.click(screen.getByRole("button", { name: "Save notes" }));
+    await user.keyboard("{Escape}");
+    resolvePatch(
+      new Response(JSON.stringify({ error: "Conflict", request: current }), { status: 409 }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent(
+        "Rejected",
+      ),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("changed elsewhere");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("offers only allowed next statuses and submits the optimistic status guard", async () => {
     const user = userEvent.setup();
     const researchingRequest = { ...request, status: "researching" as const };
@@ -364,20 +582,22 @@ describe("Opportunity Brief dashboard", () => {
     const refresh = new Promise<Response>((resolve) => {
       resolveRefresh = resolve;
     });
-    vi.stubGlobal(
-      "fetch",
-      vi
+    const fetchMock = vi
         .fn()
         .mockResolvedValueOnce(new Response(JSON.stringify({ request: researchingRequest }), { status: 200 }))
-        .mockReturnValueOnce(refresh),
-    );
+        .mockReturnValueOnce(refresh);
+    vi.stubGlobal("fetch", fetchMock);
     render(<OpportunityBriefDashboard snapshot={twoRequestSnapshot} filters={{}} />);
     await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
     await user.selectOptions(screen.getByLabelText("Status"), "researching");
     await user.click(screen.getByRole("button", { name: "Save status" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Refreshing queue totals");
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeUndefined();
+    const refreshSignal = fetchMock.mock.calls[1]?.[1]?.signal as AbortSignal;
+    expect(refreshSignal.aborted).toBe(false);
 
     await user.click(screen.getByRole("button", { name: "Close Company Opportunity Brief" }));
+    expect(refreshSignal.aborted).toBe(true);
     await user.click(screen.getByRole("button", { name: "View creator Opportunity Brief details" }));
     expect(screen.getByRole("dialog", { name: "Creator Opportunity Brief" })).toBeVisible();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();

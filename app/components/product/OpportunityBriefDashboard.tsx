@@ -244,7 +244,7 @@ export function OpportunityBriefDashboard({
   filters: OpportunityBriefDashboardFilters;
 }) {
   const canonicalFilters = filterKey(filters);
-  const viewToken = `${canonicalFilters}\u0000${JSON.stringify(snapshot)}`;
+  const viewToken = canonicalFilters;
   const [snapshotState, setSnapshotState] = useState(() => ({
     source: snapshot,
     filters: canonicalFilters,
@@ -256,7 +256,10 @@ export function OpportunityBriefDashboard({
       : snapshot;
   const [selectedRequestId, setSelectedRequestId] = useState<string>();
   const [selectedRequestVersion, setSelectedRequestVersion] =
-    useState<{ request: OpportunityBriefDashboardRequest; view: string }>();
+    useState<{
+      request: OpportunityBriefDashboardRequest;
+      source: OpportunityBriefDashboardSnapshot;
+    }>();
   const [pendingState, setPendingState] = useState<{
     action: "status" | "notes" | "link" | "unlink";
     requestId: string;
@@ -267,16 +270,25 @@ export function OpportunityBriefDashboard({
     requestId: string;
     view: string;
   }>();
+  const [globalFeedbackState, setGlobalFeedbackState] = useState<{
+    feedback: Exclude<OpportunityBriefFeedback, null>;
+    view: string;
+  }>();
   const returnFocusRef = useRef<HTMLButtonElement | null>(null);
   const activeViewRef = useRef(viewToken);
+  const latestSnapshotRef = useRef(snapshot);
+  const latestFiltersRef = useRef(canonicalFilters);
   const operationSequenceRef = useRef(0);
-  const activeControllerRef = useRef<AbortController>();
+  const dialogSessionRef = useRef(0);
+  const mutationInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
+  const refreshControllerRef = useRef<AbortController>();
   const requests = currentSnapshot.requests;
   const selectedRequest =
     requests.find(({ id }) => id === selectedRequestId) ??
     (selectedRequestVersion &&
     selectedRequestVersion.request.id === selectedRequestId &&
-    selectedRequestVersion.view === viewToken
+    selectedRequestVersion.source === snapshot
       ? selectedRequestVersion.request
       : undefined);
   const pendingAction =
@@ -287,6 +299,8 @@ export function OpportunityBriefDashboard({
     feedbackState && feedbackState.requestId === selectedRequestId && feedbackState.view === viewToken
       ? feedbackState.feedback
       : null;
+  const globalFeedback =
+    globalFeedbackState?.view === viewToken ? globalFeedbackState.feedback : null;
   const hasFilters = Object.entries(filters).some(([key, value]) => key !== "page" && Boolean(value));
   const metrics = [
     ["Total requests", currentSnapshot.summary.total],
@@ -299,34 +313,42 @@ export function OpportunityBriefDashboard({
   const currentPage = Math.min(Math.max(1, currentSnapshot.page), totalPages);
 
   useEffect(() => {
+    latestSnapshotRef.current = snapshot;
+    latestFiltersRef.current = canonicalFilters;
+  }, [snapshot, canonicalFilters]);
+
+  useEffect(() => {
     activeViewRef.current = viewToken;
-    activeControllerRef.current?.abort();
-    activeControllerRef.current = undefined;
-    operationSequenceRef.current += 1;
+    dialogSessionRef.current += 1;
+    refreshControllerRef.current?.abort();
+    refreshControllerRef.current = undefined;
   }, [viewToken]);
 
-  useEffect(() => () => activeControllerRef.current?.abort(), []);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    refreshControllerRef.current?.abort();
+  }, []);
 
-  function invalidateActiveOperation() {
-    operationSequenceRef.current += 1;
-    activeControllerRef.current?.abort();
-    activeControllerRef.current = undefined;
+  function abortRefresh() {
+    refreshControllerRef.current?.abort();
+    refreshControllerRef.current = undefined;
   }
 
   function openRequest(requestId: string, trigger: HTMLButtonElement) {
-    invalidateActiveOperation();
+    abortRefresh();
+    dialogSessionRef.current += 1;
     returnFocusRef.current = trigger;
     setPendingState(undefined);
     setFeedbackState(undefined);
     const request = requests.find(({ id }) => id === requestId);
-    setSelectedRequestVersion(request ? { request, view: viewToken } : undefined);
+    setSelectedRequestVersion(request ? { request, source: snapshot } : undefined);
     setSelectedRequestId(requestId);
   }
 
   const closeRequest = useCallback(() => {
-    operationSequenceRef.current += 1;
-    activeControllerRef.current?.abort();
-    activeControllerRef.current = undefined;
+    dialogSessionRef.current += 1;
+    refreshControllerRef.current?.abort();
+    refreshControllerRef.current = undefined;
     setSelectedRequestId(undefined);
     setSelectedRequestVersion(undefined);
     setPendingState(undefined);
@@ -336,103 +358,131 @@ export function OpportunityBriefDashboard({
     queueMicrotask(() => trigger?.focus());
   }, []);
 
-  function replaceRequest(next: OpportunityBriefDashboardRequest, view: string) {
+  function replaceRequest(
+    next: OpportunityBriefDashboardRequest,
+    updateDialog: boolean,
+  ) {
+    const source = latestSnapshotRef.current;
+    const filtersKey = latestFiltersRef.current;
     setSnapshotState((current) => {
       const base =
-        current.source === snapshot && current.filters === canonicalFilters
+        current.source === source && current.filters === filtersKey
           ? current.value
-          : snapshot;
+          : source;
       return {
-        source: snapshot,
-        filters: canonicalFilters,
+        source,
+        filters: filtersKey,
         value: {
           ...base,
           requests: base.requests.map((item) => (item.id === next.id ? next : item)),
         },
       };
     });
-    if (next.id === selectedRequestId) setSelectedRequestVersion({ request: next, view });
+    if (updateDialog) setSelectedRequestVersion({ request: next, source });
   }
 
   async function mutate(mutation: OpportunityBriefMutation): Promise<boolean> {
-    if (!selectedRequest || activeControllerRef.current) return false;
+    if (!selectedRequest || mutationInFlightRef.current) return false;
     const kind = mutationKind(mutation);
     const operationId = operationSequenceRef.current + 1;
     operationSequenceRef.current = operationId;
     const operationView = viewToken;
     const requestId = selectedRequest.id;
-    const controller = new AbortController();
-    activeControllerRef.current = controller;
-    const isCurrentOperation = () =>
-      operationSequenceRef.current === operationId &&
-      activeViewRef.current === operationView &&
-      activeControllerRef.current === controller;
+    const dialogSession = dialogSessionRef.current;
+    mutationInFlightRef.current = true;
+    const isLatestMutation = () => operationSequenceRef.current === operationId;
+    const isSameView = () =>
+      mountedRef.current && activeViewRef.current === operationView;
+    const isCurrentDialog = () =>
+      isSameView() && dialogSessionRef.current === dialogSession;
+    const showFeedback = (
+      dialogFeedback: Exclude<OpportunityBriefFeedback, null>,
+      globalMessage = dialogFeedback.message,
+    ) => {
+      if (isCurrentDialog()) {
+        setFeedbackState({ requestId, view: operationView, feedback: dialogFeedback });
+      } else if (mountedRef.current) {
+        setGlobalFeedbackState({
+          view: activeViewRef.current,
+          feedback: { kind: "alert", message: globalMessage },
+        });
+      }
+    };
     setPendingState({ action: kind, requestId, view: operationView });
     setFeedbackState(undefined);
+    setGlobalFeedbackState(undefined);
     try {
       const response = await fetch(`/api/admin/opportunity-briefs/${requestId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ expectedUpdatedAt: selectedRequest.updatedAt, ...mutation }),
-        signal: controller.signal,
       });
       const result = (await response.json().catch(() => ({}))) as {
         error?: unknown;
         request?: unknown;
       };
       const current = requestFromResponse(result.request);
-      if (!isCurrentOperation()) return false;
       if (response.status === 409 && current) {
-        replaceRequest(current, operationView);
-        setFeedbackState({
-          requestId,
-          view: operationView,
-          feedback: {
+        if (isSameView()) replaceRequest(current, isCurrentDialog());
+        showFeedback(
+          {
             kind: "alert",
             message: "This request changed elsewhere. The latest data has been loaded; review it and try again.",
           },
-        });
+          "This request changed elsewhere. Reload the queue before making another update.",
+        );
         return false;
       }
       if (!response.ok) {
-        setFeedbackState({
-          requestId,
-          view: operationView,
-          feedback: {
+        showFeedback(
+          {
             kind: "alert",
             message:
               typeof result.error === "string" && result.error.trim()
                 ? result.error
                 : "The Opportunity Brief request could not be saved.",
           },
-        });
+          response.status === 409
+            ? "The latest request data could not be verified. Reload the queue before retrying."
+            : "The Opportunity Brief request could not be saved. Reload the queue before retrying.",
+        );
         return false;
       }
       if (!current || current.id !== requestId) {
+        showFeedback(
+          {
+            kind: "alert",
+            message: "The Opportunity Brief response could not be verified.",
+          },
+          "The update response could not be verified. Reload the queue before retrying.",
+        );
+        return false;
+      }
+      if (!isSameView()) return true;
+      replaceRequest(current, isCurrentDialog());
+      if (isCurrentDialog()) {
         setFeedbackState({
           requestId,
           view: operationView,
           feedback: {
-            kind: "alert",
-            message: "The Opportunity Brief response could not be verified.",
+            kind: "status",
+            message: "Update saved. Refreshing queue totals…",
           },
         });
-        return false;
       }
-      replaceRequest(current, operationView);
-      setFeedbackState({
-        requestId,
-        view: operationView,
-        feedback: {
-          kind: "status",
-          message: "Update saved. Refreshing queue totals…",
-        },
-      });
+
+      refreshControllerRef.current?.abort();
+      const refreshController = new AbortController();
+      refreshControllerRef.current = refreshController;
       let refreshed: OpportunityBriefDashboardSnapshot | null = null;
       try {
         const refreshResponse = await fetch(
           snapshotHref(filters, currentPage, currentSnapshot.pageSize),
-          { method: "GET", headers: { Accept: "application/json" }, signal: controller.signal },
+          {
+            method: "GET",
+            headers: { Accept: "application/json" },
+            signal: refreshController.signal,
+          },
         );
         const refreshResult = (await refreshResponse.json().catch(() => ({}))) as {
           snapshot?: unknown;
@@ -443,45 +493,48 @@ export function OpportunityBriefDashboard({
       } catch {
         refreshed = null;
       }
-      if (!isCurrentOperation()) return false;
+      const isCurrentRefresh = () =>
+        isSameView() && refreshControllerRef.current === refreshController;
+      if (!isCurrentRefresh()) return true;
+      refreshControllerRef.current = undefined;
       if (!refreshed) {
-        setFeedbackState({
-          requestId,
-          view: operationView,
-          feedback: {
+        showFeedback(
+          {
             kind: "alert",
             message:
               "Update saved, but the queue summary could not be refreshed. Reload to see current totals.",
           },
-        });
+          "Update saved, but the queue summary could not be refreshed. Reload the queue to reconcile totals.",
+        );
         return true;
       }
-      setSnapshotState({ source: snapshot, filters: canonicalFilters, value: refreshed });
-      setSelectedRequestVersion({
-        request: refreshed.requests.find(({ id }) => id === current.id) ?? current,
-        view: operationView,
-      });
-      setFeedbackState({
-        requestId,
-        view: operationView,
-        feedback: { kind: "status", message: successMessages[kind] },
-      });
-      return true;
-    } catch {
-      if (isCurrentOperation()) {
+      const source = latestSnapshotRef.current;
+      const filtersKey = latestFiltersRef.current;
+      setSnapshotState({ source, filters: filtersKey, value: refreshed });
+      if (isCurrentDialog()) {
+        setSelectedRequestVersion({
+          request: refreshed.requests.find(({ id }) => id === current.id) ?? current,
+          source,
+        });
         setFeedbackState({
           requestId,
           view: operationView,
-          feedback: {
-            kind: "alert",
-            message: "The Opportunity Brief request could not be saved.",
-          },
+          feedback: { kind: "status", message: successMessages[kind] },
         });
       }
+      return true;
+    } catch {
+      showFeedback(
+        {
+          kind: "alert",
+          message: "The Opportunity Brief request could not be saved.",
+        },
+        "We could not confirm whether the update was saved. Reload the queue before retrying.",
+      );
       return false;
     } finally {
-      if (isCurrentOperation()) {
-        activeControllerRef.current = undefined;
+      if (isLatestMutation()) {
+        mutationInFlightRef.current = false;
         setPendingState(undefined);
       }
     }
@@ -494,6 +547,13 @@ export function OpportunityBriefDashboard({
           <div key={term}><dt>{term}</dt><dd>{value}</dd></div>
         ))}
       </dl>
+
+      {globalFeedback ? (
+        <div className={styles.error} role="alert">
+          <span>{globalFeedback.message}</span>{" "}
+          <Link href="/admin/opportunity-briefs">Reload queue</Link>
+        </div>
+      ) : null}
 
       <form key={canonicalFilters} className={styles.opportunityFilters} action="/admin/opportunity-briefs" method="get" role="search" aria-label="Filter Opportunity Brief requests">
         <label><span>Participant type</span><select name="participantType" defaultValue={filters.participantType ?? ""}><option value="">All types</option><option value="company">Company</option><option value="creator">Creator</option></select></label>
