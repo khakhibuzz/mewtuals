@@ -141,7 +141,8 @@ Expected: PASS for schema contracts, fresh migration, `0004` → `0005` upgrade,
 - [ ] **Step 6: Commit**
 
 ```bash
-git add db/schema.ts db/types.ts tests/schema.test.ts drizzle scripts/test-migrations.mjs package.json package-lock.json
+git add db/schema.ts db/types.ts tests/schema.test.ts drizzle package.json package-lock.json
+git add -A scripts/test-discovery-migrations.mjs scripts/test-migrations.mjs
 git commit -m "feat: persist opportunity brief requests"
 ```
 
@@ -293,7 +294,7 @@ Expected: PASS with the QR decoder proving the tagged destination.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add app tests/opportunity-brief-routes.test.ts tests/opportunity-brief-form.test.tsx tests/product-pages.test.tsx tests/share-page.test.tsx tests/pwa.test.tsx tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts
+git add app/server/opportunity-brief-route.ts app/server/opportunity-brief.ts app/api/opportunity-briefs/route.ts app/components/product/OpportunityBriefForm.tsx app/components/product/product.module.css app/join/page.tsx app/network/join/page.tsx app/share/share-qr.ts tests/opportunity-brief-routes.test.ts tests/opportunity-brief-form.test.tsx tests/product-pages.test.tsx tests/share-page.test.tsx tests/pwa.test.tsx tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts
 git commit -m "feat: launch public opportunity brief intake"
 ```
 
@@ -338,7 +339,7 @@ Expected: PASS, including accessible dialog behavior and concurrency feedback.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add app/api/admin/opportunity-briefs app/admin/opportunity-briefs app/components/product app/admin/discovery/page.tsx app/admin/verifications/page.tsx tests/opportunity-brief-admin-routes.test.ts tests/opportunity-brief-dashboard.test.tsx tests/opportunity-brief-admin-page.test.tsx
+git add app/server/opportunity-brief-admin-route.ts app/api/admin/opportunity-briefs/route.ts app/api/admin/opportunity-briefs/\[requestId\]/route.ts app/admin/opportunity-briefs/page.tsx app/components/product/OpportunityBriefDashboard.tsx app/components/product/OpportunityBriefDetailDialog.tsx app/components/product/product.module.css app/admin/discovery/page.tsx app/admin/verifications/page.tsx tests/opportunity-brief-admin-routes.test.ts tests/opportunity-brief-dashboard.test.tsx tests/opportunity-brief-admin-page.test.tsx
 git commit -m "feat: operate opportunity briefs from admin"
 ```
 
@@ -359,7 +360,7 @@ The 390×844 browser test submits in under 30 seconds without auth, checks no ov
 
 - [ ] **Step 2: Run RED, then make only wiring/documentation fixes**
 
-Add both tests to the appropriate `test:acceptance`/`test:e2e` scripts. Run them and fix only integration gaps, accessible names, documented commands, or environment setup—not new product scope.
+Add the database acceptance file to `test:acceptance` and `test:db`, explicitly add `--exclude tests/opportunity-brief.acceptance.integration.test.ts` to `test:unit`, and add the browser file to `test:e2e`. Run them and fix only integration gaps, accessible names, documented commands, or environment setup—not new product scope.
 
 - [ ] **Step 3: Run complete local release gates**
 
@@ -385,7 +386,7 @@ Use the approved Playwright wrapper at 390×844. Capture `/join`, submit a repre
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tests package.json package-lock.json README.md docs/product-v1-operations.md
+git add tests/opportunity-brief.acceptance.integration.test.ts tests/e2e/opportunity-brief.spec.ts package.json package-lock.json README.md docs/product-v1-operations.md
 git commit -m "test: verify opportunity brief journey"
 ```
 
