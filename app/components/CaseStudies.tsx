@@ -1,20 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { CaseStudyDialog } from "./CaseStudyDialog";
 import { CaseStudy, caseStudies } from "../data/caseStudies";
 
 export function CaseStudies() {
   const [selectedStudy, setSelectedStudy] = useState<CaseStudy | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const applicationFocusPendingRef = useRef(false);
-
-  useEffect(() => {
-    if (selectedStudy || !applicationFocusPendingRef.current) return;
-
-    applicationFocusPendingRef.current = false;
-    document.getElementById("company-url")?.focus();
-  }, [selectedStudy]);
 
   function openStudy(study: CaseStudy, trigger: HTMLButtonElement) {
     triggerRef.current = trigger;
@@ -22,16 +14,10 @@ export function CaseStudies() {
   }
 
   function closeStudy(restoreFocus = true) {
-    applicationFocusPendingRef.current = false;
     setSelectedStudy(null);
     if (restoreFocus) {
       queueMicrotask(() => triggerRef.current?.focus());
     }
-  }
-
-  function applyFromStudy() {
-    applicationFocusPendingRef.current = true;
-    setSelectedStudy(null);
   }
 
   return (
@@ -80,7 +66,6 @@ export function CaseStudies() {
 
       {selectedStudy && (
         <CaseStudyDialog
-          onApply={applyFromStudy}
           onClose={() => closeStudy(true)}
           study={selectedStudy}
         />

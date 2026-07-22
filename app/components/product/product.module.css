@@ -680,48 +680,6 @@
   }
 }
 
-@media (max-width: 620px) {
-  .header {
-    align-items: flex-start;
-    gap: 1rem;
-    padding-top: 1rem;
-    padding-bottom: 1rem;
-  }
-
-  .headerControls {
-    align-items: flex-end;
-    flex-direction: column;
-  }
-
-  .headerNav {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
-  .discoverySummary,
-  .discoveryFilters,
-  .discoveryRunList,
-  .discoveryDrawerDetails,
-  .discoveryRecord dl {
-    grid-template-columns: 1fr;
-  }
-
-  .discoveryFilters {
-    padding: 1rem;
-  }
-
-  .discoveryFilterActions,
-  .discoveryStatusActions {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .discoveryDrawer {
-    width: 100%;
-    border-left: 0;
-  }
-}
-
 .discoveryRunHeading p {
   font-weight: 600;
 }
@@ -1110,26 +1068,206 @@
   font-size: 0.84rem;
 }
 
-@media (max-width: 620px) {
+@media (max-width: 767px) {
   .shell {
-    background: var(--paper);
+    background:
+      linear-gradient(to right, transparent calc(50% - 0.5px), var(--line) 50%, transparent calc(50% + 0.5px)),
+      var(--paper);
+  }
+
+  .header {
+    align-items: flex-start;
+    gap: 1rem;
+    min-height: 4.25rem;
+    padding-top: 1rem;
+    padding-left: var(--page-gutter);
+    padding-right: var(--page-gutter-end);
+    padding-bottom: 1rem;
+  }
+
+  .headerControls {
+    align-items: flex-end;
+    flex-direction: column;
+  }
+
+  .headerNav {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .wordmark {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .headerLink {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .headerButton {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .main {
+    width: 100%;
+    min-height: calc(100svh - 4.25rem);
+    padding-top: 2.5rem;
+    padding-right: var(--page-gutter-end);
+    padding-bottom: 3.5rem;
+    padding-left: var(--page-gutter);
+  }
+
+  .panel {
+    width: 100%;
+    padding: 1.5rem 0 2.5rem;
+  }
+
+  .panelWide {
+    width: 100%;
+    padding: 1.5rem 0 2.5rem;
+  }
+
+  .discoveryFilterField input,
+  .discoveryFilterField select {
+    min-height: 48px;
+  }
+
+  .discoverySummary,
+  .discoveryFilters,
+  .discoveryRunList,
+  .discoveryDrawerDetails,
+  .discoveryRecord dl {
+    grid-template-columns: 1fr;
+  }
+
+  .discoveryFilters {
+    padding: 1rem;
+  }
+
+  .discoveryFilterActions,
+  .discoveryStatusActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .discoveryDrawer {
+    width: 100%;
+    border-left: 0;
+  }
+
+  .discoveryLinks a,
+  .discoveryDetailButton,
+  .discoveryTextLink,
+  .discoveryPagination a,
+  .discoveryEvidenceList a {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .title {
+    font-size: clamp(2rem, 12vw, 3rem);
+  }
+
+  .form {
+    gap: 1.25rem;
+    margin-top: 2.25rem;
+  }
+
+  .input {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .select {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .textarea {
+    width: 100%;
+    min-height: 6.5rem;
+  }
+
+  .button {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .secondaryButton {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .status {
+    line-height: 1.55;
+  }
+
+  .status a,
+  .error a {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
   }
 
   .choices {
     grid-template-columns: 1fr;
   }
 
-  .main {
-    padding-top: 3rem;
+  .choice {
+    min-height: 48px;
+    padding: 0.85rem;
   }
 
-  .memberSummary,
-  .opportunityMeta,
+  .confirmation {
+    min-height: 48px;
+    padding: 0.25rem 0;
+  }
+
+  .memberSummary {
+    grid-template-columns: 1fr;
+  }
+
+  .opportunityMeta {
+    grid-template-columns: 1fr;
+  }
+
   .queueEvidence {
     grid-template-columns: 1fr;
   }
 
-  .sectionHeadingRow,
+  .memberSummary dd {
+    overflow-wrap: anywhere;
+  }
+
+  .opportunityMeta dd {
+    overflow-wrap: anywhere;
+  }
+
+  .queueEvidence dd {
+    overflow-wrap: anywhere;
+  }
+
+  .queueEvidence a {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .sectionHeadingRow {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .developmentAction {
     align-items: flex-start;
     flex-direction: column;
@@ -1139,8 +1277,14 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .inlineChoices,
-  .interestGrid,
+  .inlineChoices {
+    grid-template-columns: 1fr;
+  }
+
+  .interestGrid {
+    grid-template-columns: 1fr;
+  }
+
   .opportunityDetails {
     grid-template-columns: 1fr;
   }
@@ -1148,5 +1292,38 @@
   .cardHeader {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .exampleCard {
+    width: 100%;
+    padding: 1.25rem;
+  }
+
+  .opportunityCard {
+    width: 100%;
+    padding: 1.25rem;
+  }
+
+  .queueCard {
+    width: 100%;
+    padding: 1.25rem;
+  }
+
+  .compactChoice {
+    min-height: 48px;
+  }
+
+  .reviewActions {
+    flex-direction: column;
+  }
+
+  .reviewActions > * {
+    width: 100%;
+  }
+
+  @media (max-width: 360px) {
+    .placeholderGrid {
+      grid-template-columns: 1fr;
+    }
   }
 }
