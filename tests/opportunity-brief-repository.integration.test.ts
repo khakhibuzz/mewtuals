@@ -571,6 +571,47 @@ describe("Opportunity Brief transactional submission persistence", () => {
     }
   }, 20_000);
 
+  it("expires an attempt exactly at the rolling boundary but counts one just inside", async () => {
+    const submittedAt = new Date(baseTime.getTime() + 15 * 60 * 1_000);
+    const exactBoundaryRequester = `rate-boundary-exact-${testId}`;
+    for (let index = 0; index < 8; index += 1) {
+      await repository.submit(
+        submissionInput(`rate-boundary-exact-${index}`, {
+          requesterHash: exactBoundaryRequester,
+          submittedAt: baseTime,
+        }),
+      );
+    }
+    await expect(
+      repository.submit(
+        submissionInput("rate-boundary-exact-new", {
+          requesterHash: exactBoundaryRequester,
+          submittedAt,
+        }),
+      ),
+    ).resolves.toMatchObject({ outcome: "accepted" });
+
+    const insideRequester = `rate-boundary-inside-${testId}`;
+    const justInside = new Date(baseTime.getTime() + 1);
+    for (let index = 0; index < 8; index += 1) {
+      await repository.submit(
+        submissionInput(`rate-boundary-inside-${index}`, {
+          requesterHash: insideRequester,
+          submittedAt: justInside,
+        }),
+      );
+    }
+    await expect(
+      repository.submit(
+        submissionInput("rate-boundary-inside-new", {
+          requesterHash: insideRequester,
+          submittedAt,
+        }),
+      ),
+    ).resolves.toEqual({ outcome: "rate_limited" });
+    expect(await storedRequest("rate-boundary-inside-new")).toBeNull();
+  });
+
   it("atomically merges concurrent duplicates without unique failures", async () => {
     const connections = Array.from({ length: 8 }, (_, index) =>
       createIndependentDatabase(`duplicate-${testId}-${index}`),
@@ -791,6 +832,65 @@ describe("Opportunity Brief acknowledgement persistence", () => {
       acknowledgementError: "Delivery rejected safely.",
     });
   });
+
+  it.each([
+    "request_id",
+    "pending_status",
+    "attempted_email",
+    "expected_updated_at",
+    "matching",
+  ] as const)(
+    "isolates the %s acknowledgement guard predicate",
+    async (predicate) => {
+      const suffix = `ack-guard-${predicate}`;
+      const accepted = await repository.submit(
+        submissionInput(suffix, { email: `${predicate}@example.test` }),
+      );
+      if (
+        accepted.outcome !== "accepted" ||
+        !accepted.acknowledgement.delivery
+      ) {
+        throw new Error("Acknowledgement delivery descriptor was required.");
+      }
+      const delivery = accepted.acknowledgement.delivery;
+      if (predicate === "pending_status") {
+        await database
+          .update(opportunityBriefRequests)
+          .set({
+            acknowledgementStatus: "failed",
+            acknowledgementError: "Existing failure",
+          })
+          .where(eq(opportunityBriefRequests.id, accepted.requestId));
+      }
+      const before = await storedRequest(suffix);
+      const sentAt = new Date(baseTime.getTime() + 5_000);
+      const result = await repository.recordAcknowledgement({
+        requestId:
+          predicate === "request_id" ? randomUUID() : accepted.requestId,
+        attemptedEmail:
+          predicate === "attempted_email"
+            ? "different@example.test"
+            : delivery.email,
+        expectedUpdatedAt:
+          predicate === "expected_updated_at"
+            ? new Date(delivery.expectedUpdatedAt.getTime() + 1)
+            : delivery.expectedUpdatedAt,
+        outcome: { status: "sent", at: sentAt },
+      });
+
+      if (predicate === "matching") {
+        expect(result).toEqual({ outcome: "recorded" });
+        expect(await storedRequest(suffix)).toMatchObject({
+          acknowledgementStatus: "sent",
+          acknowledgementSentAt: sentAt,
+          acknowledgementError: null,
+        });
+      } else {
+        expect(result).toEqual({ outcome: "stale" });
+        expect(await storedRequest(suffix)).toEqual(before);
+      }
+    },
+  );
 });
 
 describe("Opportunity Brief administrator persistence", () => {
@@ -898,6 +998,48 @@ describe("Opportunity Brief administrator persistence", () => {
     ).toBe(3);
   });
 
+  it("keeps summary, sources, filtered totals, and page rows on one repeatable snapshot", async () => {
+    await repository.submit(
+      submissionInput("snapshot-before", { source: "snapshot-source" }),
+    );
+    const summaryRead = Promise.withResolvers<void>();
+    const continueSnapshot = Promise.withResolvers<void>();
+    const controlledRepository = createOpportunityBriefRepository(database, {
+      async afterAdminSummaryRead() {
+        summaryRead.resolve();
+        await continueSnapshot.promise;
+      },
+    });
+    const writer = createIndependentDatabase(`snapshot-writer-${testId}`);
+    try {
+      const snapshotPromise = controlledRepository.getAdminSnapshot(baseTime, {
+        source: "snapshot-source",
+      });
+      await summaryRead.promise;
+      await createOpportunityBriefRepository(writer.database).submit(
+        submissionInput("snapshot-after", {
+          source: "snapshot-source",
+          requesterHash: `snapshot-writer-${testId}`,
+          submittedAt: new Date(baseTime.getTime() + 1_000),
+        }),
+      );
+      continueSnapshot.resolve();
+
+      const snapshot = await snapshotPromise;
+      expect(snapshot.summary).toMatchObject({
+        total: 1,
+        sources: { "snapshot-source": 1 },
+      });
+      expect(snapshot).toMatchObject({ totalPages: 1 });
+      expect(snapshot.requests).toHaveLength(1);
+      expect(snapshot.requests[0]?.profileUrl).toBe(profileUrl("snapshot-before"));
+      expect(await storedRequest("snapshot-after")).not.toBeNull();
+    } finally {
+      continueSnapshot.resolve();
+      await closeIndependentDatabases([writer]);
+    }
+  });
+
   it("reads candidate types and applies approved notes, status, link, and unlink mutations atomically", async () => {
     const submitted = await repository.submit(submissionInput("admin-mutations"));
     if (submitted.outcome !== "accepted") throw new Error("Fixture was rate limited.");
@@ -975,6 +1117,45 @@ describe("Opportunity Brief administrator persistence", () => {
         updatedAt: new Date(baseTime.getTime() + 5_000),
       }),
     ).rejects.toMatchObject({ cause: { code: "23503" } });
+  });
+
+  it("lets the service reject a concrete mismatched candidate type without linking", async () => {
+    const submitted = await repository.submit(
+      submissionInput("candidate-type-service", { participantType: "company" }),
+    );
+    if (submitted.outcome !== "accepted") throw new Error("Fixture was rate limited.");
+    const creator = await createDiscoveryCandidate({
+      type: "creator",
+      identifier: candidateIdentifierForProfileUrl(
+        profileUrl("candidate-type-service-creator"),
+      ),
+    });
+    const current = await repository.getAdminRequest(submitted.requestId);
+    if (!current) throw new Error("Fixture was not readable.");
+    const service = createOpportunityBriefService({
+      repository,
+      adminEmails: [testAdminEmail],
+      now: () => new Date(baseTime.getTime() + 1_000),
+    });
+
+    await expect(
+      service.linkCandidate(
+        { userId: `admin-${testId}`, email: testAdminEmail },
+        submitted.requestId,
+        {
+          candidateId: creator.id,
+          expectedUpdatedAt: current.updatedAt.toISOString(),
+        },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      status: 409,
+      error:
+        "Discovery candidate type does not match the request participant type.",
+    });
+    expect(await repository.getAdminRequest(submitted.requestId)).toMatchObject({
+      linkedCandidateId: null,
+    });
   });
 
   it("returns the current row on a real optimistic race and guards expected status", async () => {

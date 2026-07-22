@@ -4,6 +4,7 @@ import {
   and,
   desc,
   eq,
+  gt,
   gte,
   isNotNull,
   isNull,
@@ -61,6 +62,10 @@ const adminRequestSelection = {
 type OpportunityBriefTransaction = Parameters<
   Parameters<MewtualsDatabase["transaction"]>[0]
 >[0];
+
+type OpportunityBriefRepositoryDependencies = {
+  afterAdminSummaryRead?: () => Promise<void>;
+};
 
 function advisoryKey(value: string): number {
   return createHash("sha256").update(value).digest().readInt32BE(0);
@@ -215,6 +220,7 @@ function submissionUpdate(
 
 export function createOpportunityBriefRepository(
   database: MewtualsDatabase = getDb(),
+  dependencies: OpportunityBriefRepositoryDependencies = {},
 ): OpportunityBriefRepository {
   return {
     async submit(input) {
@@ -236,7 +242,7 @@ export function createOpportunityBriefRepository(
                 opportunityBriefSubmissionAttempts.requesterHash,
                 input.requesterHash,
               ),
-              gte(opportunityBriefSubmissionAttempts.createdAt, windowStart),
+              gt(opportunityBriefSubmissionAttempts.createdAt, windowStart),
             ),
           );
         if ((attempts?.count ?? 0) >= MAX_ATTEMPTS) {
@@ -450,6 +456,7 @@ export function createOpportunityBriefRepository(
             )::integer`,
           })
           .from(opportunityBriefRequests);
+        await dependencies.afterAdminSummaryRead?.();
         const sourceCounts = await transaction
           .select({
             source: opportunityBriefRequests.source,
@@ -497,6 +504,9 @@ export function createOpportunityBriefRepository(
           pageSize,
           totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
         };
+      }, {
+        isolationLevel: "repeatable read",
+        accessMode: "read only",
       });
     },
 
