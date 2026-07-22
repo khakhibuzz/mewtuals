@@ -307,22 +307,48 @@ test("isolated public intake and protected operations meet the automated respons
     `https://mewtuals.com/join?source=${SHARE_SOURCE}`,
   );
 
+  let memberEntryMagicLinkCalls = 0;
+  const memberEntryVerifyUrl =
+    `${BASE_URL}/auth/verify?token=task7-member-entry-ui-contract`;
+  // Auth service/integration tests cover persistence and delivery. This browser check only
+  // verifies the preserved MagicLinkForm UI/request contract and must remain side-effect-free.
+  await page.route("**/api/auth/magic-link", async (route) => {
+    const request = route.request();
+    const requestUrl = new URL(request.url());
+    memberEntryMagicLinkCalls += 1;
+    expect(request.method()).toBe("POST");
+    expect(requestUrl.origin).toBe(BASE_URL);
+    expect(requestUrl.pathname).toBe("/api/auth/magic-link");
+    expect(requestUrl.search).toBe("");
+    expect(request.headers()["content-type"]).toMatch(
+      /^application\/json(?:;|$)/,
+    );
+    expect(request.postDataJSON()).toEqual({ email: memberEmail });
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        message: "If that email can sign in, a link is on its way.",
+        accepted: true,
+        developmentVerifyUrl: memberEntryVerifyUrl,
+      }),
+    });
+  });
+
   await page.goto("/network/join");
   await waitForProductHydration(page);
   await expect(
     page.getByRole("heading", { name: "Find the right partnership moment." }),
   ).toBeVisible();
   await page.getByLabel("Email address").fill(memberEmail);
-  const magicLinkRequest = page.waitForRequest(
-    (request) =>
-      request.method() === "POST" &&
-      request.url().endsWith("/api/auth/magic-link"),
-  );
   await page.getByRole("button", { name: "Join Mewtuals" }).click();
-  expect((await magicLinkRequest).postDataJSON()).toEqual({ email: memberEmail });
-  await expect(
-    page.getByRole("link", { name: "Open local sign-in link" }),
-  ).toBeVisible();
+  await expect.poll(() => memberEntryMagicLinkCalls).toBe(1);
+  const localSignInLink = page.getByRole("link", {
+    name: "Open local sign-in link",
+  });
+  await expect(localSignInLink).toBeVisible();
+  await expect(localSignInLink).toHaveAttribute("href", memberEntryVerifyUrl);
+  expect(memberEntryMagicLinkCalls).toBe(1);
   await auditMobileState(page, "preserved network join");
 
   await page.goto("/login");
