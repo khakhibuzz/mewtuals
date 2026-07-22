@@ -1,6 +1,7 @@
 import { getTableConfig } from "drizzle-orm/pg-core";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
+import type { OpportunityBriefSourceMetadata } from "../app/domain/opportunity-brief";
 import { openToInterests } from "../app/domain/signal";
 import type {
   NewOpportunityBriefRequest,
@@ -182,6 +183,12 @@ describe("Mewtuals PostgreSQL schema", () => {
     expectTypeOf<NewOpportunityBriefSubmissionAttempt>().toHaveProperty(
       "requestId",
     );
+    expectTypeOf<OpportunityBriefRequest["utm"]>().toEqualTypeOf<
+      OpportunityBriefSourceMetadata["utm"]
+    >();
+    expectTypeOf<OpportunityBriefRequest["sourceHistory"]>().toEqualTypeOf<
+      OpportunityBriefSourceMetadata["history"]
+    >();
   });
 
   it("defines every product table with UUID primary keys and timestamps", () => {

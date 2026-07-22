@@ -14,6 +14,8 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 
+import { validateMigrationJournal } from "./migration-journal.mjs";
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const migrationsFolder = join(projectRoot, "drizzle");
 const migrationJournalPath = join(
@@ -37,28 +39,6 @@ const migrationJournal = JSON.parse(
 );
 const orderedMigrationEntries = validateMigrationJournal(migrationJournal);
 const newestMigration = orderedMigrationEntries.at(-1);
-
-function validateMigrationJournal(journal) {
-  assert(Array.isArray(journal.entries), "Migration journal entries are missing.");
-  assert(journal.entries.length > 0, "Migration journal must not be empty.");
-
-  const seenTags = new Set();
-  for (const [position, entry] of journal.entries.entries()) {
-    const expectedPrefix = `${String(position).padStart(4, "0")}_`;
-    assert(
-      entry.idx === position,
-      `Expected contiguous migration index ${position}, found ${entry.idx}.`,
-    );
-    assert(
-      entry.tag.startsWith(expectedPrefix),
-      `Expected migration ${position} tag to start with ${expectedPrefix}, found ${entry.tag}.`,
-    );
-    assert(!seenTags.has(entry.tag), `Duplicate migration tag ${entry.tag}.`);
-    seenTags.add(entry.tag);
-  }
-
-  return journal.entries;
-}
 
 function assertAllowedDatabaseName(databaseName) {
   if (!allowedDatabaseNames.has(databaseName)) {
@@ -422,7 +402,11 @@ async function assertOpportunityBriefMigration(sql) {
   const columns = await sql`
     select
       table_name as "tableName",
-      column_name as "columnName"
+      column_name as "columnName",
+      data_type as "dataType",
+      udt_name as "udtName",
+      is_nullable as "isNullable",
+      column_default as "columnDefault"
     from information_schema.columns
     where table_schema = 'public'
       and table_name in ${sql(expectedTables)}
@@ -431,47 +415,190 @@ async function assertOpportunityBriefMigration(sql) {
   const columnsByTable = Object.fromEntries(
     expectedTables.map((tableName) => [
       tableName,
-      columns
-        .filter((column) => column.tableName === tableName)
-        .map((column) => column.columnName),
+      Object.fromEntries(
+        columns
+          .filter((column) => column.tableName === tableName)
+          .map(
+            ({ columnName, dataType, udtName, isNullable, columnDefault }) => [
+              columnName,
+              { dataType, udtName, isNullable, columnDefault },
+            ],
+          ),
+      ),
     ]),
   );
   assert(
     JSON.stringify(columnsByTable) ===
       JSON.stringify({
-        opportunity_brief_requests: [
-          "id",
-          "participant_type",
-          "profile_url",
-          "normalized_profile_url",
-          "email",
-          "normalized_email",
-          "phone_number",
-          "normalized_phone_number",
-          "open_to_text",
-          "source",
-          "utm",
-          "source_history",
-          "linked_candidate_id",
-          "status",
-          "admin_notes",
-          "acknowledgement_status",
-          "acknowledgement_email",
-          "acknowledgement_error",
-          "acknowledgement_sent_at",
-          "submission_count",
-          "last_submitted_at",
-          "created_at",
-          "updated_at",
-        ],
-        opportunity_brief_submission_attempts: [
-          "id",
-          "requester_hash",
-          "request_id",
-          "created_at",
-        ],
+        opportunity_brief_requests: {
+          id: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "NO",
+            columnDefault: "gen_random_uuid()",
+          },
+          participant_type: {
+            dataType: "USER-DEFINED",
+            udtName: "discovery_candidate_type",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          profile_url: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          normalized_profile_url: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          email: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          normalized_email: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          phone_number: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          normalized_phone_number: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          open_to_text: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          source: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          utm: {
+            dataType: "jsonb",
+            udtName: "jsonb",
+            isNullable: "NO",
+            columnDefault: "'{}'::jsonb",
+          },
+          source_history: {
+            dataType: "jsonb",
+            udtName: "jsonb",
+            isNullable: "NO",
+            columnDefault: "'[]'::jsonb",
+          },
+          linked_candidate_id: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          status: {
+            dataType: "USER-DEFINED",
+            udtName: "opportunity_brief_status",
+            isNullable: "NO",
+            columnDefault: "'submitted'::opportunity_brief_status",
+          },
+          admin_notes: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          acknowledgement_status: {
+            dataType: "USER-DEFINED",
+            udtName: "opportunity_brief_acknowledgement_status",
+            isNullable: "NO",
+            columnDefault:
+              "'not_requested'::opportunity_brief_acknowledgement_status",
+          },
+          acknowledgement_email: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          acknowledgement_error: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          acknowledgement_sent_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          submission_count: {
+            dataType: "integer",
+            udtName: "int4",
+            isNullable: "NO",
+            columnDefault: "1",
+          },
+          last_submitted_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "NO",
+            columnDefault: "now()",
+          },
+          created_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "NO",
+            columnDefault: "now()",
+          },
+          updated_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "NO",
+            columnDefault: "now()",
+          },
+        },
+        opportunity_brief_submission_attempts: {
+          id: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "NO",
+            columnDefault: "gen_random_uuid()",
+          },
+          requester_hash: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          request_id: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          created_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "NO",
+            columnDefault: "now()",
+          },
+        },
       }),
-    `Expected exact opportunity brief columns, found ${JSON.stringify(columnsByTable)}.`,
+    `Expected exact opportunity brief column contracts, found ${JSON.stringify(columnsByTable)}.`,
   );
 
   const checkNames = [
