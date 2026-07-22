@@ -8,8 +8,13 @@ import { readServerEnvironment } from "./env";
 
 let service: DiscoveryService | undefined;
 
+export function shouldCacheDiscoveryService(runtime: object): boolean {
+  return !("Cloudflare" in runtime);
+}
+
 export function getDiscoveryService(): DiscoveryService {
-  if (service) return service;
+  const cacheService = shouldCacheDiscoveryService(globalThis);
+  if (cacheService && service) return service;
 
   const environment = readServerEnvironment();
   const config = readDiscoveryConfig();
@@ -18,11 +23,12 @@ export function getDiscoveryService(): DiscoveryService {
       "Invalid discovery configuration: DISCOVERY_WORKER_SECRET is required for the worker protocol.",
     );
   }
-  service = createDiscoveryService({
+  const nextService = createDiscoveryService({
     repository: createDiscoveryRepository(),
     adminEmails: environment.adminEmails,
     workerSecret: config.workerSecret,
     config,
   });
-  return service;
+  if (cacheService) service = nextService;
+  return nextService;
 }
