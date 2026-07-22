@@ -40,6 +40,7 @@ const geography = `Task 7 acceptance ${testId}`;
 const source = "bengaluru-meetup";
 const baseTime = new Date("2026-07-22T08:30:00.000Z");
 const adminActor = { userId: `task7:${testId}`, email: adminEmail };
+const createdDiscoveryRunIds = new Set<string>();
 let now = baseTime;
 
 function advanceTime(milliseconds = 1_000) {
@@ -68,7 +69,12 @@ async function cleanupAcceptanceRows() {
     .from(discoveryCandidates)
     .where(eq(discoveryCandidates.geography, geography));
   const candidateIds = candidates.map(({ id }) => id);
-  const runIds = [...new Set(candidates.map(({ runId }) => runId))];
+  const runIds = [
+    ...new Set([
+      ...candidates.map(({ runId }) => runId),
+      ...createdDiscoveryRunIds,
+    ]),
+  ];
   if (candidateIds.length > 0) {
     await database
       .delete(discoveryCandidateSources)
@@ -81,8 +87,36 @@ async function cleanupAcceptanceRows() {
       .where(inArray(discoveryCandidates.id, candidateIds));
   }
   if (runIds.length > 0) {
-    await database.delete(discoveryRuns).where(inArray(discoveryRuns.id, runIds));
+    const ownedRuns = await database
+      .select({ id: discoveryRuns.id })
+      .from(discoveryRuns)
+      .where(
+        and(
+          inArray(discoveryRuns.id, runIds),
+          eq(discoveryRuns.geography, geography),
+          like(discoveryRuns.externalRunKey, `task7-${testId}-%`),
+        ),
+      );
+    const ownedRunIds = ownedRuns.map(({ id }) => id);
+    if (ownedRunIds.length !== runIds.length) {
+      throw new Error(
+        "Refusing Task 7 Discovery cleanup because a tracked run is outside the test allowlist.",
+      );
+    }
+    if (ownedRunIds.length > 0) {
+      await database
+        .delete(discoveryRuns)
+        .where(inArray(discoveryRuns.id, ownedRunIds));
+      const remainingRuns = await database
+        .select({ id: discoveryRuns.id })
+        .from(discoveryRuns)
+        .where(inArray(discoveryRuns.id, ownedRunIds));
+      if (remainingRuns.length > 0) {
+        throw new Error("Task 7 Discovery cleanup left a tracked run behind.");
+      }
+    }
   }
+  createdDiscoveryRunIds.clear();
   await database.delete(users).where(eq(users.email, memberEmail));
 }
 
@@ -183,6 +217,7 @@ async function createSourceSupportedCandidate() {
     companyPercentage: 100,
     requestedByEmail: adminEmail,
   });
+  createdDiscoveryRunIds.add(run.id);
   advanceTime();
   const claimed = await discoveryRepository.claimRun({
     now,
@@ -228,7 +263,7 @@ async function createSourceSupportedCandidate() {
     .from(discoveryCandidateSources)
     .where(eq(discoveryCandidateSources.candidateId, stored.id));
   expect(evidence).toBeDefined();
-  return stored.id;
+  return { candidateId: stored.id, runId: run.id };
 }
 
 beforeAll(async () => {
@@ -262,6 +297,33 @@ describe("Opportunity Brief Task 7 suite selection", () => {
 });
 
 describe("Opportunity Brief complete durable journey", () => {
+  it("cleans a scheduled Discovery run when candidate setup stops early", async () => {
+    const externalRunKey = `task7-${testId}-early-failure`;
+    const run = await discoveryRepository.queueRun({
+      externalRunKey,
+      trigger: "manual",
+      now,
+      geography,
+      candidateType: "company",
+      sourcesUsed: ["Task 7 induced failure source"],
+      requestedCount: 1,
+      companyPercentage: 100,
+      requestedByEmail: adminEmail,
+    });
+    createdDiscoveryRunIds.add(run.id);
+
+    try {
+      await cleanupAcceptanceRows();
+      const remaining = await database
+        .select({ id: discoveryRuns.id })
+        .from(discoveryRuns)
+        .where(eq(discoveryRuns.id, run.id));
+      expect(remaining).toHaveLength(0);
+    } finally {
+      await database.delete(discoveryRuns).where(eq(discoveryRuns.id, run.id));
+    }
+  });
+
   it("deduplicates public intake, links only source-supported candidates, and preserves member data", async () => {
     const memberId = await createMemberSentinel();
     const memberBefore = await memberSnapshot(memberId);
@@ -355,7 +417,7 @@ describe("Opportunity Brief complete durable journey", () => {
       .from(discoveryCandidates);
     expect(candidateCountAfterUnmatched?.count).toBe(candidateCountBefore?.count);
 
-    const candidateId = await createSourceSupportedCandidate();
+    const { candidateId, runId } = await createSourceSupportedCandidate();
     advanceTime();
     await submitPublicRequest(
       {
@@ -477,5 +539,12 @@ describe("Opportunity Brief complete durable journey", () => {
     });
 
     expect(await memberSnapshot(memberId)).toEqual(memberBefore);
+
+    await cleanupAcceptanceRows();
+    const remainingRun = await database
+      .select({ id: discoveryRuns.id })
+      .from(discoveryRuns)
+      .where(eq(discoveryRuns.id, runId));
+    expect(remainingRun).toHaveLength(0);
   });
 });

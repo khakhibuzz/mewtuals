@@ -7,7 +7,7 @@ import {
   type BrowserContext,
   type Page,
 } from "@playwright/test";
-import { eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import jsQR from "jsqr";
 import { PNG } from "pngjs";
 
@@ -35,7 +35,7 @@ import {
 const ADMIN_EMAIL = "mewtuals-mobile-e2e@example.test";
 const PRIMARY_VIEWPORT = { width: 390, height: 844 } as const;
 const DESKTOP_VIEWPORT = { width: 1440, height: 1100 } as const;
-const SOURCE = "bengaluru-meetup";
+const SHARE_SOURCE = "bengaluru-meetup";
 const BASE_URL = requireLoopbackBaseUrl(
   process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:4000",
 );
@@ -47,8 +47,11 @@ requireDedicatedAdminAllowlist(process.env.ADMIN_EMAILS);
 const database = getDb();
 const opportunityBriefRepository = createOpportunityBriefRepository(database);
 const createdCandidateIds = new Set<string>();
+const createdRequestIds = new Set<string>();
 const createdRunIds = new Set<string>();
 const disposableEmails = new Set<string>([ADMIN_EMAIL]);
+const runPhoneNumbers = new Set<string>();
+let activeRunSource: string | undefined;
 let profileHost: string | undefined;
 
 test.use({ viewport: PRIMARY_VIEWPORT });
@@ -65,23 +68,30 @@ test.afterAll(async () => {
   await closeDb();
 });
 
-test("public intake and protected operations complete on mobile without regressing member entry", async ({
+test("isolated public intake and protected operations meet the automated response SLA without regressing member entry", async ({
   browser,
   page,
 }) => {
   const runId = randomUUID();
   const compactRunId = runId.replaceAll("-", "");
+  const source = `bengaluru-meetup-e2e-${compactRunId.slice(0, 12)}`;
+  const publicPhoneNumber = uniqueTestPhone(runId, "8");
+  const paginationPhoneNumber = uniqueTestPhone(runId, "7");
+  activeRunSource = source;
+  expect(source).toMatch(/^[a-z0-9-]+$/);
+  expect(source.length).toBeLessThanOrEqual(100);
+  runPhoneNumbers.add(publicPhoneNumber);
+  runPhoneNumbers.add(paginationPhoneNumber);
   profileHost = `task7-e2e-${compactRunId}.example`;
   const publicProfileUrl = `https://${profileHost}/public-request`;
-  const publicEmail = `task7-public-${runId}@example.test`;
   const memberEmail = `task7-network-${runId}@example.test`;
   disposableEmails.add(memberEmail);
   const candidateId = await seedSourceSupportedCandidate(runId);
-  await seedPaginationRequest(runId);
+  await seedPaginationRequest(runId, source, paginationPhoneNumber);
 
   const publicErrors = trackBrowserErrors(page);
   await page.goto(
-    `/join?source=${SOURCE}&utm_source=meetup&utm_campaign=task-7-browser`,
+    `/join?source=${source}&utm_source=meetup&utm_campaign=task-7-browser`,
   );
   await waitForProductHydration(page);
   await expect(
@@ -91,10 +101,13 @@ test("public intake and protected operations complete on mobile without regressi
   ).toBeVisible();
   await auditMobileState(page, "public Opportunity Brief form");
 
+  // This SLA measures automated form entry plus backend response time, not human completion time.
   const startedAt = Date.now();
   await page.getByLabel("Company / Startup / Brand").check();
   await page.getByLabel("Public profile URL").fill(publicProfileUrl);
-  await page.getByLabel("Email address (optional)").fill(publicEmail);
+  await page
+    .getByLabel("WhatsApp number (optional)")
+    .fill(publicPhoneNumber);
   await page
     .getByLabel("What are you open to? (optional)")
     .fill("Creator distribution and a measurable co-marketing pilot");
@@ -111,16 +124,29 @@ test("public intake and protected operations complete on mobile without regressi
     'section[aria-labelledby="opportunity-success-heading"]',
   );
   await expect(confirmation).toContainText(publicProfileUrl);
-  await expect(confirmation).toContainText(publicEmail);
+  await expect(confirmation).toContainText(publicPhoneNumber);
   await auditMobileState(page, "public Opportunity Brief confirmation");
 
   const [storedPublicRequest] = await database
-    .select({ id: opportunityBriefRequests.id })
+    .select({
+      id: opportunityBriefRequests.id,
+      email: opportunityBriefRequests.email,
+      phoneNumber: opportunityBriefRequests.phoneNumber,
+      acknowledgementStatus: opportunityBriefRequests.acknowledgementStatus,
+      source: opportunityBriefRequests.source,
+    })
     .from(opportunityBriefRequests)
     .where(eq(opportunityBriefRequests.normalizedProfileUrl, publicProfileUrl));
   if (!storedPublicRequest) {
     throw new Error("The browser-submitted Opportunity Brief request was not stored.");
   }
+  createdRequestIds.add(storedPublicRequest.id);
+  expect(storedPublicRequest).toMatchObject({
+    email: null,
+    phoneNumber: publicPhoneNumber,
+    acknowledgementStatus: "not_requested",
+    source,
+  });
   const confirmationText = await confirmation.innerText();
   expect(confirmationText).not.toContain(storedPublicRequest.id);
   expect(confirmationText.toLowerCase()).not.toMatch(
@@ -128,10 +154,13 @@ test("public intake and protected operations complete on mobile without regressi
   );
   expect(publicErrors).toEqual([]);
 
+  await page.goto("/admin/opportunity-briefs");
+  await expect(page).toHaveURL(/\/login$/);
+
   const admin = await authenticateDedicatedAdmin(browser, runId);
   try {
     await admin.page.goto(
-      `/admin/opportunity-briefs?source=${SOURCE}&pageSize=1`,
+      `/admin/opportunity-briefs?source=${source}&pageSize=1`,
     );
     await waitForProductHydration(admin.page);
     await expect(
@@ -144,7 +173,7 @@ test("public intake and protected operations complete on mobile without regressi
       admin.page.getByRole("search", {
         name: "Filter Opportunity Brief requests",
       }).getByLabel("Source"),
-    ).toHaveValue(SOURCE);
+    ).toHaveValue(source);
     await auditMobileState(admin.page, "Opportunity Brief administrator queue");
 
     const pagination = admin.page.getByRole("navigation", {
@@ -275,7 +304,7 @@ test("public intake and protected operations complete on mobile without regressi
     .getByRole("img", { name: "QR code to join Mewtuals" })
     .getAttribute("src");
   expect(decodeQrDataUrl(qrDataUrl ?? "")).toBe(
-    `https://mewtuals.com/join?source=${SOURCE}`,
+    `https://mewtuals.com/join?source=${SHARE_SOURCE}`,
   );
 
   await page.goto("/network/join");
@@ -302,8 +331,13 @@ test("public intake and protected operations complete on mobile without regressi
   expect(publicErrors).toEqual([]);
 });
 
-async function seedPaginationRequest(runId: string) {
+async function seedPaginationRequest(
+  runId: string,
+  source: string,
+  phoneNumber: string,
+) {
   if (!profileHost) throw new Error("Task 7 browser profile host is unavailable.");
+  const profileUrl = `https://${profileHost}/pagination-seed`;
   const service = createOpportunityBriefService({
     repository: opportunityBriefRepository,
     adminEmails: [],
@@ -312,17 +346,28 @@ async function seedPaginationRequest(runId: string) {
   const result = await service.submit(
     {
       participantType: "company",
-      profileUrl: `https://${profileHost}/pagination-seed`,
-      email: `task7-pagination-${runId}@example.test`,
-      phoneNumber: "",
+      profileUrl,
+      email: "",
+      phoneNumber,
       openToText: "Pagination fixture",
-      source: SOURCE,
+      source,
       utm: { campaign: "task-7-pagination" },
       website: "",
     },
     `task7-pagination-${runId}`,
   );
   if (!result.ok) throw new Error(result.error);
+  const [stored] = await database
+    .select({ id: opportunityBriefRequests.id })
+    .from(opportunityBriefRequests)
+    .where(
+      and(
+        eq(opportunityBriefRequests.normalizedProfileUrl, profileUrl),
+        eq(opportunityBriefRequests.source, source),
+      ),
+    );
+  if (!stored) throw new Error("Task 7 pagination request was not stored.");
+  createdRequestIds.add(stored.id);
 }
 
 async function seedSourceSupportedCandidate(runId: string) {
@@ -493,6 +538,11 @@ function decodeQrDataUrl(dataUrl: string) {
   return jsQR(new Uint8ClampedArray(png.data), png.width, png.height)?.data;
 }
 
+function uniqueTestPhone(runId: string, discriminator: "7" | "8") {
+  const uniqueDigits = runId.replaceAll(/\D/g, "").padEnd(8, "0").slice(0, 8);
+  return `+919${discriminator}${uniqueDigits}`;
+}
+
 function deferred<Value>() {
   let resolve!: (value: Value | PromiseLike<Value>) => void;
   const promise = new Promise<Value>((resolver) => {
@@ -502,12 +552,46 @@ function deferred<Value>() {
 }
 
 async function cleanupBrowserRows() {
-  if (profileHost) {
-    await database
-      .delete(opportunityBriefRequests)
+  const phoneNumbers = [...runPhoneNumbers];
+  if (profileHost && activeRunSource && phoneNumbers.length > 0) {
+    const ownedRequests = await database
+      .select({ id: opportunityBriefRequests.id })
+      .from(opportunityBriefRequests)
       .where(
-        like(opportunityBriefRequests.normalizedProfileUrl, `%${profileHost}%`),
+        and(
+          eq(opportunityBriefRequests.source, activeRunSource),
+          like(opportunityBriefRequests.normalizedProfileUrl, `%${profileHost}%`),
+          inArray(opportunityBriefRequests.normalizedPhoneNumber, phoneNumbers),
+        ),
       );
+    const cleanupRequestIds = [
+      ...new Set([
+        ...ownedRequests.map(({ id }) => id),
+        ...createdRequestIds,
+      ]),
+    ];
+    if (cleanupRequestIds.length > 0) {
+      await database
+        .delete(opportunityBriefRequests)
+        .where(
+          and(
+            inArray(opportunityBriefRequests.id, cleanupRequestIds),
+            eq(opportunityBriefRequests.source, activeRunSource),
+            like(
+              opportunityBriefRequests.normalizedProfileUrl,
+              `%${profileHost}%`,
+            ),
+            inArray(opportunityBriefRequests.normalizedPhoneNumber, phoneNumbers),
+          ),
+        );
+      const remainingRequests = await database
+        .select({ id: opportunityBriefRequests.id })
+        .from(opportunityBriefRequests)
+        .where(inArray(opportunityBriefRequests.id, cleanupRequestIds));
+      if (remainingRequests.length > 0) {
+        throw new Error("Task 7 browser cleanup left an owned request behind.");
+      }
+    }
   }
   const candidateIds = [...createdCandidateIds];
   if (candidateIds.length > 0) {
@@ -529,9 +613,12 @@ async function cleanupBrowserRows() {
     await removeDisposableAccount(email);
   }
   createdCandidateIds.clear();
+  createdRequestIds.clear();
   createdRunIds.clear();
   disposableEmails.clear();
   disposableEmails.add(ADMIN_EMAIL);
+  runPhoneNumbers.clear();
+  activeRunSource = undefined;
   profileHost = undefined;
 }
 
