@@ -90,7 +90,7 @@ files:
 | `SESSION_SECRET` | Stable high-entropy value of at least 32 characters. |
 | `RESEND_API_KEY` | Required for production magic-link delivery. |
 | `EMAIL_FROM` | Required with the Resend key; use a verified sender such as `Mewtuals <login@mewtuals.com>`. |
-| `ADMIN_EMAILS` | Comma-separated, normalized allowlist for `/admin/verifications`. |
+| `ADMIN_EMAILS` | Comma-separated, normalized allowlist for `/admin/verifications`, `/admin/discovery`, and `/admin/opportunity-briefs`. |
 | `MEWTUALS_DEV_AUTH` | `false` in production. Production code refuses the shortcut even if it is set incorrectly. |
 | `GOOGLE_CLIENT_ID` | Leave blank in product v1; Google OAuth is deferred. |
 | `GOOGLE_CLIENT_SECRET` | Leave blank in product v1; Google OAuth is deferred. |
@@ -177,6 +177,13 @@ The acceptance test uses a unique member, cleans its records, and checks:
 - logout revokes the old session and protected mutations return 401;
 - magic-link, requester, and session credentials are stored only as HMACs.
 
+The Opportunity Brief acceptance journey additionally submits tagged public
+requests through the real service and PostgreSQL repository, verifies
+normalized-profile deduplication and bounded attribution history, links only an
+existing source-supported Discovery candidate, exercises administrator filters
+and optimistic mutations, and proves public intake does not create or alter
+member, onboarding, or profile records.
+
 Keep the local application running at `http://localhost:4000` while running the
 rendered-browser gate in a second terminal:
 
@@ -189,11 +196,12 @@ allowlist before running the gate. The test refuses to use any other account as
 its administrator and deletes only its reserved disposable accounts.
 
 The Playwright test uses Google Chrome by default and drives the complete fresh
-member and administrator journey through the actual forms and cookies. It
-checks 320×740, 390×844, 767×900, and 1440×1100 layouts, touch targets,
-page-level overflow, protected redirects, and console errors. It refuses a
-non-loopback base URL and refuses database cleanup unless `.env.local` points to
-the project-owned application database at `127.0.0.1:55432/mewtuals`.
+member, public Opportunity Brief, and administrator journeys through the actual
+forms and cookies. It checks 320×740, 390×844, 767×900, and 1440×1100 layouts,
+touch targets, page-level overflow, dialog focus and Escape behavior, protected
+redirects, and console errors. It refuses a non-loopback base URL and refuses
+database cleanup unless `.env.local` points to the project-owned application
+database at `127.0.0.1:55432/mewtuals`.
 
 The gate also builds and starts an isolated production-mode origin at
 `http://localhost:4002` for installable-PWA and real-offline assertions. The
@@ -222,6 +230,8 @@ The installable app intentionally has a narrow offline boundary:
   is headed `Get online to see your partnerships.`;
 - `/apply` is a directly shareable, online-only application form and is not
   linked from the landing-page navigation;
+- `/join` is a public but transactional Opportunity Brief form, and
+  `/network/join` is member account entry; both remain network-only;
 - API requests, member/onboarding/admin HTML, authenticated responses, profile
   data, partnership data, and transactional state are never cached;
 - member actions and background synchronization remain unavailable offline.
@@ -280,7 +290,94 @@ age, migration errors, database connection saturation, and introduction-request
 state age. Never log raw magic links, session cookies, `SESSION_SECRET`, Resend
 credentials, or the full managed database URL.
 
-## 8. Hosting notes
+## 8. Opportunity Brief operations
+
+### Public intake, deduplication, and privacy
+
+`/join` accepts a company or creator public profile URL plus at least one email
+or WhatsApp contact. `/share` encodes
+`https://mewtuals.com/join?source=bengaluru-meetup`; standard UTM values are
+also stored. The same-origin JSON endpoint has a 16 KiB body limit, a hidden
+honeypot, and a requester limit of eight attempts per rolling 15 minutes.
+
+One row is owned by `(participant_type, normalized_profile_url)`. A repeated
+submission increments `submission_count`, refreshes current non-empty fields,
+and appends bounded source/UTM history (at most 20 entries and 8 KiB). The
+public confirmation contains only the current submission's normalized profile
+and contact values. It must not expose the request UUID, internal status,
+candidate linkage, acknowledgement state, administrator notes, or previously
+stored contact values.
+
+Public intake never creates a member, onboarding draft, profile, or Discovery
+candidate. An automatic candidate link is allowed only when an existing
+Discovery candidate has the same participant type, the exact normalized stable
+identifier, and stored source evidence. An unmatched request remains unlinked;
+do not create a placeholder or fake candidate to fill the queue.
+
+### Queue states and administrator actions
+
+Allowlisted administrators use `/admin/opportunity-briefs`. The queue provides
+global totals and acknowledgement counts plus participant, status, source,
+date, candidate-link, and pagination filters. Opening a request supports four
+optimistically guarded actions: change status, save notes, link an existing
+same-type Discovery candidate UUID, and unlink it. A conflict means another
+operator updated the row; review the refreshed request and retry with its new
+`updated_at` token.
+
+Use these status transitions:
+
+- `submitted` → `researching` or `rejected`
+- `researching` → `brief_ready` or `rejected`
+- `brief_ready` → `researching`, `contacted`, or `rejected`
+- `contacted` → `invited_to_join`, `converted`, or `rejected`
+- `invited_to_join` → `contacted`, `converted`, or `rejected`
+- `rejected` → `researching` when work legitimately resumes
+- `converted` is terminal
+
+Saving the current state again is idempotent. Notes should record evidence,
+operator decisions, and controlled QA labels; they must not contain secrets or
+unnecessary private data.
+
+Acknowledgement states are operational, not public:
+
+- `not_requested`: the request supplied no email;
+- `pending`: a new or changed email needs delivery confirmation;
+- `sent`: the provider accepted the acknowledgement and `sent_at` is recorded;
+- `failed`: delivery failed and the bounded operator-facing error is visible.
+
+The request is durable before acknowledgement delivery begins. A failed or
+unknown delivery must not delete the request; filter pending/failed rows and
+reconcile them deliberately. Never log full request bodies, contacts, session
+cookies, or provider credentials.
+
+### Migration, release, and controlled production QA
+
+Migration `drizzle/0005_opportunity_brief_requests.sql` creates the request and
+attempt tables, enums, constraints, indexes, and nullable foreign key to
+Discovery candidates. Before applying it to production, verify automated
+backups and point-in-time recovery, take an on-demand snapshot, record the live
+commit/migration, and test restoration outside production. Apply the migration
+before deploying code that serves `/join`, then run the complete release gate
+and verify tagged `/share`, public confirmation, admin visibility,
+acknowledgement state, `/network/join`, `/login`, SSL, and HTTP 200 at apex and
+`www`. Do not production-migrate or deploy from a feature-verification task.
+
+For a production smoke request, use an operator-owned profile/contact and a
+unique bounded source such as `release-smoke-YYYYMMDD`. Immediately record the
+request UUID, normalized profile URL, source, creation time, and release commit.
+After verification, either:
+
+1. retain it as an audit record by adding notes beginning `CONTROLLED QA`, then
+   move it to `rejected`; or
+2. with a fresh backup and database-owner approval, delete exactly that one row
+   in a transaction constrained by UUID, source, and normalized profile URL,
+   verify `RETURNING` reports one row, and commit. Submission attempts cascade.
+
+Abort cleanup if the exact three identifiers do not match or more than one row
+would be affected. Cleanup must never delete a linked Discovery candidate,
+member, onboarding, or profile record.
+
+## 9. Hosting notes
 
 `npm run build` produces the Sites-compatible bundle. A successful static build
 does not prove the authenticated deployed flow is operational. Do not describe a

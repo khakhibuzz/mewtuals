@@ -295,7 +295,7 @@ async function expectNoHorizontalOverflow(page: Page) {
 
 async function expectTouchControls(page: Page) {
   const controls = page.locator(
-    'a, button, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), select, textarea',
+    'a, button, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([aria-hidden="true"]), select, textarea',
   );
   for (const control of await controls.all()) {
     if (!(await control.isVisible())) continue;
