@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
   createOpportunityBriefService,
@@ -16,6 +16,10 @@ import {
   type SubmitRepositoryInput,
   type SubmitRepositoryResult,
 } from "../app/server/opportunity-brief-service";
+import {
+  createOpportunityBriefAcknowledgementSender,
+  RESEND_REQUEST_TIMEOUT_MS,
+} from "../app/server/email";
 
 const now = new Date("2026-07-22T06:30:00.000Z");
 const requestId = "00000000-0000-4000-8000-000000000101";
@@ -456,6 +460,64 @@ describe("opportunity brief acknowledgement orchestration", () => {
         },
       },
     ]);
+  });
+
+  it("keeps durable submission successful when acknowledgement transport times out", async () => {
+    vi.useFakeTimers();
+    const repository = new MemoryRepository();
+    let signal: AbortSignal | undefined;
+    const acknowledgementSender = createOpportunityBriefAcknowledgementSender({
+      environment: "production",
+      apiKey: "re_test_key",
+      from: "Mewtuals <hello@mewtuals.com>",
+      fetch: async (_input, init) => {
+        signal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            reject(
+              new DOMException(
+                "private abort and provider implementation detail",
+                "AbortError",
+              ),
+            );
+          });
+        });
+      },
+    });
+    const service = createOpportunityBriefService({
+      repository,
+      acknowledgementSender,
+      adminEmails: [],
+      now: () => now,
+    });
+
+    try {
+      const submissionResult = service.submit(
+        submission(),
+        "requester-hash",
+      );
+      await vi.waitFor(() => expect(signal).toBeInstanceOf(AbortSignal));
+
+      await vi.advanceTimersByTimeAsync(RESEND_REQUEST_TIMEOUT_MS);
+
+      const result = await submissionResult;
+      expect(result).toMatchObject({ ok: true, requestId });
+      expect(JSON.stringify(result)).not.toMatch(/provider|timeout|abort/i);
+      expect(repository.submissions).toHaveLength(1);
+      expect(repository.acknowledgements).toEqual([
+        {
+          requestId,
+          attemptedEmail: "founder@example.com",
+          expectedUpdatedAt: acknowledgementUpdatedAt,
+          outcome: {
+            status: "failed",
+            error: "Acknowledgement email transport failed.",
+          },
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cannot let an older email outcome overwrite a replacement email", async () => {

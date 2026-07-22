@@ -402,6 +402,7 @@ async function provePublicOnlyOfflineBoundary(
   await expect(
     page.getByRole("heading", { name: "Find who you should collaborate with next." }),
   ).toBeVisible();
+  await auditResponsiveState(page, "opportunity brief form");
   const submittedBriefProfile = `https://brief-${websiteHost}`;
   await page.route(
     "**/api/opportunity-briefs",
@@ -411,8 +412,6 @@ async function provePublicOnlyOfflineBoundary(
         contentType: "application/json",
         body: JSON.stringify({
           ok: true,
-          requestId: randomUUID(),
-          status: "submitted",
           submission: {
             participantType: "company",
             profileUrl: submittedBriefProfile,
@@ -433,6 +432,7 @@ async function provePublicOnlyOfflineBoundary(
   await expect(
     page.getByRole("heading", { name: "You’re on our research list." }),
   ).toBeFocused();
+  await auditResponsiveState(page, "opportunity brief confirmation");
   await page.getByRole("link", { name: "Log in" }).click();
   await expect(page).toHaveURL(/\/login$/);
   await waitForProductHydration(page);

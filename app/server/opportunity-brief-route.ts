@@ -43,6 +43,12 @@ async function readBoundedJson(
   | { ok: false; response: ReturnType<typeof NextResponse.json> }
 > {
   if (declaredBodyTooLarge(request)) {
+    try {
+      await request.body?.cancel();
+    } catch {
+      // The response remains a bounded rejection even if the client stream
+      // cannot be cancelled.
+    }
     return {
       ok: false,
       response: jsonFailure(413, "Opportunity Brief request body is too large."),
@@ -56,21 +62,35 @@ async function readBoundedJson(
 
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    byteLength += value.byteLength;
-    if (byteLength > MAX_OPPORTUNITY_BRIEF_BODY_BYTES) {
-      await reader.cancel().catch(() => undefined);
-      return {
-        ok: false,
-        response: jsonFailure(
-          413,
-          "Opportunity Brief request body is too large.",
-        ),
-      };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > MAX_OPPORTUNITY_BRIEF_BODY_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Preserve the primary size-limit response.
+        }
+        return {
+          ok: false,
+          response: jsonFailure(
+            413,
+            "Opportunity Brief request body is too large.",
+          ),
+        };
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+  } catch {
+    return { ok: false, response: jsonFailure(400, "Submit valid JSON.") };
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // A reader implementation must not mask the bounded public response.
+    }
   }
 
   const bytes = new Uint8Array(byteLength);
@@ -108,8 +128,6 @@ function publicResponse(result: PublicSubmissionResult) {
 
   return NextResponse.json({
     ok: true,
-    requestId: result.requestId,
-    status: result.status,
     submission: {
       participantType: result.submission.participantType,
       profileUrl: result.submission.profileUrl,

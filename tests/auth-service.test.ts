@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   type AuthRepository,
@@ -12,6 +12,7 @@ import {
 import {
   createEmailSender,
   createOpportunityBriefAcknowledgementSender,
+  RESEND_REQUEST_TIMEOUT_MS,
 } from "../app/server/email";
 import {
   isSameOrigin,
@@ -442,6 +443,47 @@ describe("email delivery", () => {
       status: "failed",
       error: "Acknowledgement email transport failed.",
     });
+  });
+
+  it("aborts a stalled acknowledgement within the shared transport deadline", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const sender = createOpportunityBriefAcknowledgementSender({
+      environment: "production",
+      apiKey: "re_test_key",
+      from: "Mewtuals <hello@mewtuals.com>",
+      fetch: async (_input, init) => {
+        signal = init?.signal ?? undefined;
+        return new Promise<Response>(() => undefined);
+      },
+    });
+
+    try {
+      const outcome = sender.sendAcknowledgement({
+        email: "person@example.com",
+        profileUrl: "https://example.com/profile",
+      });
+      let settledOutcome: unknown;
+      void outcome.then((value) => {
+        settledOutcome = value;
+      });
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(RESEND_REQUEST_TIMEOUT_MS);
+
+      expect(settledOutcome).toEqual({
+        status: "failed",
+        error: "Acknowledgement email transport failed.",
+      });
+      expect(signal?.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(JSON.stringify(settledOutcome)).not.toMatch(
+        /provider|timeout|abort/i,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps acknowledgement pending without credentials while magic-link production remains strict", async () => {

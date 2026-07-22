@@ -27,24 +27,43 @@ type ResendMessage = {
   html: string;
 };
 
+export const RESEND_REQUEST_TIMEOUT_MS = 5_000;
+
 async function sendResendEmail(
   options: EmailSenderOptions,
   message: ResendMessage,
 ): Promise<Response> {
   const request = options.fetch ?? globalThis.fetch;
-  return request("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${options.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: options.from,
-      to: [message.to],
-      subject: message.subject,
-      html: message.html,
-    }),
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout>;
+  const timeoutFailure = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new Error("Resend request timed out."));
+    }, RESEND_REQUEST_TIMEOUT_MS);
   });
+
+  try {
+    return await Promise.race([
+      request("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${options.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: options.from,
+          to: [message.to],
+          subject: message.subject,
+          html: message.html,
+        }),
+        signal: controller.signal,
+      }),
+      timeoutFailure,
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function createEmailSender(options: EmailSenderOptions): EmailSender {

@@ -102,12 +102,32 @@ describe("opportunity brief public route", () => {
 
   it("rejects a declared body over 16 KiB without reading it", async () => {
     const { handler, submit } = createHandler();
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{}"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
 
     const response = await handler(
-      jsonRequest("{}", { "Content-Length": String(16 * 1_024 + 1) }),
+      new Request(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": String(16 * 1_024 + 1),
+          Origin: "https://mewtuals.com",
+        },
+        body: stream,
+        duplex: "half",
+      } as RequestInit),
     );
 
     expect(response.status).toBe(413);
+    expect(cancelled).toBe(true);
+    expect(stream.locked).toBe(false);
     expect(submit).not.toHaveBeenCalled();
   });
 
@@ -137,6 +157,36 @@ describe("opportunity brief public route", () => {
 
     expect(response.status).toBe(413);
     expect(cancelled).toBe(true);
+    expect(stream.locked).toBe(false);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("maps an erroring request stream to safe JSON and releases its reader", async () => {
+    const { handler, submit } = createHandler();
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(
+          new Error("private client abort and transport implementation detail"),
+        );
+      },
+    });
+    const request = new Request(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://mewtuals.com",
+      },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+
+    const response = await handler(request);
+    const result = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(result).toEqual({ ok: false, error: "Submit valid JSON." });
+    expect(JSON.stringify(result)).not.toMatch(/private|abort|transport/i);
+    expect(stream.locked).toBe(false);
     expect(submit).not.toHaveBeenCalled();
   });
 
@@ -206,11 +256,14 @@ describe("opportunity brief public route", () => {
     });
   });
 
-  it("hashes requester identity before delegation and returns only safe confirmation data", async () => {
+  it("hashes requester identity and strips an existing converted record from public success", async () => {
     const submit = vi.fn(async () => ({
       ...acceptedResult(),
+      requestId: "00000000-0000-4000-8000-000000000999",
+      status: "converted",
       requesterHash: "internal-requester-hash",
       linkedCandidateId: "private-candidate",
+      acknowledgement: { status: "failed", error: "private provider detail" },
       adminNotes: "private note",
     }) as unknown as Promise<PublicSubmissionResult>);
     const { handler } = createHandler(submit);
@@ -224,8 +277,13 @@ describe("opportunity brief public route", () => {
     expect(submit).toHaveBeenCalledWith(validBody, expect.any(String));
     expect(requesterHash).toMatch(/^[a-f0-9]{64}$/);
     expect(requesterHash).not.toContain("203.0.113.42");
-    expect(result).toEqual(acceptedResult());
-    expect(JSON.stringify(result)).not.toMatch(/requester|candidate|admin/i);
+    expect(result).toEqual({
+      ok: true,
+      submission: acceptedResult().submission,
+    });
+    expect(JSON.stringify(result)).not.toMatch(
+      /requestId|status|converted|requester|candidate|acknowledgement|admin/i,
+    );
   });
 
   it("uses a purpose-separated one-way requester hash", () => {

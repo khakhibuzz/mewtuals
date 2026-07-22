@@ -21,8 +21,6 @@ function successfulResponse(
   return new Response(
     JSON.stringify({
       ok: true,
-      requestId: "00000000-0000-4000-8000-000000000101",
-      status: "submitted",
       submission: {
         participantType: "company",
         profileUrl: "https://example.com/Founder",
