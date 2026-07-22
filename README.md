@@ -123,6 +123,18 @@ the implemented authentication path.
 See [docs/product-v1-operations.md](docs/product-v1-operations.md) for the
 deployment checklist, backup procedure, security behavior, and incident notes.
 
+## Discovery Agent
+
+The persistent Discovery Agent uses a replaceable external worker protocol;
+Codex is the initial public-web worker. Administrators review its durable runs,
+candidates, and source evidence at `/admin/discovery`.
+
+See
+[docs/discovery-agent-operations.md](docs/discovery-agent-operations.md) for
+migrations, worker commands, the first trial, the exact daily Codex prompt,
+08:30 Asia/Kolkata scheduling, evidence rules, secret-safe temporary files,
+replay recovery, and the future provider seam.
+
 ## Project shape
 
 - `app/`: landing page, member UI, routes, domain rules, and server services
