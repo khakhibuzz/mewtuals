@@ -7,6 +7,8 @@ import type {
   magicLinks,
   onboardingDrafts,
   opportunities,
+  opportunityBriefRequests,
+  opportunityBriefSubmissionAttempts,
   profileOpportunities,
   profiles,
   sessions,
@@ -31,6 +33,14 @@ export type Signal = typeof signals.$inferSelect;
 export type NewSignal = typeof signals.$inferInsert;
 export type Opportunity = typeof opportunities.$inferSelect;
 export type NewOpportunity = typeof opportunities.$inferInsert;
+export type OpportunityBriefRequest =
+  typeof opportunityBriefRequests.$inferSelect;
+export type NewOpportunityBriefRequest =
+  typeof opportunityBriefRequests.$inferInsert;
+export type OpportunityBriefSubmissionAttempt =
+  typeof opportunityBriefSubmissionAttempts.$inferSelect;
+export type NewOpportunityBriefSubmissionAttempt =
+  typeof opportunityBriefSubmissionAttempts.$inferInsert;
 export type ProfileOpportunity = typeof profileOpportunities.$inferSelect;
 export type NewProfileOpportunity = typeof profileOpportunities.$inferInsert;
 export type IntroductionRequest = typeof introductionRequests.$inferSelect;

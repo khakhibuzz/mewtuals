@@ -16,17 +16,49 @@ import postgres from "postgres";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const migrationsFolder = join(projectRoot, "drizzle");
+const migrationJournalPath = join(
+  migrationsFolder,
+  "meta",
+  "_journal.json",
+);
 const adminUrl = "postgresql://127.0.0.1:55432/postgres";
 const managedDatabaseNames = [
-  "mewtuals_discovery_fresh_test",
-  "mewtuals_discovery_upgrade_test",
+  "mewtuals_migrations_fresh_test",
+  "mewtuals_migrations_upgrade_test",
 ];
 const allowedDatabaseNames = new Set(managedDatabaseNames);
-const freshDatabaseName = "mewtuals_discovery_fresh_test";
-const upgradeDatabaseName = "mewtuals_discovery_upgrade_test";
-const ownershipMarker = "mewtuals-discovery-migration-harness-v1";
+const [freshDatabaseName, upgradeDatabaseName] = managedDatabaseNames;
+const ownershipMarker = "mewtuals-migration-harness-v1";
 const createdDatabaseNames = new Set();
 const ownedDatabaseNames = new Set();
+
+const migrationJournal = JSON.parse(
+  await readFile(migrationJournalPath, "utf8"),
+);
+const orderedMigrationEntries = validateMigrationJournal(migrationJournal);
+const newestMigration = orderedMigrationEntries.at(-1);
+
+function validateMigrationJournal(journal) {
+  assert(Array.isArray(journal.entries), "Migration journal entries are missing.");
+  assert(journal.entries.length > 0, "Migration journal must not be empty.");
+
+  const seenTags = new Set();
+  for (const [position, entry] of journal.entries.entries()) {
+    const expectedPrefix = `${String(position).padStart(4, "0")}_`;
+    assert(
+      entry.idx === position,
+      `Expected contiguous migration index ${position}, found ${entry.idx}.`,
+    );
+    assert(
+      entry.tag.startsWith(expectedPrefix),
+      `Expected migration ${position} tag to start with ${expectedPrefix}, found ${entry.tag}.`,
+    );
+    assert(!seenTags.has(entry.tag), `Duplicate migration tag ${entry.tag}.`);
+    seenTags.add(entry.tag);
+  }
+
+  return journal.entries;
+}
 
 function assertAllowedDatabaseName(databaseName) {
   if (!allowedDatabaseNames.has(databaseName)) {
@@ -102,24 +134,22 @@ async function prepareDatabase(admin, databaseName) {
 
 async function createUpgradeMigrationFolder() {
   const temporaryFolder = await mkdtemp(
-    join(tmpdir(), "mewtuals-discovery-migrations-"),
+    join(tmpdir(), "mewtuals-migrations-"),
   );
   try {
     const metaFolder = join(temporaryFolder, "meta");
     await mkdir(metaFolder);
 
-    const journalPath = join(migrationsFolder, "meta", "_journal.json");
-    const journal = JSON.parse(await readFile(journalPath, "utf8"));
-    const filteredJournal = {
-      ...journal,
-      entries: journal.entries.filter(({ idx }) => idx <= 3),
+    const baselineJournal = {
+      ...migrationJournal,
+      entries: orderedMigrationEntries.slice(0, -1),
     };
     await writeFile(
       join(metaFolder, "_journal.json"),
-      `${JSON.stringify(filteredJournal, null, 2)}\n`,
+      `${JSON.stringify(baselineJournal, null, 2)}\n`,
     );
 
-    for (const entry of filteredJournal.entries) {
+    for (const entry of baselineJournal.entries) {
       await copyFile(
         join(migrationsFolder, `${entry.tag}.sql`),
         join(temporaryFolder, `${entry.tag}.sql`),
@@ -203,7 +233,115 @@ async function insertUpgradeFixtures(sql) {
       notes,
       reviewed_at as "reviewedAt"
   `;
-  return { user, profile, review };
+  const [discoveryRun] = await sql`
+    insert into discovery_runs (
+      external_run_key,
+      trigger,
+      geography,
+      candidate_type,
+      requested_count,
+      company_percentage
+    ) values (
+      'migration-upgrade-run',
+      'trial',
+      'India',
+      'company',
+      1,
+      100
+    )
+    returning
+      id,
+      external_run_key as "externalRunKey",
+      trigger,
+      status,
+      geography,
+      candidate_type as "candidateType",
+      requested_count as "requestedCount",
+      company_percentage as "companyPercentage"
+  `;
+  const [discoveryCandidate] = await sql`
+    insert into discovery_candidates (
+      type,
+      name,
+      normalized_name,
+      canonical_identity_key,
+      canonical_url,
+      discovered_description,
+      category,
+      geography,
+      first_source_name,
+      first_source_url,
+      most_recent_run_id,
+      discovery_score
+    ) values (
+      'company',
+      'Migration Discovery Fixture',
+      'migration discovery fixture',
+      'migration-discovery-fixture.example.test',
+      'https://migration-discovery-fixture.example.test',
+      'Representative Discovery fixture for migration upgrades.',
+      'technology',
+      'India',
+      'migration-test',
+      'https://migration-source.example.test',
+      ${discoveryRun.id},
+      90
+    )
+    returning
+      id,
+      type,
+      name,
+      canonical_identity_key as "canonicalIdentityKey",
+      most_recent_run_id as "mostRecentRunId",
+      status
+  `;
+  const [discoveryIdentifier] = await sql`
+    insert into discovery_candidate_identifiers (
+      candidate_id,
+      candidate_type,
+      kind,
+      normalized_value
+    ) values (
+      ${discoveryCandidate.id},
+      'company',
+      'canonical',
+      'migration-discovery-fixture.example.test'
+    )
+    returning
+      id,
+      candidate_id as "candidateId",
+      candidate_type as "candidateType",
+      kind,
+      normalized_value as "normalizedValue"
+  `;
+  const [discoverySource] = await sql`
+    insert into discovery_candidate_sources (
+      candidate_id,
+      discovery_run_id,
+      source_name,
+      source_url
+    ) values (
+      ${discoveryCandidate.id},
+      ${discoveryRun.id},
+      'migration-test',
+      'https://migration-source.example.test'
+    )
+    returning
+      id,
+      candidate_id as "candidateId",
+      discovery_run_id as "discoveryRunId",
+      source_name as "sourceName",
+      source_url as "sourceUrl"
+  `;
+  return {
+    user,
+    profile,
+    review,
+    discoveryRun,
+    discoveryCandidate,
+    discoveryIdentifier,
+    discoverySource,
+  };
 }
 
 function assert(condition, message) {
@@ -224,6 +362,250 @@ function assertExactDefinitions(actualRows, expectedDefinitions, label) {
   assert(
     JSON.stringify(actualDefinitions) === JSON.stringify(expectedDefinitions),
     `Expected exact ${label} definitions ${JSON.stringify(expectedDefinitions)}, found ${JSON.stringify(actualDefinitions)}.`,
+  );
+}
+
+async function assertOpportunityBriefMigration(sql) {
+  const expectedTables = [
+    "opportunity_brief_requests",
+    "opportunity_brief_submission_attempts",
+  ];
+  const tables = await sql`
+    select table_name as "tableName"
+    from information_schema.tables
+    where table_schema = 'public'
+      and table_name in ${sql(expectedTables)}
+    order by table_name
+  `;
+  assert(
+    JSON.stringify(tables.map(({ tableName }) => tableName)) ===
+      JSON.stringify(expectedTables),
+    `Expected opportunity brief tables, found ${JSON.stringify(tables)}.`,
+  );
+
+  const enumNames = [
+    "opportunity_brief_acknowledgement_status",
+    "opportunity_brief_status",
+  ];
+  const enums = await sql`
+    select
+      enum_type.typname as name,
+      array_agg(enum_value.enumlabel order by enum_value.enumsortorder) as values
+    from pg_type enum_type
+    join pg_enum enum_value on enum_value.enumtypid = enum_type.oid
+    where enum_type.typname in ${sql(enumNames)}
+    group by enum_type.typname
+    order by enum_type.typname
+  `;
+  assert(
+    JSON.stringify(Object.fromEntries(enums.map(({ name, values }) => [name, values]))) ===
+      JSON.stringify({
+        opportunity_brief_acknowledgement_status: [
+          "not_requested",
+          "pending",
+          "sent",
+          "failed",
+        ],
+        opportunity_brief_status: [
+          "submitted",
+          "researching",
+          "brief_ready",
+          "contacted",
+          "invited_to_join",
+          "converted",
+          "rejected",
+        ],
+      }),
+    `Expected exact opportunity brief enums, found ${JSON.stringify(enums)}.`,
+  );
+
+  const columns = await sql`
+    select
+      table_name as "tableName",
+      column_name as "columnName"
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ${sql(expectedTables)}
+    order by table_name, ordinal_position
+  `;
+  const columnsByTable = Object.fromEntries(
+    expectedTables.map((tableName) => [
+      tableName,
+      columns
+        .filter((column) => column.tableName === tableName)
+        .map((column) => column.columnName),
+    ]),
+  );
+  assert(
+    JSON.stringify(columnsByTable) ===
+      JSON.stringify({
+        opportunity_brief_requests: [
+          "id",
+          "participant_type",
+          "profile_url",
+          "normalized_profile_url",
+          "email",
+          "normalized_email",
+          "phone_number",
+          "normalized_phone_number",
+          "open_to_text",
+          "source",
+          "utm",
+          "source_history",
+          "linked_candidate_id",
+          "status",
+          "admin_notes",
+          "acknowledgement_status",
+          "acknowledgement_email",
+          "acknowledgement_error",
+          "acknowledgement_sent_at",
+          "submission_count",
+          "last_submitted_at",
+          "created_at",
+          "updated_at",
+        ],
+        opportunity_brief_submission_attempts: [
+          "id",
+          "requester_hash",
+          "request_id",
+          "created_at",
+        ],
+      }),
+    `Expected exact opportunity brief columns, found ${JSON.stringify(columnsByTable)}.`,
+  );
+
+  const checkNames = [
+    "opportunity_brief_requests_contact_check",
+    "opportunity_brief_requests_submission_count_check",
+  ];
+  const checkDefinitions = await sql`
+    select conname as name, pg_get_constraintdef(oid, true) as definition
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and contype = 'c'
+      and conname in ${sql(checkNames)}
+    order by conname
+  `;
+  assertExactDefinitions(
+    checkDefinitions,
+    {
+      opportunity_brief_requests_contact_check:
+        "CHECK (normalized_email IS NOT NULL OR normalized_phone_number IS NOT NULL)",
+      opportunity_brief_requests_submission_count_check:
+        "CHECK (submission_count > 0)",
+    },
+    "opportunity brief check constraint",
+  );
+
+  const foreignKeyNames = [
+    "opportunity_brief_requests_linked_candidate_fk",
+    "opportunity_brief_submission_attempts_request_fk",
+  ];
+  const foreignKeyDefinitions = await sql`
+    select conname as name, pg_get_constraintdef(oid, true) as definition
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and contype = 'f'
+      and conname in ${sql(foreignKeyNames)}
+    order by conname
+  `;
+  assertExactDefinitions(
+    foreignKeyDefinitions,
+    {
+      opportunity_brief_requests_linked_candidate_fk:
+        "FOREIGN KEY (linked_candidate_id) REFERENCES discovery_candidates(id) ON DELETE SET NULL",
+      opportunity_brief_submission_attempts_request_fk:
+        "FOREIGN KEY (request_id) REFERENCES opportunity_brief_requests(id) ON DELETE CASCADE",
+    },
+    "opportunity brief foreign key",
+  );
+
+  const uniqueDefinitions = await sql`
+    select conname as name, pg_get_constraintdef(oid, true) as definition
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and contype = 'u'
+      and conname = 'opportunity_brief_requests_participant_profile_unique'
+    order by conname
+  `;
+  assertExactDefinitions(
+    uniqueDefinitions,
+    {
+      opportunity_brief_requests_participant_profile_unique:
+        "UNIQUE (participant_type, normalized_profile_url)",
+    },
+    "opportunity brief unique constraint",
+  );
+
+  const filterIndexNames = [
+    "opportunity_brief_requests_created_at_idx",
+    "opportunity_brief_requests_linked_candidate_idx",
+    "opportunity_brief_requests_normalized_email_idx",
+    "opportunity_brief_requests_normalized_phone_number_idx",
+    "opportunity_brief_requests_participant_type_idx",
+    "opportunity_brief_requests_source_idx",
+    "opportunity_brief_requests_status_last_submitted_at_idx",
+    "opportunity_brief_submission_attempts_request_id_idx",
+    "opportunity_brief_submission_attempts_requester_created_at_idx",
+  ];
+  const filterIndexes = await sql`
+    select indexname as name, indexdef as definition
+    from pg_indexes
+    where schemaname = 'public'
+      and indexname in ${sql(filterIndexNames)}
+    order by indexname
+  `;
+  assertExactDefinitions(
+    filterIndexes,
+    {
+      opportunity_brief_requests_created_at_idx:
+        "CREATE INDEX opportunity_brief_requests_created_at_idx ON public.opportunity_brief_requests USING btree (created_at)",
+      opportunity_brief_requests_linked_candidate_idx:
+        "CREATE INDEX opportunity_brief_requests_linked_candidate_idx ON public.opportunity_brief_requests USING btree (linked_candidate_id)",
+      opportunity_brief_requests_normalized_email_idx:
+        "CREATE INDEX opportunity_brief_requests_normalized_email_idx ON public.opportunity_brief_requests USING btree (normalized_email)",
+      opportunity_brief_requests_normalized_phone_number_idx:
+        "CREATE INDEX opportunity_brief_requests_normalized_phone_number_idx ON public.opportunity_brief_requests USING btree (normalized_phone_number)",
+      opportunity_brief_requests_participant_type_idx:
+        "CREATE INDEX opportunity_brief_requests_participant_type_idx ON public.opportunity_brief_requests USING btree (participant_type)",
+      opportunity_brief_requests_source_idx:
+        "CREATE INDEX opportunity_brief_requests_source_idx ON public.opportunity_brief_requests USING btree (source)",
+      opportunity_brief_requests_status_last_submitted_at_idx:
+        "CREATE INDEX opportunity_brief_requests_status_last_submitted_at_idx ON public.opportunity_brief_requests USING btree (status, last_submitted_at)",
+      opportunity_brief_submission_attempts_request_id_idx:
+        "CREATE INDEX opportunity_brief_submission_attempts_request_id_idx ON public.opportunity_brief_submission_attempts USING btree (request_id)",
+      opportunity_brief_submission_attempts_requester_created_at_idx:
+        "CREATE INDEX opportunity_brief_submission_attempts_requester_created_at_idx ON public.opportunity_brief_submission_attempts USING btree (requester_hash, created_at)",
+    },
+    "opportunity brief filter index",
+  );
+}
+
+async function assertAppliedMigrations(sql) {
+  const [applied] = await sql`
+    select
+      count(*)::integer as "totalCount",
+      count(*) filter (where created_at = ${newestMigration.when})::integer as "newestCount"
+    from drizzle.__drizzle_migrations
+  `;
+  assert(
+    applied.totalCount === orderedMigrationEntries.length &&
+      applied.newestCount === 1,
+    `Expected ${orderedMigrationEntries.length} ordered migrations with ${newestMigration.tag} applied once, found ${JSON.stringify(applied)}.`,
+  );
+}
+
+async function assertBaselineMigrations(sql) {
+  const [applied] = await sql`
+    select
+      count(*)::integer as "totalCount",
+      count(*) filter (where created_at = ${newestMigration.when})::integer as "newestCount"
+    from drizzle.__drizzle_migrations
+  `;
+  assert(
+    applied.totalCount === orderedMigrationEntries.length - 1 &&
+      applied.newestCount === 0,
+    `Expected the pre-${newestMigration.tag} baseline only, found ${JSON.stringify(applied)}.`,
   );
 }
 
@@ -661,26 +1043,6 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
     "filter index",
   );
 
-  const journal = JSON.parse(
-    await readFile(join(migrationsFolder, "meta", "_journal.json"), "utf8"),
-  );
-  const migrationEntries = journal.entries.filter(({ idx }) => idx === 4);
-  assert(
-    migrationEntries.length === 1 && migrationEntries[0].tag.startsWith("0004_"),
-    `Expected exactly one 0004 migration journal entry, found ${JSON.stringify(migrationEntries)}.`,
-  );
-  const migration = migrationEntries[0];
-  const [applied] = await sql`
-    select
-      count(*)::integer as "totalCount",
-      count(*) filter (where created_at = ${migration.when})::integer as "migrationCount"
-    from drizzle.__drizzle_migrations
-  `;
-  assert(
-    applied.totalCount === 5 && applied.migrationCount === 1,
-    `Expected five applied migrations and 0004 exactly once, found ${JSON.stringify(applied)}.`,
-  );
-
   if (expectedFixtures) {
     const [user] = await sql`
       select id, email, name
@@ -713,6 +1075,50 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
       from verification_reviews
       where id = ${expectedFixtures.review.id}
     `;
+    const [discoveryRun] = await sql`
+      select
+        id,
+        external_run_key as "externalRunKey",
+        trigger,
+        status,
+        geography,
+        candidate_type as "candidateType",
+        requested_count as "requestedCount",
+        company_percentage as "companyPercentage"
+      from discovery_runs
+      where id = ${expectedFixtures.discoveryRun.id}
+    `;
+    const [discoveryCandidate] = await sql`
+      select
+        id,
+        type,
+        name,
+        canonical_identity_key as "canonicalIdentityKey",
+        most_recent_run_id as "mostRecentRunId",
+        status
+      from discovery_candidates
+      where id = ${expectedFixtures.discoveryCandidate.id}
+    `;
+    const [discoveryIdentifier] = await sql`
+      select
+        id,
+        candidate_id as "candidateId",
+        candidate_type as "candidateType",
+        kind,
+        normalized_value as "normalizedValue"
+      from discovery_candidate_identifiers
+      where id = ${expectedFixtures.discoveryIdentifier.id}
+    `;
+    const [discoverySource] = await sql`
+      select
+        id,
+        candidate_id as "candidateId",
+        discovery_run_id as "discoveryRunId",
+        source_name as "sourceName",
+        source_url as "sourceUrl"
+      from discovery_candidate_sources
+      where id = ${expectedFixtures.discoverySource.id}
+    `;
     assert(JSON.stringify(user) === JSON.stringify(expectedFixtures.user), "User fixture changed.");
     assert(
       JSON.stringify(profile) === JSON.stringify(expectedFixtures.profile),
@@ -722,7 +1128,33 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
       JSON.stringify(review) === JSON.stringify(expectedFixtures.review),
       "Verification fixture changed.",
     );
+    assert(
+      JSON.stringify(discoveryRun) ===
+        JSON.stringify(expectedFixtures.discoveryRun),
+      "Discovery run fixture changed.",
+    );
+    assert(
+      JSON.stringify(discoveryCandidate) ===
+        JSON.stringify(expectedFixtures.discoveryCandidate),
+      "Discovery candidate fixture changed.",
+    );
+    assert(
+      JSON.stringify(discoveryIdentifier) ===
+        JSON.stringify(expectedFixtures.discoveryIdentifier),
+      "Discovery identifier fixture changed.",
+    );
+    assert(
+      JSON.stringify(discoverySource) ===
+        JSON.stringify(expectedFixtures.discoverySource),
+      "Discovery source fixture changed.",
+    );
   }
+}
+
+async function assertMigrationState(sql, expectedFixtures = null) {
+  await assertDiscoveryMigration(sql, expectedFixtures);
+  await assertOpportunityBriefMigration(sql);
+  await assertAppliedMigrations(sql);
 }
 
 const admin = postgres(adminUrl, { max: 1, prepare: false });
@@ -735,8 +1167,8 @@ try {
   await prepareDatabase(admin, freshDatabaseName);
   freshClient = postgres(databaseUrl(freshDatabaseName), { max: 1, prepare: false });
   await migrate(drizzle(freshClient), { migrationsFolder });
-  await assertDiscoveryMigration(freshClient);
-  console.log("Fresh discovery migration path passed.");
+  await assertMigrationState(freshClient);
+  console.log("Fresh ordered migration path passed.");
 
   await prepareDatabase(admin, upgradeDatabaseName);
   temporaryFolder = await createUpgradeMigrationFolder();
@@ -745,10 +1177,13 @@ try {
     prepare: false,
   });
   await migrate(drizzle(upgradeClient), { migrationsFolder: temporaryFolder });
+  await assertBaselineMigrations(upgradeClient);
   const fixtures = await insertUpgradeFixtures(upgradeClient);
   await migrate(drizzle(upgradeClient), { migrationsFolder });
-  await assertDiscoveryMigration(upgradeClient, fixtures);
-  console.log("Upgrade discovery migration path passed with unchanged fixtures.");
+  await assertMigrationState(upgradeClient, fixtures);
+  console.log(
+    `Upgrade migration ${newestMigration.tag} passed with unchanged product and Discovery fixtures.`,
+  );
 } catch (error) {
   executionError = error;
 }
@@ -802,6 +1237,6 @@ if (temporaryFolder) {
 if (executionError || cleanupErrors.length > 0) {
   throw new AggregateError(
     [...(executionError ? [executionError] : []), ...cleanupErrors],
-    "Discovery migration harness failed.",
+    "Migration harness failed.",
   );
 }

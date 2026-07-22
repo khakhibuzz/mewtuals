@@ -15,6 +15,8 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+import type { OpportunityBriefSourceMetadata } from "../app/domain/opportunity-brief";
+
 export const profileStatusEnum = pgEnum("profile_status", [
   "draft",
   "pending",
@@ -99,6 +101,21 @@ export const discoveryRunCandidateTypeEnum = pgEnum(
 export const discoveryIdentifierKindEnum = pgEnum(
   "discovery_identifier_kind",
   ["canonical", "website_host", "social_url", "linkedin_url"],
+);
+
+export const opportunityBriefStatusEnum = pgEnum("opportunity_brief_status", [
+  "submitted",
+  "researching",
+  "brief_ready",
+  "contacted",
+  "invited_to_join",
+  "converted",
+  "rejected",
+]);
+
+export const opportunityBriefAcknowledgementStatusEnum = pgEnum(
+  "opportunity_brief_acknowledgement_status",
+  ["not_requested", "pending", "sent", "failed"],
 );
 
 const id = () => uuid("id").defaultRandom().primaryKey();
@@ -549,6 +566,111 @@ export const discoveryCandidateSources = pgTable(
     index("discovery_candidate_sources_source_candidate_idx").on(
       table.sourceName,
       table.candidateId,
+    ),
+  ],
+);
+
+export const opportunityBriefRequests = pgTable(
+  "opportunity_brief_requests",
+  {
+    id: id(),
+    participantType: discoveryCandidateTypeEnum("participant_type").notNull(),
+    profileUrl: text("profile_url").notNull(),
+    normalizedProfileUrl: text("normalized_profile_url").notNull(),
+    email: text("email"),
+    normalizedEmail: text("normalized_email"),
+    phoneNumber: text("phone_number"),
+    normalizedPhoneNumber: text("normalized_phone_number"),
+    openToText: text("open_to_text"),
+    source: text("source"),
+    utm: jsonb("utm")
+      .$type<OpportunityBriefSourceMetadata["utm"]>()
+      .default({})
+      .notNull(),
+    sourceHistory: jsonb("source_history")
+      .$type<OpportunityBriefSourceMetadata["history"]>()
+      .default([])
+      .notNull(),
+    linkedCandidateId: uuid("linked_candidate_id"),
+    status: opportunityBriefStatusEnum("status")
+      .default("submitted")
+      .notNull(),
+    adminNotes: text("admin_notes"),
+    acknowledgementStatus: opportunityBriefAcknowledgementStatusEnum(
+      "acknowledgement_status",
+    )
+      .default("not_requested")
+      .notNull(),
+    acknowledgementEmail: text("acknowledgement_email"),
+    acknowledgementError: text("acknowledgement_error"),
+    acknowledgementSentAt: timestamp("acknowledgement_sent_at", {
+      withTimezone: true,
+    }),
+    submissionCount: integer("submission_count").default(1).notNull(),
+    lastSubmittedAt: timestamp("last_submitted_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    unique("opportunity_brief_requests_participant_profile_unique").on(
+      table.participantType,
+      table.normalizedProfileUrl,
+    ),
+    foreignKey({
+      name: "opportunity_brief_requests_linked_candidate_fk",
+      columns: [table.linkedCandidateId],
+      foreignColumns: [discoveryCandidates.id],
+    }).onDelete("set null"),
+    index("opportunity_brief_requests_status_last_submitted_at_idx").on(
+      table.status,
+      table.lastSubmittedAt,
+    ),
+    index("opportunity_brief_requests_created_at_idx").on(table.createdAt),
+    index("opportunity_brief_requests_participant_type_idx").on(
+      table.participantType,
+    ),
+    index("opportunity_brief_requests_source_idx").on(table.source),
+    index("opportunity_brief_requests_linked_candidate_idx").on(
+      table.linkedCandidateId,
+    ),
+    index("opportunity_brief_requests_normalized_email_idx").on(
+      table.normalizedEmail,
+    ),
+    index("opportunity_brief_requests_normalized_phone_number_idx").on(
+      table.normalizedPhoneNumber,
+    ),
+    check(
+      "opportunity_brief_requests_contact_check",
+      sql`${table.normalizedEmail} IS NOT NULL OR ${table.normalizedPhoneNumber} IS NOT NULL`,
+    ),
+    check(
+      "opportunity_brief_requests_submission_count_check",
+      sql`${table.submissionCount} > 0`,
+    ),
+  ],
+);
+
+export const opportunityBriefSubmissionAttempts = pgTable(
+  "opportunity_brief_submission_attempts",
+  {
+    id: id(),
+    requesterHash: text("requester_hash").notNull(),
+    requestId: uuid("request_id").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    foreignKey({
+      name: "opportunity_brief_submission_attempts_request_fk",
+      columns: [table.requestId],
+      foreignColumns: [opportunityBriefRequests.id],
+    }).onDelete("cascade"),
+    index(
+      "opportunity_brief_submission_attempts_requester_created_at_idx",
+    ).on(table.requesterHash, table.createdAt),
+    index("opportunity_brief_submission_attempts_request_id_idx").on(
+      table.requestId,
     ),
   ],
 );
