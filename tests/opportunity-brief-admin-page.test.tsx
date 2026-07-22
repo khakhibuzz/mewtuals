@@ -101,6 +101,7 @@ describe("Opportunity Brief administrator page", () => {
         participantType: "company",
         status: "submitted",
         source: "meetup",
+        linked: "unlinked",
         from: "2026-07-01",
         to: "2026-07-22",
         page: "2",
@@ -115,6 +116,7 @@ describe("Opportunity Brief administrator page", () => {
         participantType: "company",
         status: "submitted",
         source: "meetup",
+        linked: false,
         submittedFrom: "2026-07-01",
         submittedTo: "2026-07-22",
         page: "2",
@@ -160,15 +162,29 @@ describe("Opportunity Brief administrator page", () => {
 });
 
 describe("administrator navigation", () => {
-  it("links Opportunity Briefs from discovery and verification pages", async () => {
-    const discoverySource = await import("node:fs/promises").then((fs) =>
-      fs.readFile(`${process.cwd()}/app/admin/discovery/page.tsx`, "utf8"),
+  it("uses one Opportunity Briefs, Discovery, Verification order on every admin page", async () => {
+    const paths = [
+      "app/admin/opportunity-briefs/page.tsx",
+      "app/admin/discovery/page.tsx",
+      "app/admin/verifications/page.tsx",
+    ];
+    const sources = await Promise.all(
+      paths.map((path) =>
+        import("node:fs/promises").then((fs) =>
+          fs.readFile(`${process.cwd()}/${path}`, "utf8"),
+        ),
+      ),
     );
-    const verificationSource = await import("node:fs/promises").then((fs) =>
-      fs.readFile(`${process.cwd()}/app/admin/verifications/page.tsx`, "utf8"),
-    );
+    const expectedOrder = [
+      "/admin/opportunity-briefs",
+      "/admin/discovery",
+      "/admin/verifications",
+    ];
 
-    expect(discoverySource).toContain('/admin/opportunity-briefs');
-    expect(verificationSource).toContain('/admin/opportunity-briefs');
+    for (const source of sources) {
+      const positions = expectedOrder.map((href) => source.indexOf(`href: "${href}"`));
+      expect(positions.every((position) => position >= 0)).toBe(true);
+      expect(positions).toEqual([...positions].sort((left, right) => left - right));
+    }
   });
 });

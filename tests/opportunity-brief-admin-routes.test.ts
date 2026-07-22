@@ -83,7 +83,9 @@ describe("Opportunity Brief administrator GET route", () => {
   it.each([
     "?unknown=value",
     "?status=submitted&status=researching",
+    "?linked=linked&linked=unlinked",
     "?status=",
+    "?linked=yes",
     "?participantType=partner",
     "?from=2026-02-30",
     "?page=0",
@@ -139,7 +141,7 @@ describe("Opportunity Brief administrator GET route", () => {
 
     const response = await handler(
       routeRequest(
-        "/api/admin/opportunity-briefs?status=researching&participantType=company&source=meetup&from=2026-07-21&to=2026-07-22&page=2&pageSize=50",
+        "/api/admin/opportunity-briefs?status=researching&participantType=company&source=meetup&from=2026-07-21&to=2026-07-22&linked=unlinked&page=2&pageSize=50",
       ),
     );
 
@@ -151,6 +153,7 @@ describe("Opportunity Brief administrator GET route", () => {
         source: "meetup",
         submittedAtGte: new Date("2026-07-20T18:30:00.000Z"),
         submittedAtLt: new Date("2026-07-22T18:30:00.000Z"),
+        linked: false,
         page: 2,
         pageSize: 50,
       },

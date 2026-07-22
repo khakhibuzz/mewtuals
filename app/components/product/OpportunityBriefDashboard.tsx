@@ -33,10 +33,10 @@ export type OpportunityBriefDashboardSnapshot = {
 };
 
 export type OpportunityBriefDashboardFilters = Partial<
-  Record<"participantType" | "status" | "source" | "from" | "to" | "page" | "pageSize", string>
+  Record<"participantType" | "status" | "source" | "linked" | "from" | "to" | "page" | "pageSize", string>
 >;
 
-const filterKeys = ["participantType", "status", "source", "from", "to", "pageSize"] as const;
+const filterKeys = ["participantType", "status", "source", "linked", "from", "to"] as const;
 const statuses = [
   "submitted",
   "researching",
@@ -70,8 +70,24 @@ function pageHref(filters: OpportunityBriefDashboardFilters, page: number): stri
     const value = filters[key];
     if (value) query.set(key, value);
   }
+  if (filters.pageSize) query.set("pageSize", filters.pageSize);
   query.set("page", String(page));
   return `/admin/opportunity-briefs?${query.toString()}`;
+}
+
+function snapshotHref(
+  filters: OpportunityBriefDashboardFilters,
+  page: number,
+  pageSize: number,
+): string {
+  const query = new URLSearchParams();
+  for (const key of filterKeys) {
+    const value = filters[key];
+    if (value) query.set(key, value);
+  }
+  query.set("page", String(page));
+  query.set("pageSize", String(pageSize));
+  return `/api/admin/opportunity-briefs?${query.toString()}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -136,6 +152,62 @@ function requestFromResponse(value: unknown): OpportunityBriefDashboardRequest |
   };
 }
 
+function finiteInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function snapshotFromResponse(value: unknown): OpportunityBriefDashboardSnapshot | null {
+  if (!isRecord(value) || !isRecord(value.summary) || !Array.isArray(value.requests)) {
+    return null;
+  }
+  const summary = value.summary;
+  const numericSummaryKeys = [
+    "total",
+    "newToday",
+    "companies",
+    "creators",
+    "awaitingResearch",
+    "linkedCandidates",
+    "unlinked",
+    "acknowledgementPending",
+    "acknowledgementFailed",
+  ] as const;
+  if (
+    numericSummaryKeys.some((key) => !finiteInteger(summary[key])) ||
+    !isRecord(summary.sources) ||
+    !finiteInteger(value.page) ||
+    value.page < 1 ||
+    !finiteInteger(value.pageSize) ||
+    value.pageSize < 1 ||
+    !finiteInteger(value.totalPages)
+  ) return null;
+  const requests = value.requests.map(requestFromResponse);
+  if (requests.some((request) => request === null)) return null;
+  const sources = Object.fromEntries(
+    Object.entries(summary.sources).filter((entry): entry is [string, number] =>
+      finiteInteger(entry[1]),
+    ),
+  );
+  return {
+    summary: {
+      total: summary.total as number,
+      newToday: summary.newToday as number,
+      companies: summary.companies as number,
+      creators: summary.creators as number,
+      awaitingResearch: summary.awaitingResearch as number,
+      linkedCandidates: summary.linkedCandidates as number,
+      unlinked: summary.unlinked as number,
+      acknowledgementPending: summary.acknowledgementPending as number,
+      acknowledgementFailed: summary.acknowledgementFailed as number,
+      sources,
+    },
+    requests: requests as OpportunityBriefDashboardRequest[],
+    page: value.page,
+    pageSize: value.pageSize,
+    totalPages: value.totalPages,
+  };
+}
+
 function contact(request: OpportunityBriefDashboardRequest): string {
   return [request.email, request.phoneNumber].filter(Boolean).join(" · ") || "Not supplied";
 }
@@ -161,30 +233,39 @@ export function OpportunityBriefDashboard({
   snapshot: OpportunityBriefDashboardSnapshot;
   filters: OpportunityBriefDashboardFilters;
 }) {
-  const [requests, setRequests] = useState(snapshot.requests);
+  const [currentSnapshot, setCurrentSnapshot] = useState(snapshot);
   const [selectedRequestId, setSelectedRequestId] = useState<string>();
+  const [selectedRequestVersion, setSelectedRequestVersion] =
+    useState<OpportunityBriefDashboardRequest>();
   const [pendingAction, setPendingAction] = useState<"status" | "notes" | "link" | "unlink" | null>(null);
   const [feedback, setFeedback] = useState<OpportunityBriefFeedback>(null);
   const returnFocusRef = useRef<HTMLButtonElement | null>(null);
   const mutationInFlight = useRef(false);
-  const selectedRequest = requests.find(({ id }) => id === selectedRequestId);
+  const requests = currentSnapshot.requests;
+  const selectedRequest =
+    requests.find(({ id }) => id === selectedRequestId) ??
+    (selectedRequestVersion?.id === selectedRequestId
+      ? selectedRequestVersion
+      : undefined);
   const hasFilters = Object.entries(filters).some(([key, value]) => key !== "page" && Boolean(value));
   const metrics = [
-    ["Total requests", snapshot.summary.total],
-    ["Submitted today", snapshot.summary.newToday],
-    ["Unlinked", snapshot.summary.unlinked],
-    ["Acknowledgement pending", snapshot.summary.acknowledgementPending],
-    ["Acknowledgement failed", snapshot.summary.acknowledgementFailed],
+    ["Total requests", currentSnapshot.summary.total],
+    ["Submitted today", currentSnapshot.summary.newToday],
+    ["Unlinked", currentSnapshot.summary.unlinked],
+    ["Acknowledgement pending", currentSnapshot.summary.acknowledgementPending],
+    ["Acknowledgement failed", currentSnapshot.summary.acknowledgementFailed],
   ] as const;
 
   function openRequest(requestId: string, trigger: HTMLButtonElement) {
     returnFocusRef.current = trigger;
     setFeedback(null);
+    setSelectedRequestVersion(requests.find(({ id }) => id === requestId));
     setSelectedRequestId(requestId);
   }
 
   const closeRequest = useCallback(() => {
     setSelectedRequestId(undefined);
+    setSelectedRequestVersion(undefined);
     setFeedback(null);
     const trigger = returnFocusRef.current;
     returnFocusRef.current = null;
@@ -192,7 +273,11 @@ export function OpportunityBriefDashboard({
   }, []);
 
   function replaceRequest(next: OpportunityBriefDashboardRequest) {
-    setRequests((current) => current.map((item) => (item.id === next.id ? next : item)));
+    setCurrentSnapshot((current) => ({
+      ...current,
+      requests: current.requests.map((item) => (item.id === next.id ? next : item)),
+    }));
+    if (next.id === selectedRequestId) setSelectedRequestVersion(next);
   }
 
   async function mutate(mutation: OpportunityBriefMutation) {
@@ -238,6 +323,37 @@ export function OpportunityBriefDashboard({
         return;
       }
       replaceRequest(current);
+      setFeedback({
+        kind: "status",
+        message: "Update saved. Refreshing queue totals…",
+      });
+      let refreshed: OpportunityBriefDashboardSnapshot | null = null;
+      try {
+        const refreshResponse = await fetch(
+          snapshotHref(filters, currentSnapshot.page, currentSnapshot.pageSize),
+          { method: "GET", headers: { Accept: "application/json" } },
+        );
+        const refreshResult = (await refreshResponse.json().catch(() => ({}))) as {
+          snapshot?: unknown;
+        };
+        if (refreshResponse.ok) {
+          refreshed = snapshotFromResponse(refreshResult.snapshot);
+        }
+      } catch {
+        refreshed = null;
+      }
+      if (!refreshed) {
+        setFeedback({
+          kind: "alert",
+          message:
+            "Update saved, but the queue summary could not be refreshed. Reload to see current totals.",
+        });
+        return;
+      }
+      setCurrentSnapshot(refreshed);
+      setSelectedRequestVersion(
+        refreshed.requests.find(({ id }) => id === current.id) ?? current,
+      );
       setFeedback({ kind: "status", message: successMessages[kind] });
     } catch {
       setFeedback({
@@ -262,9 +378,10 @@ export function OpportunityBriefDashboard({
         <label><span>Participant type</span><select name="participantType" defaultValue={filters.participantType ?? ""}><option value="">All types</option><option value="company">Company</option><option value="creator">Creator</option></select></label>
         <label><span>Request status</span><select name="status" defaultValue={filters.status ?? ""}><option value="">All statuses</option>{statuses.map((status) => <option value={status} key={status}>{label(status)}</option>)}</select></label>
         <label><span>Source</span><input name="source" defaultValue={filters.source ?? ""} maxLength={100} /></label>
+        <label><span>Candidate link</span><select name="linked" defaultValue={filters.linked ?? ""}><option value="">All</option><option value="linked">Linked</option><option value="unlinked">Unlinked</option></select></label>
         <label><span>Submitted from</span><input name="from" type="date" defaultValue={filters.from ?? ""} /></label>
         <label><span>Submitted through</span><input name="to" type="date" defaultValue={filters.to ?? ""} /></label>
-        <input type="hidden" name="pageSize" value={filters.pageSize ?? String(snapshot.pageSize)} />
+        <input type="hidden" name="pageSize" value={filters.pageSize ?? String(currentSnapshot.pageSize)} />
         <div className={styles.opportunityFilterActions}>
           <button className={styles.button} type="submit">Apply filters</button>
           <Link href="/admin/opportunity-briefs">Clear filters</Link>
@@ -311,11 +428,11 @@ export function OpportunityBriefDashboard({
         </>
       )}
 
-      {snapshot.totalPages > 1 ? (
+      {currentSnapshot.totalPages > 1 ? (
         <nav className={styles.opportunityPagination} aria-label="Opportunity Brief pages">
-          {snapshot.page > 1 ? <Link href={pageHref(filters, snapshot.page - 1)}>Previous page</Link> : <span />}
-          <span>Page {snapshot.page} of {snapshot.totalPages}</span>
-          {snapshot.page < snapshot.totalPages ? <Link href={pageHref(filters, snapshot.page + 1)}>Next page</Link> : <span />}
+          {currentSnapshot.page > 1 ? <Link href={pageHref(filters, currentSnapshot.page - 1)}>Previous page</Link> : <span />}
+          <span>Page {currentSnapshot.page} of {currentSnapshot.totalPages}</span>
+          {currentSnapshot.page < currentSnapshot.totalPages ? <Link href={pageHref(filters, currentSnapshot.page + 1)}>Next page</Link> : <span />}
         </nav>
       ) : null}
 

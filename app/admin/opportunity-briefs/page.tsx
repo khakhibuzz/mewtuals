@@ -16,6 +16,7 @@ const filterKeys = [
   "source",
   "from",
   "to",
+  "linked",
   "page",
   "pageSize",
 ] as const;
@@ -31,8 +32,13 @@ function pageFilters(
     const normalized = value?.trim();
     if (!normalized) continue;
     dashboardFilters[key] = normalized;
-    serviceFilters[key === "from" ? "submittedFrom" : key === "to" ? "submittedTo" : key] =
-      normalized;
+    if (key === "linked") {
+      if (normalized !== "linked" && normalized !== "unlinked") return null;
+      serviceFilters.linked = normalized === "linked";
+    } else {
+      serviceFilters[key === "from" ? "submittedFrom" : key === "to" ? "submittedTo" : key] =
+        normalized;
+    }
   }
   return { dashboardFilters, serviceFilters };
 }

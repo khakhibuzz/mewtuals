@@ -93,6 +93,7 @@ describe("Opportunity Brief dashboard", () => {
           participantType: "company",
           status: "submitted",
           source: "meetup",
+          linked: "unlinked",
           from: "2026-07-01",
           to: "2026-07-22",
           pageSize: "25",
@@ -106,12 +107,13 @@ describe("Opportunity Brief dashboard", () => {
     expect(screen.getByLabelText("Participant type")).toHaveValue("company");
     expect(screen.getByLabelText("Request status")).toHaveValue("submitted");
     expect(screen.getByLabelText("Source")).toHaveValue("meetup");
+    expect(screen.getByLabelText("Candidate link")).toHaveValue("unlinked");
     expect(screen.getByLabelText("Submitted from")).toHaveValue("2026-07-01");
     expect(screen.getByLabelText("Submitted through")).toHaveValue("2026-07-22");
     expect(screen.getByRole("link", { name: "Next page" })).toHaveAttribute(
       "href",
       expect.stringMatching(
-        /^\/admin\/opportunity-briefs\?(?=.*participantType=company)(?=.*status=submitted)(?=.*page=2)(?!.*unknown)/,
+        /^\/admin\/opportunity-briefs\?(?=.*participantType=company)(?=.*status=submitted)(?=.*linked=unlinked)(?=.*page=2)(?!.*unknown)/,
       ),
     );
   });
@@ -138,12 +140,21 @@ describe("Opportunity Brief dashboard", () => {
 
   it("offers only allowed next statuses and submits the optimistic status guard", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ request: { ...request, status: "researching" } }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
+    const researchingRequest = { ...request, status: "researching" as const };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request: researchingRequest }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ snapshot: { ...snapshot, requests: [researchingRequest] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
     vi.stubGlobal("fetch", fetchMock);
     render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
     await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
@@ -171,11 +182,16 @@ describe("Opportunity Brief dashboard", () => {
 
   it("saves notes, links an exact candidate UUID, and unlinks it", async () => {
     const user = userEvent.setup();
+    const noted = { ...request, adminNotes: "Updated" };
+    const linked = { ...noted, linkedCandidateId: candidateId };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ request: { ...request, adminNotes: "Updated" } }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ request: { ...request, adminNotes: "Updated", linkedCandidateId: candidateId } }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ request: { ...request, adminNotes: "Updated", linkedCandidateId: null } }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request: noted }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: { ...snapshot, requests: [noted] } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request: linked }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: { ...snapshot, summary: { ...snapshot.summary, linkedCandidates: 3, unlinked: 4 }, requests: [linked] } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request: noted }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: { ...snapshot, requests: [noted] } }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
     await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
@@ -191,12 +207,112 @@ describe("Opportunity Brief dashboard", () => {
     );
     await user.click(await screen.findByRole("button", { name: "Unlink candidate" }));
 
-    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+    const bodies = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "PATCH")
+      .map(([, init]) => JSON.parse(String(init?.body)));
     expect(bodies).toEqual([
       { expectedUpdatedAt: request.updatedAt, notes: "Updated" },
       { expectedUpdatedAt: request.updatedAt, linkedCandidateId: candidateId },
       { expectedUpdatedAt: request.updatedAt, unlink: true },
     ]);
+  });
+
+  it("refreshes global metrics and row/detail linkage after link and unlink", async () => {
+    const user = userEvent.setup();
+    const linkedRequest = { ...request, linkedCandidateId: candidateId };
+    const linkedSnapshot = {
+      ...snapshot,
+      summary: { ...snapshot.summary, linkedCandidates: 3, unlinked: 4 },
+      requests: [linkedRequest],
+    };
+    const unlinkedSnapshot = {
+      ...snapshot,
+      requests: [request],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request: linkedRequest }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: linkedSnapshot }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: unlinkedSnapshot }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <OpportunityBriefDashboard
+        snapshot={snapshot}
+        filters={{ participantType: "company", linked: "unlinked" }}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.type(screen.getByLabelText("Candidate UUID"), candidateId);
+    await user.click(screen.getByRole("button", { name: "Link candidate" }));
+
+    await waitFor(() => expect(screen.getByRole("group", { name: "Opportunity Brief summary" })).toHaveTextContent("Unlinked4"));
+    expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent("Linked");
+    expect(screen.getByRole("dialog")).toHaveTextContent(candidateId);
+    expect(fetchMock.mock.calls[1]).toEqual([
+      "/api/admin/opportunity-briefs?participantType=company&linked=unlinked&page=1&pageSize=25",
+      { method: "GET", headers: { Accept: "application/json" } },
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Unlink candidate" }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Opportunity Brief summary" })).toHaveTextContent("Unlinked5"));
+    expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent("Unlinked");
+    expect(screen.getByRole("dialog")).toHaveTextContent("Unlinked");
+  });
+
+  it("keeps a successful mutation visible when the summary refresh fails", async () => {
+    const user = userEvent.setup();
+    const noted = { ...request, adminNotes: "Saved despite refresh" };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ request: noted }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Unavailable" }), { status: 500 })),
+    );
+    render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.clear(screen.getByLabelText("Administrator notes"));
+    await user.type(screen.getByLabelText("Administrator notes"), "Saved despite refresh");
+    await user.click(screen.getByRole("button", { name: "Save notes" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Update saved, but the queue summary could not be refreshed",
+    );
+    expect(screen.getByLabelText("Administrator notes")).toHaveValue("Saved despite refresh");
+  });
+
+  it("announces the protected snapshot refresh while keeping actions disabled", async () => {
+    const user = userEvent.setup();
+    let resolveRefresh!: (response: Response) => void;
+    const refresh = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const noted = { ...request, adminNotes: "Saved" };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ request: noted }), { status: 200 }))
+        .mockReturnValueOnce(refresh),
+    );
+    render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.click(screen.getByRole("button", { name: "Save notes" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Update saved. Refreshing queue totals",
+    );
+    expect(screen.getByRole("button", { name: "Saving notes" })).toBeDisabled();
+
+    resolveRefresh(
+      new Response(JSON.stringify({ snapshot: { ...snapshot, requests: [noted] } }), {
+        status: 200,
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save notes" })).toBeEnabled(),
+    );
   });
 
   it("shows service validation errors and loads current data after a 409", async () => {

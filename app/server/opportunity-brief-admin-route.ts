@@ -130,6 +130,7 @@ type ListFilters = {
   source?: string;
   submittedFrom?: string;
   submittedTo?: string;
+  linked?: boolean;
   page?: number;
   pageSize?: number;
 };
@@ -141,6 +142,7 @@ function parseFilters(url: URL): ListFilters | null {
     "source",
     "from",
     "to",
+    "linked",
     "page",
     "pageSize",
   ]);
@@ -165,6 +167,9 @@ function parseFilters(url: URL): ListFilters | null {
       const parsed = calendarDateSchema.safeParse(value);
       if (!parsed.success) return null;
       filters[key === "from" ? "submittedFrom" : "submittedTo"] = parsed.data;
+    } else if (key === "linked") {
+      if (value !== "linked" && value !== "unlinked") return null;
+      filters.linked = value === "linked";
     } else if (key === "page" || key === "pageSize") {
       const parsed = positiveIntegerSchema.safeParse(value);
       if (!parsed.success) return null;
