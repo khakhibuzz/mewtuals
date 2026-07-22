@@ -1,14 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   createOpportunityBriefService,
   type AcknowledgementOutcome,
   type AcknowledgementSender,
+  type AcknowledgementRecordInput,
+  type AcknowledgementRecordResult,
+  type AdminServiceFailure,
   type AdminMutationResult,
   type AdminRequest,
   type AdminSnapshot,
   type AtomicAdminMutation,
   type OpportunityBriefRepository,
+  type PublicSubmissionResult,
   type SubmitRepositoryInput,
   type SubmitRepositoryResult,
 } from "../app/server/opportunity-brief-service";
@@ -17,6 +21,7 @@ const now = new Date("2026-07-22T06:30:00.000Z");
 const requestId = "00000000-0000-4000-8000-000000000101";
 const candidateId = "00000000-0000-4000-8000-000000000202";
 const expectedUpdatedAt = new Date("2026-07-22T06:00:00.000Z");
+const acknowledgementUpdatedAt = new Date("2026-07-22T06:25:00.000Z");
 
 type AcceptedSubmitResult = Extract<
   SubmitRepositoryResult,
@@ -32,7 +37,13 @@ function acceptedSubmitResult(
     status: "submitted",
     linkedCandidateId: null,
     persistence: "created",
-    acknowledgement: { status: "pending", shouldSend: true },
+    acknowledgement: {
+      status: "pending",
+      delivery: {
+        email: "founder@example.com",
+        expectedUpdatedAt: acknowledgementUpdatedAt,
+      },
+    },
     ...overrides,
   };
 }
@@ -96,9 +107,10 @@ const emptySnapshot: AdminSnapshot = {
 
 class MemoryRepository implements OpportunityBriefRepository {
   submissions: SubmitRepositoryInput[] = [];
-  acknowledgements: Array<{ id: string; outcome: AcknowledgementOutcome }> = [];
+  acknowledgements: AcknowledgementRecordInput[] = [];
   adminSnapshotCalls: Array<{ actorTime: Date; filters: unknown }> = [];
   mutations: AtomicAdminMutation[] = [];
+  adminRequestReads = 0;
   request: AdminRequest | null = adminRequest();
   candidateType: "company" | "creator" | null = "company";
   submitResult: SubmitRepositoryResult = acceptedSubmitResult();
@@ -113,10 +125,10 @@ class MemoryRepository implements OpportunityBriefRepository {
   }
 
   async recordAcknowledgement(
-    id: string,
-    outcome: AcknowledgementOutcome,
-  ): Promise<void> {
-    this.acknowledgements.push({ id, outcome });
+    input: AcknowledgementRecordInput,
+  ): Promise<AcknowledgementRecordResult> {
+    this.acknowledgements.push(input);
+    return { outcome: "recorded" };
   }
 
   async getAdminSnapshot(actorTime: Date, filters: unknown) {
@@ -125,6 +137,7 @@ class MemoryRepository implements OpportunityBriefRepository {
   }
 
   async getAdminRequest(id: string) {
+    this.adminRequestReads += 1;
     return this.request?.id === id ? this.request : null;
   }
 
@@ -214,7 +227,7 @@ describe("opportunity brief public submission service", () => {
       const repository = new MemoryRepository();
       repository.submitResult = acceptedSubmitResult({
         linkedCandidateId,
-        acknowledgement: { status: "pending", shouldSend: false },
+        acknowledgement: { status: "pending", delivery: null },
       });
       const { service } = createService(repository);
 
@@ -231,7 +244,7 @@ describe("opportunity brief public submission service", () => {
     repository.submitResult = {
       ...acceptedSubmitResult({
         persistence: "merged",
-        acknowledgement: { status: "sent", shouldSend: false },
+        acknowledgement: { status: "sent", delivery: null },
       }),
       storedEmail: "private-stored@example.com",
       storedPhoneNumber: "+12025550123",
@@ -335,7 +348,12 @@ describe("opportunity brief acknowledgement orchestration", () => {
       },
     ]);
     expect(repository.acknowledgements).toEqual([
-      { id: requestId, outcome: { status: "sent", at: now } },
+      {
+        requestId,
+        attemptedEmail: "founder@example.com",
+        expectedUpdatedAt: acknowledgementUpdatedAt,
+        outcome: { status: "sent", at: now },
+      },
     ]);
   });
 
@@ -343,7 +361,7 @@ describe("opportunity brief acknowledgement orchestration", () => {
     const repository = new MemoryRepository();
     repository.submitResult = acceptedSubmitResult({
       persistence: "merged",
-      acknowledgement: { status: "sent", shouldSend: false },
+      acknowledgement: { status: "sent", delivery: null },
     });
     const { service, sender } = createService(repository);
 
@@ -359,7 +377,10 @@ describe("opportunity brief acknowledgement orchestration", () => {
       const repository = new MemoryRepository();
       repository.submitResult = acceptedSubmitResult({
         persistence: "merged",
-        acknowledgement: { status: "pending", shouldSend: true },
+        acknowledgement: {
+          status: "pending",
+          delivery: { email, expectedUpdatedAt: acknowledgementUpdatedAt },
+        },
       });
       const { service, sender } = createService(repository);
 
@@ -378,7 +399,7 @@ describe("opportunity brief acknowledgement orchestration", () => {
   it("keeps WhatsApp-only acknowledgement not_requested and skips email", async () => {
     const repository = new MemoryRepository();
     repository.submitResult = acceptedSubmitResult({
-      acknowledgement: { status: "not_requested", shouldSend: false },
+      acknowledgement: { status: "not_requested", delivery: null },
     });
     const { service, sender } = createService(repository);
 
@@ -407,7 +428,12 @@ describe("opportunity brief acknowledgement orchestration", () => {
 
     expect(result).toMatchObject({ ok: true, requestId });
     expect(repository.acknowledgements).toEqual([
-      { id: requestId, outcome },
+      {
+        requestId,
+        attemptedEmail: "founder@example.com",
+        expectedUpdatedAt: acknowledgementUpdatedAt,
+        outcome,
+      },
     ]);
   });
 
@@ -421,13 +447,122 @@ describe("opportunity brief acknowledgement orchestration", () => {
     expect(result).toMatchObject({ ok: true, requestId });
     expect(repository.acknowledgements).toEqual([
       {
-        id: requestId,
+        requestId,
+        attemptedEmail: "founder@example.com",
+        expectedUpdatedAt: acknowledgementUpdatedAt,
         outcome: {
           status: "failed",
           error: "Acknowledgement delivery failed unexpectedly.",
         },
       },
     ]);
+  });
+
+  it("cannot let an older email outcome overwrite a replacement email", async () => {
+    const repository = new MemoryRepository();
+    const firstVersion = new Date("2026-07-22T06:20:00.000Z");
+    const secondVersion = new Date("2026-07-22T06:21:00.000Z");
+    const firstOutcome = Promise.withResolvers<AcknowledgementOutcome>();
+    const firstStarted = Promise.withResolvers<void>();
+    let submissionNumber = 0;
+    let acknowledgementState = {
+      email: "",
+      expectedUpdatedAt: new Date(0),
+      outcome: { status: "pending" } as AcknowledgementOutcome,
+    };
+
+    repository.submit = async (input) => {
+      repository.submissions.push(input);
+      submissionNumber += 1;
+      const email = input.email!;
+      const expectedVersion =
+        submissionNumber === 1 ? firstVersion : secondVersion;
+      acknowledgementState = {
+        email,
+        expectedUpdatedAt: expectedVersion,
+        outcome: { status: "pending" },
+      };
+      return acceptedSubmitResult({
+        persistence: submissionNumber === 1 ? "created" : "merged",
+        acknowledgement: {
+          status: "pending",
+          delivery: { email, expectedUpdatedAt: expectedVersion },
+        },
+      });
+    };
+    repository.recordAcknowledgement = async (input) => {
+      repository.acknowledgements.push(input);
+      if (
+        input.attemptedEmail !== acknowledgementState.email ||
+        input.expectedUpdatedAt.getTime() !==
+          acknowledgementState.expectedUpdatedAt.getTime()
+      ) {
+        return { outcome: "stale" };
+      }
+      acknowledgementState = {
+        ...acknowledgementState,
+        outcome: input.outcome,
+      };
+      return { outcome: "recorded" };
+    };
+    const service = createOpportunityBriefService({
+      repository,
+      acknowledgementSender: {
+        async sendAcknowledgement({ email }) {
+          if (email === "a@example.com") {
+            firstStarted.resolve();
+            return firstOutcome.promise;
+          }
+          return { status: "sent" };
+        },
+      },
+      adminEmails: [],
+      now: () => now,
+    });
+
+    const olderSubmission = service.submit(
+      submission({ email: "a@example.com", phoneNumber: "" }),
+      "requester-hash",
+    );
+    await firstStarted.promise;
+    await service.submit(
+      submission({ email: "b@example.com", phoneNumber: "" }),
+      "requester-hash",
+    );
+    firstOutcome.resolve({ status: "failed", error: "late failure" });
+    await olderSubmission;
+
+    expect(acknowledgementState).toEqual({
+      email: "b@example.com",
+      expectedUpdatedAt: secondVersion,
+      outcome: { status: "sent", at: now },
+    });
+    expect(repository.acknowledgements).toEqual([
+      {
+        requestId,
+        attemptedEmail: "b@example.com",
+        expectedUpdatedAt: secondVersion,
+        outcome: { status: "sent", at: now },
+      },
+      {
+        requestId,
+        attemptedEmail: "a@example.com",
+        expectedUpdatedAt: firstVersion,
+        outcome: { status: "failed", error: "late failure" },
+      },
+    ]);
+  });
+
+  it("keeps durable public success when acknowledgement outcome persistence fails", async () => {
+    const repository = new MemoryRepository();
+    repository.recordAcknowledgement = async () => {
+      throw new Error("database unavailable after commit");
+    };
+    const { service } = createService(repository);
+
+    await expect(
+      service.submit(submission(), "requester-hash"),
+    ).resolves.toMatchObject({ ok: true, requestId });
   });
 });
 
@@ -454,6 +589,45 @@ describe("opportunity brief administrator service", () => {
       { actorTime: now, filters: {} },
     ]);
   });
+
+  it("converts submitted calendar dates to exact Asia/Kolkata boundaries", async () => {
+    const repository = new MemoryRepository();
+    const { service } = createService(repository);
+
+    await expect(
+      service.getAdminSnapshot(administrator, {
+        submittedFrom: "2026-07-22",
+        submittedTo: "2026-07-22",
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(repository.adminSnapshotCalls).toEqual([
+      {
+        actorTime: now,
+        filters: {
+          submittedAtGte: new Date("2026-07-21T18:30:00.000Z"),
+          submittedAtLt: new Date("2026-07-22T18:30:00.000Z"),
+        },
+      },
+    ]);
+  });
+
+  it.each(["2026-02-30", "2026-13-01", "22-07-2026"])(
+    "rejects invalid administrator calendar date %s",
+    async (submittedFrom) => {
+      const repository = new MemoryRepository();
+      const { service } = createService(repository);
+
+      await expect(
+        service.getAdminSnapshot(administrator, { submittedFrom }),
+      ).resolves.toMatchObject({
+        ok: false,
+        status: 400,
+        errors: { submittedFrom: expect.any(String) },
+      });
+      expect(repository.adminSnapshotCalls).toHaveLength(0);
+    },
+  );
 
   it("enforces the domain status graph before an optimistic mutation", async () => {
     const repository = new MemoryRepository();
@@ -503,6 +677,56 @@ describe("opportunity brief administrator service", () => {
       status: 409,
       request: { status: "rejected" },
     });
+  });
+
+  it("returns an equal status without writing when the version is current", async () => {
+    const repository = new MemoryRepository();
+    const { service } = createService(repository);
+
+    const result = await service.updateStatus(administrator, requestId, {
+      status: "submitted",
+      expectedUpdatedAt: expectedUpdatedAt.toISOString(),
+    });
+
+    expect(result).toEqual({ ok: true, request: repository.request });
+    expect(result).toMatchObject({ request: { updatedAt: expectedUpdatedAt } });
+    expect(repository.mutations).toHaveLength(0);
+  });
+
+  it("rejects an equal-status no-op when the client version is stale", async () => {
+    const repository = new MemoryRepository();
+    const { service } = createService(repository);
+
+    const result = await service.updateStatus(administrator, requestId, {
+      status: "submitted",
+      expectedUpdatedAt: "2026-07-22T05:59:59.999Z",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      error: "This Opportunity Brief request changed before the update.",
+      request: repository.request,
+    });
+    expect(repository.mutations).toHaveLength(0);
+  });
+
+  it("authorizes equal-status no-ops before reading current state", async () => {
+    const repository = new MemoryRepository();
+    const { service } = createService(repository);
+
+    await expect(
+      service.updateStatus(member, requestId, {
+        status: "submitted",
+        expectedUpdatedAt: expectedUpdatedAt.toISOString(),
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      status: 403,
+      error: "Administrator access is required.",
+    });
+    expect(repository.adminRequestReads).toBe(0);
+    expect(repository.mutations).toHaveLength(0);
   });
 
   it("returns 404 for a missing request before an administrator mutation", async () => {
@@ -627,5 +851,25 @@ describe("opportunity brief administrator service", () => {
       },
     });
     expect(repository.mutations).toHaveLength(0);
+  });
+});
+
+describe("opportunity brief public result types", () => {
+  it("excludes administrator request records from public failures", () => {
+    type PublicFailure = Extract<PublicSubmissionResult, { ok: false }>;
+    type HasAdminRequest = "request" extends keyof PublicFailure ? true : false;
+
+    expectTypeOf<HasAdminRequest>().toEqualTypeOf<false>();
+  });
+
+  it("allows administrator records only on mutation conflicts", () => {
+    type NonConflictAdminFailure = Exclude<
+      AdminServiceFailure,
+      { status: 409 }
+    >;
+    type HasAdminRequest =
+      "request" extends keyof NonConflictAdminFailure ? true : false;
+
+    expectTypeOf<HasAdminRequest>().toEqualTypeOf<false>();
   });
 });

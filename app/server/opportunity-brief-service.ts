@@ -37,6 +37,22 @@ export interface AcknowledgementSender {
   }): Promise<AcknowledgementOutcome>;
 }
 
+export type AcknowledgementDelivery = {
+  email: string;
+  expectedUpdatedAt: Date;
+};
+
+export type AcknowledgementRecordInput = {
+  requestId: string;
+  attemptedEmail: string;
+  expectedUpdatedAt: Date;
+  outcome: AcknowledgementOutcome;
+};
+
+export type AcknowledgementRecordResult = {
+  outcome: "recorded" | "stale";
+};
+
 export type SubmitRepositoryInput = {
   participantType: OpportunityBriefParticipantType;
   profileUrl: string;
@@ -60,7 +76,7 @@ export type SubmitRepositoryResult =
       persistence: "created" | "merged";
       acknowledgement: {
         status: AcknowledgementStatus;
-        shouldSend: boolean;
+        delivery: AcknowledgementDelivery | null;
       };
     };
 
@@ -89,8 +105,8 @@ export type AdminFilters = {
   participantType?: OpportunityBriefParticipantType;
   status?: OpportunityBriefStatus;
   source?: string;
-  submittedFrom?: Date;
-  submittedTo?: Date;
+  submittedAtGte?: Date;
+  submittedAtLt?: Date;
   linked?: boolean;
   page?: number;
   pageSize?: number;
@@ -140,9 +156,8 @@ export type AdminMutationResult =
 export interface OpportunityBriefRepository {
   submit(input: SubmitRepositoryInput): Promise<SubmitRepositoryResult>;
   recordAcknowledgement(
-    id: string,
-    outcome: AcknowledgementOutcome,
-  ): Promise<void>;
+    input: AcknowledgementRecordInput,
+  ): Promise<AcknowledgementRecordResult>;
   getAdminSnapshot(
     actorTime: Date,
     filters: AdminFilters,
@@ -163,16 +178,34 @@ type OpportunityBriefServiceDependencies = {
 
 type FieldErrors = Record<string, string>;
 
-type ServiceFailure = {
+export type PublicSubmissionFailure = {
   ok: false;
-  status: 400 | 403 | 404 | 409 | 429 | 500;
+  status: 400 | 429 | 500;
   error: string;
   errors?: FieldErrors;
-  request?: AdminRequest | null;
 };
 
+export type AdminServiceFailure =
+  | {
+      ok: false;
+      status: 400 | 403 | 404 | 500;
+      error: string;
+      errors?: FieldErrors;
+    }
+  | {
+      ok: false;
+      status: 409;
+      error: string;
+    }
+  | {
+      ok: false;
+      status: 409;
+      error: string;
+      request: AdminRequest | null;
+    };
+
 export type PublicSubmissionResult =
-  | ServiceFailure
+  | PublicSubmissionFailure
   | {
       ok: true;
       requestId: string;
@@ -224,15 +257,18 @@ const optionalFilterString = z.preprocess(
   z.string().trim().min(1).max(100).optional(),
 );
 
-const optionalFilterDate = z.preprocess(
-  (value) => {
-    if (value instanceof Date) return value;
-    if (typeof value !== "string" || value.trim() === "") {
-      return value || undefined;
-    }
-    return new Date(value);
-  },
-  z.date().optional(),
+const optionalCalendarDate = z.preprocess(
+  (value) =>
+    typeof value === "string" && value.trim() === "" ? undefined : value,
+  z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, {
+      message: "Enter a calendar date in YYYY-MM-DD format.",
+    })
+    .refine(isValidCalendarDate, {
+      message: "Enter a valid calendar date.",
+    })
+    .optional(),
 );
 
 const optionalPositiveInteger = z.preprocess(
@@ -245,8 +281,8 @@ const adminFiltersSchema = z.strictObject({
   participantType: opportunityBriefParticipantTypeSchema.optional(),
   status: opportunityBriefStatusSchema.optional(),
   source: optionalFilterString,
-  submittedFrom: optionalFilterDate,
-  submittedTo: optionalFilterDate,
+  submittedFrom: optionalCalendarDate,
+  submittedTo: optionalCalendarDate,
   linked: z
     .preprocess((value) => {
       if (value === "linked") return true;
@@ -257,6 +293,35 @@ const adminFiltersSchema = z.strictObject({
   pageSize: optionalPositiveInteger,
 });
 
+function isValidCalendarDate(value: string): boolean {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.toISOString().slice(0, 10) === value;
+}
+
+function indiaCalendarStart(value: string): Date {
+  return new Date(`${value}T00:00:00+05:30`);
+}
+
+function parsedAdminFilters(
+  input: z.infer<typeof adminFiltersSchema>,
+): AdminFilters {
+  const { submittedFrom, submittedTo, ...filters } = input;
+  return {
+    ...filters,
+    ...(submittedFrom
+      ? { submittedAtGte: indiaCalendarStart(submittedFrom) }
+      : {}),
+    ...(submittedTo
+      ? {
+          submittedAtLt: new Date(
+            indiaCalendarStart(submittedTo).getTime() + 24 * 60 * 60 * 1_000,
+          ),
+        }
+      : {}),
+  };
+}
+
 function errorsFrom(error: z.ZodError): FieldErrors {
   const errors: FieldErrors = {};
   for (const issue of error.issues) {
@@ -266,27 +331,27 @@ function errorsFrom(error: z.ZodError): FieldErrors {
   return errors;
 }
 
-const administratorFailure = (): ServiceFailure => ({
+const administratorFailure = (): AdminServiceFailure => ({
   ok: false,
   status: 403,
   error: "Administrator access is required.",
 });
 
-const requestNotFoundFailure = (): ServiceFailure => ({
+const requestNotFoundFailure = (): AdminServiceFailure => ({
   ok: false,
   status: 404,
   error: "Opportunity Brief request was not found.",
 });
 
-const unexpectedFailure = (): ServiceFailure => ({
+const unexpectedFailure = (): AdminServiceFailure => ({
   ok: false,
   status: 500,
   error: "We could not complete that request. Please try again.",
 });
 
 function isServiceFailure(
-  value: AdminRequest | ServiceFailure,
-): value is ServiceFailure {
+  value: AdminRequest | AdminServiceFailure,
+): value is AdminServiceFailure {
   return "ok" in value && value.ok === false;
 }
 
@@ -303,11 +368,10 @@ export function createOpportunityBriefService(
   }
 
   async function recordAcknowledgement(
-    id: string,
-    outcome: AcknowledgementOutcome,
+    input: AcknowledgementRecordInput,
   ): Promise<void> {
     try {
-      await dependencies.repository.recordAcknowledgement(id, outcome);
+      await dependencies.repository.recordAcknowledgement(input);
     } catch {
       // The request is already durable. A later administrator can see and
       // reconcile its pending acknowledgement state.
@@ -316,15 +380,16 @@ export function createOpportunityBriefService(
 
   async function acknowledge(
     requestId: string,
-    input: OpportunityBriefInput,
+    profileUrl: string,
+    delivery: AcknowledgementDelivery,
   ): Promise<void> {
-    if (!input.email || !dependencies.acknowledgementSender) return;
+    if (!dependencies.acknowledgementSender) return;
 
     let outcome: AcknowledgementOutcome;
     try {
       outcome = await dependencies.acknowledgementSender.sendAcknowledgement({
-        email: input.email,
-        profileUrl: input.profileUrl,
+        email: delivery.email,
+        profileUrl,
       });
     } catch {
       outcome = {
@@ -333,17 +398,20 @@ export function createOpportunityBriefService(
       };
     }
 
-    await recordAcknowledgement(
+    await recordAcknowledgement({
       requestId,
-      outcome.status === "sent"
-        ? { status: "sent", at: currentTime() }
-        : outcome,
-    );
+      attemptedEmail: delivery.email,
+      expectedUpdatedAt: delivery.expectedUpdatedAt,
+      outcome:
+        outcome.status === "sent"
+          ? { status: "sent", at: currentTime() }
+          : outcome,
+    });
   }
 
   async function findAdminRequest(
     requestId: string,
-  ): Promise<AdminRequest | ServiceFailure> {
+  ): Promise<AdminRequest | AdminServiceFailure> {
     try {
       return (
         (await dependencies.repository.getAdminRequest(requestId)) ??
@@ -356,7 +424,7 @@ export function createOpportunityBriefService(
 
   async function applyMutation(
     input: AtomicAdminMutation,
-  ): Promise<{ ok: true; request: AdminRequest } | ServiceFailure> {
+  ): Promise<{ ok: true; request: AdminRequest } | AdminServiceFailure> {
     try {
       const result = await dependencies.repository.applyAdminMutation(input);
       if (result.outcome === "conflict") {
@@ -373,7 +441,9 @@ export function createOpportunityBriefService(
     }
   }
 
-  function parseRequestId(requestId: string): string | ServiceFailure {
+  function parseRequestId(
+    requestId: string,
+  ): string | AdminServiceFailure {
     const parsed = requestIdSchema.safeParse(requestId);
     return parsed.success
       ? parsed.data
@@ -440,8 +510,12 @@ export function createOpportunityBriefService(
         };
       }
 
-      if (persisted.acknowledgement.shouldSend) {
-        await acknowledge(persisted.requestId, input);
+      if (persisted.acknowledgement.delivery) {
+        await acknowledge(
+          persisted.requestId,
+          input.profileUrl,
+          persisted.acknowledgement.delivery,
+        );
       }
 
       return {
@@ -479,7 +553,7 @@ export function createOpportunityBriefService(
           ok: true as const,
           snapshot: await dependencies.repository.getAdminSnapshot(
             currentTime(),
-            parsed.data,
+            parsedAdminFilters(parsed.data),
           ),
         };
       } catch {
@@ -523,6 +597,20 @@ export function createOpportunityBriefService(
 
       const current = await findAdminRequest(requestId);
       if (isServiceFailure(current)) return current;
+      if (current.status === parsed.data.status) {
+        if (
+          current.updatedAt.getTime() !==
+          parsed.data.expectedUpdatedAt.getTime()
+        ) {
+          return {
+            ok: false as const,
+            status: 409 as const,
+            error: "This Opportunity Brief request changed before the update.",
+            request: current,
+          };
+        }
+        return { ok: true as const, request: current };
+      }
       try {
         transitionOpportunityBriefStatus(current.status, parsed.data.status);
       } catch {
