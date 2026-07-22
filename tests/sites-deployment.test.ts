@@ -959,6 +959,15 @@ describe("Sites deployment CLI", () => {
     expect(normalizedRunbook).toContain(
       "GitHub commit, Sites source head, saved Sites version, and production deployment",
     );
+    expect(normalizedRunbook).toContain(
+      "npm test npm run test:migrations npm run test:db npm run test:acceptance npm run test:e2e npm run lint npm run build",
+    );
+    expect(normalizedRunbook).toContain(
+      "Preparation runs the locked install, lint, unit tests, build, and package-integrity checks",
+    );
+    expect(normalizedRunbook).toContain(
+      "does not replace the database, migration, acceptance, or end-to-end gates",
+    );
   });
 
   test("package.json exposes the preparation command", async () => {

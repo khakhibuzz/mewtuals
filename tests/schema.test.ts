@@ -108,6 +108,7 @@ describe("Mewtuals PostgreSQL schema", () => {
         "admin_notes",
         "acknowledgement_status",
         "acknowledgement_email",
+        "acknowledgement_delivery_token",
         "acknowledgement_error",
         "acknowledgement_sent_at",
         "submission_count",
@@ -116,6 +117,8 @@ describe("Mewtuals PostgreSQL schema", () => {
         "updated_at",
       ]),
     );
+    expect(requests.acknowledgementDeliveryToken.notNull).toBe(false);
+    expect(requests.acknowledgementDeliveryToken.hasDefault).toBe(false);
     expect(uniqueConstraintNames(requests)).toContain(
       "opportunity_brief_requests_participant_profile_unique",
     );

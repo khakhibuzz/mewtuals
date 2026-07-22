@@ -86,7 +86,7 @@ test("isolated public intake and protected operations meet the automated respons
   const publicProfileUrl = `https://${profileHost}/public-request`;
   const memberEmail = `task7-network-${runId}@example.test`;
   disposableEmails.add(memberEmail);
-  const candidateId = await seedSourceSupportedCandidate(runId);
+  await seedSourceSupportedCandidate(runId);
   await seedPaginationRequest(runId, source, paginationPhoneNumber);
 
   const publicErrors = trackBrowserErrors(page);
@@ -159,6 +159,27 @@ test("isolated public intake and protected operations meet the automated respons
 
   const admin = await authenticateDedicatedAdmin(browser, runId);
   try {
+    await admin.page.goto(
+      `/admin/discovery?geography=${encodeURIComponent(`Task 7 browser ${runId}`)}`,
+    );
+    await waitForProductHydration(admin.page);
+    await admin.page
+      .getByRole("button", {
+        name: "View Task 7 browser candidate details on narrow screens",
+      })
+      .click();
+    const discoveryDialog = admin.page.getByRole("dialog", {
+      name: "Task 7 browser candidate",
+    });
+    const candidateId = await discoveryDialog
+      .getByLabel("Candidate UUID")
+      .inputValue();
+    expect(candidateId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    await admin.page.keyboard.press("Escape");
+    await expect(discoveryDialog).toHaveCount(0);
+
     await admin.page.goto(
       `/admin/opportunity-briefs?source=${source}&pageSize=1`,
     );
@@ -464,7 +485,6 @@ async function seedSourceSupportedCandidate(runId: string) {
     lastSeenAt: now,
     createdAt: now,
   });
-  return candidate.id;
 }
 
 async function authenticateDedicatedAdmin(

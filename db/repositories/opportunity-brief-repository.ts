@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   and,
@@ -186,6 +186,7 @@ function submissionUpdate(
   input: SubmitRepositoryInput,
   linkedCandidateId: string | null,
   emailChanged: boolean,
+  acknowledgementDeliveryToken: string | null,
   sourceHistory: OpportunityBriefSourceHistoryEntry[],
 ) {
   return {
@@ -205,6 +206,7 @@ function submissionUpdate(
       ? {
           acknowledgementStatus: "pending" as const,
           acknowledgementEmail: input.email,
+          acknowledgementDeliveryToken,
           acknowledgementError: null,
           acknowledgementSentAt: null,
         }
@@ -278,6 +280,9 @@ export function createOpportunityBriefRepository(
         const emailChanged = Boolean(
           input.email && input.email !== existing?.normalizedEmail,
         );
+        const acknowledgementDeliveryToken = emailChanged
+          ? randomUUID()
+          : null;
         const sourceHistory = boundedSourceHistory(
           existing?.sourceHistory ?? [],
           input,
@@ -302,6 +307,7 @@ export function createOpportunityBriefRepository(
             linkedCandidateId,
             acknowledgementStatus: initialAcknowledgementStatus,
             acknowledgementEmail: input.email,
+            acknowledgementDeliveryToken,
             submissionCount: 1,
             lastSubmittedAt: input.submittedAt,
             createdAt: input.submittedAt,
@@ -316,6 +322,7 @@ export function createOpportunityBriefRepository(
               input,
               linkedCandidateId,
               emailChanged,
+              acknowledgementDeliveryToken,
               sourceHistory,
             ),
           })
@@ -325,7 +332,8 @@ export function createOpportunityBriefRepository(
             linkedCandidateId: opportunityBriefRequests.linkedCandidateId,
             acknowledgementStatus:
               opportunityBriefRequests.acknowledgementStatus,
-            updatedAt: opportunityBriefRequests.updatedAt,
+            acknowledgementDeliveryToken:
+              opportunityBriefRequests.acknowledgementDeliveryToken,
           });
         if (!request) {
           throw new Error("Opportunity Brief request was not persisted.");
@@ -346,10 +354,10 @@ export function createOpportunityBriefRepository(
           acknowledgement: {
             status: request.acknowledgementStatus,
             delivery:
-              emailChanged && input.email
+              emailChanged && input.email && request.acknowledgementDeliveryToken
                 ? {
                     email: input.email,
-                    expectedUpdatedAt: request.updatedAt,
+                    token: request.acknowledgementDeliveryToken,
                   }
                 : null,
           },
@@ -387,7 +395,10 @@ export function createOpportunityBriefRepository(
               opportunityBriefRequests.acknowledgementEmail,
               input.attemptedEmail,
             ),
-            eq(opportunityBriefRequests.updatedAt, input.expectedUpdatedAt),
+            eq(
+              opportunityBriefRequests.acknowledgementDeliveryToken,
+              input.token,
+            ),
           ),
         )
         .returning({ id: opportunityBriefRequests.id });

@@ -1,5 +1,5 @@
 {
-  "id": "ee309d06-c4d9-4113-ac02-d64e9e322306",
+  "id": "02ffe76a-9d03-48ac-8632-193dc8109a76",
   "prevId": "0aecb91c-09c8-46ab-ad14-b7d52448dfc1",
   "version": "7",
   "dialect": "postgresql",
@@ -1460,6 +1460,12 @@
         "acknowledgement_email": {
           "name": "acknowledgement_email",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acknowledgement_delivery_token": {
+          "name": "acknowledgement_delivery_token",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },

@@ -120,8 +120,11 @@ npm run prepare:sites -- website-v3
 npm run prepare:sites -- <full-sha>
 ```
 
-The command validates, builds, and packages that exact committed source into an
-ignored request artifact. It never publishes or includes uncommitted files.
+The command runs a locked install, lint, unit tests, build, and package-integrity
+checks for that exact committed source, then creates an ignored request
+artifact. It does not run the database, migration, acceptance, or end-to-end
+gates listed above; run the complete release gate before preparing and
+deploying. It never publishes or includes uncommitted files.
 Ask Codex `Deploy Mewtuals` or `Deploy Mewtuals at <commit-ish>` to perform the
 separate authenticated Sites release. Codex must reuse the existing Sites
 project, verify the archive digest and Sites source head, obtain authorization

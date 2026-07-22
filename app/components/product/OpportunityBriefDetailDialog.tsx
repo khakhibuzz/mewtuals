@@ -52,6 +52,13 @@ export type OpportunityBriefFeedback = {
   message: string;
 } | null;
 
+export type OpportunityBriefConflictEditReset = {
+  token: number;
+  status: OpportunityBriefStatus;
+  notes: string;
+  candidateId: string;
+};
+
 const transitions: Record<OpportunityBriefStatus, readonly OpportunityBriefStatus[]> = {
   submitted: ["submitted", "researching", "rejected"],
   researching: ["researching", "brief_ready", "rejected"],
@@ -96,6 +103,7 @@ export function OpportunityBriefDetailDialog({
   mutationBusy,
   pendingAction,
   feedback,
+  conflictEditReset,
   onMutate,
   onClose,
 }: {
@@ -103,14 +111,21 @@ export function OpportunityBriefDetailDialog({
   mutationBusy: boolean;
   pendingAction: "status" | "notes" | "link" | "unlink" | null;
   feedback: OpportunityBriefFeedback;
+  conflictEditReset: OpportunityBriefConflictEditReset | null;
   onMutate: (mutation: OpportunityBriefMutation) => Promise<boolean>;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const [status, setStatus] = useState(request.status);
-  const [notes, setNotes] = useState(request.adminNotes ?? "");
-  const [candidateId, setCandidateId] = useState("");
+  const [status, setStatus] = useState(
+    conflictEditReset?.status ?? request.status,
+  );
+  const [notes, setNotes] = useState(
+    conflictEditReset?.notes ?? request.adminNotes ?? "",
+  );
+  const [candidateId, setCandidateId] = useState(
+    conflictEditReset?.candidateId ?? "",
+  );
 
   useEffect(() => {
     const dialog = dialogRef.current;

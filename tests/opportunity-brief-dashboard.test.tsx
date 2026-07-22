@@ -879,6 +879,96 @@ describe("Opportunity Brief dashboard", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Rejected");
   });
 
+  it("discards every stale edit on conflict and retries from the returned winner", async () => {
+    const user = userEvent.setup();
+    const winner = {
+      ...request,
+      status: "rejected" as const,
+      adminNotes: "Winner note",
+      linkedCandidateId: candidateId,
+      updatedAt: "2026-07-22T07:00:00.000Z",
+    };
+    const deliberate = {
+      ...winner,
+      adminNotes: "Deliberate follow-up",
+      updatedAt: "2026-07-22T08:00:00.000Z",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request: winner }), { status: 409 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request: winner }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ snapshot: { ...snapshot, requests: [winner] } }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request: deliberate }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ snapshot: { ...snapshot, requests: [deliberate] } }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "View company Opportunity Brief details",
+      }),
+    );
+    await user.selectOptions(screen.getByLabelText("Status"), "researching");
+    await user.clear(screen.getByLabelText("Administrator notes"));
+    await user.type(screen.getByLabelText("Administrator notes"), "Stale note");
+    await user.type(screen.getByLabelText("Candidate UUID"), requestId);
+    await user.click(screen.getByRole("button", { name: "Save notes" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "another administrator changed it",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "local draft was discarded",
+    );
+    expect(screen.getByLabelText("Status")).toHaveValue("rejected");
+    expect(screen.getByLabelText("Administrator notes")).toHaveValue(
+      "Winner note",
+    );
+    expect(screen.getByLabelText("Candidate UUID")).toHaveValue(candidateId);
+
+    await user.click(screen.getByRole("button", { name: "Save notes" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save notes" })).toBeEnabled(),
+    );
+    await user.clear(screen.getByLabelText("Administrator notes"));
+    await user.type(
+      screen.getByLabelText("Administrator notes"),
+      "Deliberate follow-up",
+    );
+    await user.click(screen.getByRole("button", { name: "Save notes" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save notes" })).toBeEnabled(),
+    );
+
+    const patchBodies = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "PATCH")
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(patchBodies).toEqual([
+      { expectedUpdatedAt: request.updatedAt, notes: "Stale note" },
+      { expectedUpdatedAt: winner.updatedAt, notes: "Winner note" },
+      {
+        expectedUpdatedAt: winner.updatedAt,
+        notes: "Deliberate follow-up",
+      },
+    ]);
+  });
+
   it("exposes loading and network-error feedback", async () => {
     const user = userEvent.setup();
     let reject!: (error: Error) => void;

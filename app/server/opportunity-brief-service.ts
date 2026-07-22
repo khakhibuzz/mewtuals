@@ -39,13 +39,13 @@ export interface AcknowledgementSender {
 
 export type AcknowledgementDelivery = {
   email: string;
-  expectedUpdatedAt: Date;
+  token: string;
 };
 
 export type AcknowledgementRecordInput = {
   requestId: string;
   attemptedEmail: string;
-  expectedUpdatedAt: Date;
+  token: string;
   outcome: AcknowledgementOutcome;
 };
 
@@ -403,7 +403,7 @@ export function createOpportunityBriefService(
     await recordAcknowledgement({
       requestId,
       attemptedEmail: delivery.email,
-      expectedUpdatedAt: delivery.expectedUpdatedAt,
+      token: delivery.token,
       outcome:
         outcome.status === "sent"
           ? { status: "sent", at: currentTime() }

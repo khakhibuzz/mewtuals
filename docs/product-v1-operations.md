@@ -151,6 +151,7 @@ Prepare the database, then run every gate from the repository root:
 ```bash
 npm run db:setup
 npm test
+npm run test:migrations
 npm run test:db
 npm run test:acceptance
 npm run test:e2e
@@ -406,9 +407,12 @@ npm run prepare:sites -- website-v3
 npm run prepare:sites -- <full-sha>
 ```
 
-Preparation checks out only the resolved commit in an isolated worktree, runs
-the locked install and release gates, and writes an ignored archive plus
-`request.json`. Dirty files are excluded. The command never publishes. Trigger
+Preparation checks out only the resolved commit in an isolated worktree.
+Preparation runs the locked install, lint, unit tests, build, and
+package-integrity checks, then writes an ignored archive plus `request.json`.
+It does not replace the database, migration, acceptance, or end-to-end gates;
+run the complete release gate above before preparation and deployment. Dirty
+files are excluded. The command never publishes. Trigger
 the authenticated step by asking Codex `Deploy Mewtuals` or
 `Deploy Mewtuals at <commit-ish>`.
 

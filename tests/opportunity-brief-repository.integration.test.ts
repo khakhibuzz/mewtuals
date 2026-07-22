@@ -20,6 +20,7 @@ import {
 import { createOpportunityBriefService } from "../app/server/opportunity-brief-service";
 import type {
   SubmitRepositoryInput,
+  SubmitRepositoryResult,
 } from "../app/server/opportunity-brief-service";
 import { closeDb, getDb, type MewtualsDatabase } from "../db/client";
 import { createOpportunityBriefRepository } from "../db/repositories/opportunity-brief-repository";
@@ -222,6 +223,21 @@ async function storedRequest(suffix: string) {
     )
     .limit(1);
   return request ?? null;
+}
+
+function requiredAcknowledgementDelivery(
+  result: SubmitRepositoryResult,
+): { email: string; token: string } {
+  if (result.outcome !== "accepted" || !result.acknowledgement.delivery) {
+    throw new Error("Acknowledgement delivery descriptor was required.");
+  }
+  const delivery = result.acknowledgement.delivery as unknown as Record<
+    string,
+    unknown
+  >;
+  expect(delivery).not.toHaveProperty("expectedUpdatedAt");
+  expect(delivery.token).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/i));
+  return delivery as { email: string; token: string };
 }
 
 beforeEach(cleanupAcceptanceRows);
@@ -447,7 +463,7 @@ describe("Opportunity Brief transactional submission persistence", () => {
         status: "pending",
         delivery: {
           email: "replacement@example.test",
-          expectedUpdatedAt: mergedAt,
+          token: expect.any(String),
         },
       },
     });
@@ -705,6 +721,117 @@ describe("Opportunity Brief transactional submission persistence", () => {
 });
 
 describe("Opportunity Brief acknowledgement persistence", () => {
+  it("records an in-flight delivery after a same-email repeat changes the row version", async () => {
+    const submitted = await repository.submit(
+      submissionInput("ack-same-email-race", { email: "same@example.test" }),
+    );
+    const delivery = requiredAcknowledgementDelivery(submitted);
+    expect(
+      (await storedRequest("ack-same-email-race"))
+        ?.acknowledgementDeliveryToken,
+    ).toBe(delivery.token);
+
+    await repository.submit(
+      submissionInput("ack-same-email-race", {
+        email: "same@example.test",
+        requesterHash: `ack-same-email-race-repeat-${testId}`,
+        submittedAt: new Date(baseTime.getTime() + 1_000),
+      }),
+    );
+
+    const adminView =
+      submitted.outcome === "accepted"
+        ? await repository.getAdminRequest(submitted.requestId)
+        : null;
+    expect(JSON.stringify(adminView)).not.toContain(delivery.token);
+    expect(JSON.stringify(adminView)).not.toContain(
+      "acknowledgementDeliveryToken",
+    );
+    expect(
+      (await storedRequest("ack-same-email-race"))
+        ?.acknowledgementDeliveryToken,
+    ).toBe(delivery.token);
+
+    await expect(
+      repository.recordAcknowledgement({
+        requestId: submitted.outcome === "accepted" ? submitted.requestId : "",
+        attemptedEmail: delivery.email,
+        token: delivery.token,
+        outcome: { status: "sent", at: new Date(baseTime.getTime() + 2_000) },
+      }),
+    ).resolves.toEqual({ outcome: "recorded" });
+  });
+
+  it("records an in-flight delivery after an administrator mutation changes updatedAt", async () => {
+    const submitted = await repository.submit(
+      submissionInput("ack-admin-race", { email: "admin-race@example.test" }),
+    );
+    const delivery = requiredAcknowledgementDelivery(submitted);
+    if (submitted.outcome !== "accepted") throw new Error("Request was required.");
+    const current = await repository.getAdminRequest(submitted.requestId);
+    if (!current) throw new Error("Stored request was required.");
+
+    await repository.applyAdminMutation({
+      kind: "notes",
+      requestId: submitted.requestId,
+      notes: "Administrator updated this while email was in flight.",
+      expectedUpdatedAt: current.updatedAt,
+      updatedAt: new Date(baseTime.getTime() + 1_000),
+    });
+    expect(
+      (await storedRequest("ack-admin-race"))?.acknowledgementDeliveryToken,
+    ).toBe(delivery.token);
+
+    await expect(
+      repository.recordAcknowledgement({
+        requestId: submitted.requestId,
+        attemptedEmail: delivery.email,
+        token: delivery.token,
+        outcome: { status: "sent", at: new Date(baseTime.getTime() + 2_000) },
+      }),
+    ).resolves.toEqual({ outcome: "recorded" });
+  });
+
+  it("makes a replaced email token stale while its new token records", async () => {
+    const first = await repository.submit(
+      submissionInput("ack-token-replacement", { email: "first@example.test" }),
+    );
+    const firstDelivery = requiredAcknowledgementDelivery(first);
+    const second = await repository.submit(
+      submissionInput("ack-token-replacement", {
+        email: "second@example.test",
+        requesterHash: `ack-token-replacement-second-${testId}`,
+        submittedAt: new Date(baseTime.getTime() + 1_000),
+      }),
+    );
+    const secondDelivery = requiredAcknowledgementDelivery(second);
+    expect(secondDelivery.token).not.toBe(firstDelivery.token);
+    expect(
+      (await storedRequest("ack-token-replacement"))
+        ?.acknowledgementDeliveryToken,
+    ).toBe(secondDelivery.token);
+    if (first.outcome !== "accepted" || second.outcome !== "accepted") {
+      throw new Error("Both stored requests were required.");
+    }
+
+    await expect(
+      repository.recordAcknowledgement({
+        requestId: first.requestId,
+        attemptedEmail: firstDelivery.email,
+        token: firstDelivery.token,
+        outcome: { status: "failed", error: "Late old result" },
+      }),
+    ).resolves.toEqual({ outcome: "stale" });
+    await expect(
+      repository.recordAcknowledgement({
+        requestId: second.requestId,
+        attemptedEmail: secondDelivery.email,
+        token: secondDelivery.token,
+        outcome: { status: "sent", at: new Date(baseTime.getTime() + 2_000) },
+      }),
+    ).resolves.toEqual({ outcome: "recorded" });
+  });
+
   it("requests email only for new or changed addresses and keeps phone-only not requested", async () => {
     const phoneOnly = await repository.submit(
       submissionInput("ack", { email: null, phoneNumber: "+919876543210" }),
@@ -728,7 +855,7 @@ describe("Opportunity Brief acknowledgement persistence", () => {
       persistence: "merged",
       acknowledgement: {
         status: "pending",
-        delivery: { email: "added@example.test", expectedUpdatedAt: addedAt },
+        delivery: { email: "added@example.test", token: expect.any(String) },
       },
     });
 
@@ -758,7 +885,7 @@ describe("Opportunity Brief acknowledgement persistence", () => {
         status: "pending",
         delivery: {
           email: "replacement@example.test",
-          expectedUpdatedAt: replacedAt,
+          token: expect.any(String),
         },
       },
     });
@@ -787,7 +914,7 @@ describe("Opportunity Brief acknowledgement persistence", () => {
       repository.recordAcknowledgement({
         requestId: emailB.requestId,
         attemptedEmail: "b@example.test",
-        expectedUpdatedAt: emailB.acknowledgement.delivery.expectedUpdatedAt,
+        token: emailB.acknowledgement.delivery.token,
         outcome: { status: "sent", at: sentAt },
       }),
     ).resolves.toEqual({ outcome: "recorded" });
@@ -795,7 +922,7 @@ describe("Opportunity Brief acknowledgement persistence", () => {
       repository.recordAcknowledgement({
         requestId: emailA.requestId,
         attemptedEmail: "a@example.test",
-        expectedUpdatedAt: emailA.acknowledgement.delivery.expectedUpdatedAt,
+        token: emailA.acknowledgement.delivery.token,
         outcome: { status: "failed", error: "delayed private failure" },
       }),
     ).resolves.toEqual({ outcome: "stale" });
@@ -822,7 +949,7 @@ describe("Opportunity Brief acknowledgement persistence", () => {
       repository.recordAcknowledgement({
         requestId: emailC.requestId,
         attemptedEmail: "c@example.test",
-        expectedUpdatedAt: emailC.acknowledgement.delivery.expectedUpdatedAt,
+        token: emailC.acknowledgement.delivery.token,
         outcome: { status: "failed", error: "Delivery rejected safely." },
       }),
     ).resolves.toEqual({ outcome: "recorded" });
@@ -837,7 +964,7 @@ describe("Opportunity Brief acknowledgement persistence", () => {
     "request_id",
     "pending_status",
     "attempted_email",
-    "expected_updated_at",
+    "delivery_token",
     "matching",
   ] as const)(
     "isolates the %s acknowledgement guard predicate",
@@ -871,10 +998,7 @@ describe("Opportunity Brief acknowledgement persistence", () => {
           predicate === "attempted_email"
             ? "different@example.test"
             : delivery.email,
-        expectedUpdatedAt:
-          predicate === "expected_updated_at"
-            ? new Date(delivery.expectedUpdatedAt.getTime() + 1)
-            : delivery.expectedUpdatedAt,
+        token: predicate === "delivery_token" ? randomUUID() : delivery.token,
         outcome: { status: "sent", at: sentAt },
       });
 

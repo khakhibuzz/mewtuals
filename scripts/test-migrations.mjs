@@ -534,6 +534,12 @@ async function assertOpportunityBriefMigration(sql) {
             isNullable: "YES",
             columnDefault: null,
           },
+          acknowledgement_delivery_token: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "YES",
+            columnDefault: null,
+          },
           acknowledgement_error: {
             dataType: "text",
             udtName: "text",

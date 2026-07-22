@@ -25,7 +25,7 @@ const now = new Date("2026-07-22T06:30:00.000Z");
 const requestId = "00000000-0000-4000-8000-000000000101";
 const candidateId = "00000000-0000-4000-8000-000000000202";
 const expectedUpdatedAt = new Date("2026-07-22T06:00:00.000Z");
-const acknowledgementUpdatedAt = new Date("2026-07-22T06:25:00.000Z");
+const acknowledgementToken = "00000000-0000-4000-8000-000000000404";
 
 type AcceptedSubmitResult = Extract<
   SubmitRepositoryResult,
@@ -45,7 +45,7 @@ function acceptedSubmitResult(
       status: "pending",
       delivery: {
         email: "founder@example.com",
-        expectedUpdatedAt: acknowledgementUpdatedAt,
+        token: acknowledgementToken,
       },
     },
     ...overrides,
@@ -273,6 +273,8 @@ describe("opportunity brief public submission service", () => {
       },
     });
     const publicJson = JSON.stringify(result);
+    expect(publicJson).not.toContain(acknowledgementToken);
+    expect(publicJson).not.toContain("token");
     for (const privateValue of [
       "private-stored@example.com",
       "+12025550123",
@@ -357,7 +359,7 @@ describe("opportunity brief acknowledgement orchestration", () => {
       {
         requestId,
         attemptedEmail: "founder@example.com",
-        expectedUpdatedAt: acknowledgementUpdatedAt,
+        token: acknowledgementToken,
         outcome: { status: "sent", at: now },
       },
     ]);
@@ -385,7 +387,7 @@ describe("opportunity brief acknowledgement orchestration", () => {
         persistence: "merged",
         acknowledgement: {
           status: "pending",
-          delivery: { email, expectedUpdatedAt: acknowledgementUpdatedAt },
+          delivery: { email, token: acknowledgementToken },
         },
       });
       const { service, sender } = createService(repository);
@@ -437,7 +439,7 @@ describe("opportunity brief acknowledgement orchestration", () => {
       {
         requestId,
         attemptedEmail: "founder@example.com",
-        expectedUpdatedAt: acknowledgementUpdatedAt,
+        token: acknowledgementToken,
         outcome,
       },
     ]);
@@ -455,7 +457,7 @@ describe("opportunity brief acknowledgement orchestration", () => {
       {
         requestId,
         attemptedEmail: "founder@example.com",
-        expectedUpdatedAt: acknowledgementUpdatedAt,
+        token: acknowledgementToken,
         outcome: {
           status: "failed",
           error: "Acknowledgement delivery failed unexpectedly.",
@@ -510,7 +512,7 @@ describe("opportunity brief acknowledgement orchestration", () => {
         {
           requestId,
           attemptedEmail: "founder@example.com",
-          expectedUpdatedAt: acknowledgementUpdatedAt,
+          token: acknowledgementToken,
           outcome: {
             status: "failed",
             error: "Acknowledgement email transport failed.",
@@ -524,14 +526,14 @@ describe("opportunity brief acknowledgement orchestration", () => {
 
   it("cannot let an older email outcome overwrite a replacement email", async () => {
     const repository = new MemoryRepository();
-    const firstVersion = new Date("2026-07-22T06:20:00.000Z");
-    const secondVersion = new Date("2026-07-22T06:21:00.000Z");
+    const firstToken = "00000000-0000-4000-8000-000000000405";
+    const secondToken = "00000000-0000-4000-8000-000000000406";
     const firstOutcome = Promise.withResolvers<AcknowledgementOutcome>();
     const firstStarted = Promise.withResolvers<void>();
     let submissionNumber = 0;
     let acknowledgementState = {
       email: "",
-      expectedUpdatedAt: new Date(0),
+      token: "",
       outcome: { status: "pending" } as AcknowledgementOutcome,
     };
 
@@ -539,18 +541,17 @@ describe("opportunity brief acknowledgement orchestration", () => {
       repository.submissions.push(input);
       submissionNumber += 1;
       const email = input.email!;
-      const expectedVersion =
-        submissionNumber === 1 ? firstVersion : secondVersion;
+      const token = submissionNumber === 1 ? firstToken : secondToken;
       acknowledgementState = {
         email,
-        expectedUpdatedAt: expectedVersion,
+        token,
         outcome: { status: "pending" },
       };
       return acceptedSubmitResult({
         persistence: submissionNumber === 1 ? "created" : "merged",
         acknowledgement: {
           status: "pending",
-          delivery: { email, expectedUpdatedAt: expectedVersion },
+          delivery: { email, token },
         },
       });
     };
@@ -558,8 +559,7 @@ describe("opportunity brief acknowledgement orchestration", () => {
       repository.acknowledgements.push(input);
       if (
         input.attemptedEmail !== acknowledgementState.email ||
-        input.expectedUpdatedAt.getTime() !==
-          acknowledgementState.expectedUpdatedAt.getTime()
+        input.token !== acknowledgementState.token
       ) {
         return { outcome: "stale" };
       }
@@ -598,20 +598,20 @@ describe("opportunity brief acknowledgement orchestration", () => {
 
     expect(acknowledgementState).toEqual({
       email: "b@example.com",
-      expectedUpdatedAt: secondVersion,
+      token: secondToken,
       outcome: { status: "sent", at: now },
     });
     expect(repository.acknowledgements).toEqual([
       {
         requestId,
         attemptedEmail: "b@example.com",
-        expectedUpdatedAt: secondVersion,
+        token: secondToken,
         outcome: { status: "sent", at: now },
       },
       {
         requestId,
         attemptedEmail: "a@example.com",
-        expectedUpdatedAt: firstVersion,
+        token: firstToken,
         outcome: { status: "failed", error: "late failure" },
       },
     ]);

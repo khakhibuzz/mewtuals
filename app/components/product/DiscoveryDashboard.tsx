@@ -754,6 +754,14 @@ export function DiscoveryDashboard({
               <div><dt>Discovered</dt><dd>{formatTimestamp(selectedCandidate.discoveredAt)}</dd></div>
               <div><dt>Last seen</dt><dd>{formatTimestamp(selectedCandidate.lastSeenAt)}</dd></div>
             </dl>
+            <label className={styles.field}>
+              <span className={styles.label}>Candidate UUID</span>
+              <input
+                readOnly
+                value={selectedCandidate.id}
+                onFocus={(event) => event.currentTarget.select()}
+              />
+            </label>
             <div className={styles.discoveryDrawerGroup}>
               <h3>Public profiles</h3>
               <CandidateLinks candidate={selectedCandidate} />

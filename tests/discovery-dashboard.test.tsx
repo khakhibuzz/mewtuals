@@ -81,6 +81,19 @@ function populatedSnapshot(
 }
 
 describe("discovery dashboard", () => {
+  it("exposes the candidate UUID in the detail drawer for manual linking", async () => {
+    const user = userEvent.setup();
+    render(<DiscoveryDashboard snapshot={populatedSnapshot()} filters={{}} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "View Aster Labs details" }),
+    );
+
+    const candidateUuid = screen.getByLabelText("Candidate UUID");
+    expect(candidateUuid).toHaveValue(candidate.id);
+    expect(candidateUuid).toHaveAttribute("readonly");
+  });
+
   it("renders all six discovery summary values", () => {
     render(<DiscoveryDashboard snapshot={snapshot} filters={{}} />);
 

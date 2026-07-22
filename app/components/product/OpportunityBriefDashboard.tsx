@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 import {
   OpportunityBriefDetailDialog,
+  type OpportunityBriefConflictEditReset,
   type OpportunityBriefDashboardRequest,
   type OpportunityBriefFeedback,
   type OpportunityBriefMutation,
@@ -274,6 +275,11 @@ export function OpportunityBriefDashboard({
     feedback: Exclude<OpportunityBriefFeedback, null>;
     view: string;
   }>();
+  const [conflictResetState, setConflictResetState] = useState<{
+    reset: OpportunityBriefConflictEditReset;
+    requestId: string;
+    view: string;
+  }>();
   const [mutationBusy, setMutationBusy] = useState(false);
   const returnFocusRef = useRef<HTMLButtonElement | null>(null);
   const activeViewRef = useRef(viewToken);
@@ -300,6 +306,12 @@ export function OpportunityBriefDashboard({
   const feedback =
     feedbackState && feedbackState.requestId === selectedRequestId && feedbackState.view === viewToken
       ? feedbackState.feedback
+      : null;
+  const conflictEditReset =
+    conflictResetState &&
+    conflictResetState.requestId === selectedRequestId &&
+    conflictResetState.view === viewToken
+      ? conflictResetState.reset
       : null;
   const globalFeedback =
     globalFeedbackState?.view === viewToken ? globalFeedbackState.feedback : null;
@@ -347,6 +359,7 @@ export function OpportunityBriefDashboard({
     returnFocusRef.current = trigger;
     setPendingState(undefined);
     setFeedbackState(undefined);
+    setConflictResetState(undefined);
     const request = requests.find(({ id }) => id === requestId);
     setSelectedRequestVersion(request ? { request, source: snapshot } : undefined);
     setSelectedRequestId(requestId);
@@ -360,6 +373,7 @@ export function OpportunityBriefDashboard({
     setSelectedRequestVersion(undefined);
     setPendingState(undefined);
     setFeedbackState(undefined);
+    setConflictResetState(undefined);
     const trigger = returnFocusRef.current;
     returnFocusRef.current = null;
     queueMicrotask(() => trigger?.focus());
@@ -438,11 +452,25 @@ export function OpportunityBriefDashboard({
       finishPatch();
       const current = requestFromResponse(result.request);
       if (response.status === 409 && current) {
-        if (isSameView()) replaceRequest(current, isCurrentDialog());
+        if (isSameView()) {
+          replaceRequest(current, isCurrentDialog());
+          if (isCurrentDialog()) {
+            setConflictResetState({
+              requestId,
+              view: operationView,
+              reset: {
+                token: operationId,
+                status: current.status,
+                notes: current.adminNotes ?? "",
+                candidateId: current.linkedCandidateId ?? "",
+              },
+            });
+          }
+        }
         showFeedback(
           {
             kind: "alert",
-            message: "This request changed elsewhere. The latest data has been loaded; review it and try again.",
+            message: "This request changed elsewhere because another administrator changed it. Your local draft was discarded; review the latest values and try again.",
           },
           "This request changed elsewhere. Reload the queue before making another update.",
         );
@@ -637,11 +665,12 @@ export function OpportunityBriefDashboard({
 
       {selectedRequest ? (
         <OpportunityBriefDetailDialog
-          key={selectedRequest.id}
+          key={`${selectedRequest.id}:${conflictEditReset?.token ?? 0}`}
           request={selectedRequest}
           mutationBusy={mutationBusy}
           pendingAction={pendingAction}
           feedback={feedback}
+          conflictEditReset={conflictEditReset}
           onMutate={mutate}
           onClose={closeRequest}
         />

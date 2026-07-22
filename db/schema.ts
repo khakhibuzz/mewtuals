@@ -602,6 +602,7 @@ export const opportunityBriefRequests = pgTable(
       .default("not_requested")
       .notNull(),
     acknowledgementEmail: text("acknowledgement_email"),
+    acknowledgementDeliveryToken: uuid("acknowledgement_delivery_token"),
     acknowledgementError: text("acknowledgement_error"),
     acknowledgementSentAt: timestamp("acknowledgement_sent_at", {
       withTimezone: true,

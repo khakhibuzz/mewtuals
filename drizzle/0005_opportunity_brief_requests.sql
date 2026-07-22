@@ -18,6 +18,7 @@ CREATE TABLE "opportunity_brief_requests" (
 	"admin_notes" text,
 	"acknowledgement_status" "opportunity_brief_acknowledgement_status" DEFAULT 'not_requested' NOT NULL,
 	"acknowledgement_email" text,
+	"acknowledgement_delivery_token" uuid,
 	"acknowledgement_error" text,
 	"acknowledgement_sent_at" timestamp with time zone,
 	"submission_count" integer DEFAULT 1 NOT NULL,
