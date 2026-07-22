@@ -9,7 +9,10 @@ import {
   createAuthService,
   normalizeEmail,
 } from "../app/server/auth-service";
-import { createEmailSender } from "../app/server/email";
+import {
+  createEmailSender,
+  createOpportunityBriefAcknowledgementSender,
+} from "../app/server/email";
 import {
   isSameOrigin,
   SameOriginError,
@@ -374,6 +377,93 @@ describe("email delivery", () => {
         verifyUrl: "http://localhost:4000/auth/verify?token=opaque",
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it("sends the approved escaped Opportunity Brief acknowledgement with Resend", async () => {
+    const requests: Array<{ input: string; init?: RequestInit }> = [];
+    const sender = createOpportunityBriefAcknowledgementSender({
+      environment: "production",
+      apiKey: "re_test_key",
+      from: "Mewtuals <hello@mewtuals.com>",
+      fetch: async (input, init) => {
+        requests.push({ input: String(input), init });
+        return new Response(JSON.stringify({ id: "email-id" }), { status: 200 });
+      },
+    });
+
+    await expect(
+      sender.sendAcknowledgement({
+        email: "person@example.com",
+        profileUrl: "https://example.com/<profile>?owner=ada&role=founder",
+      }),
+    ).resolves.toEqual({ status: "sent" });
+
+    const body = JSON.parse(String(requests[0]?.init?.body));
+    expect(body).toMatchObject({
+      from: "Mewtuals <hello@mewtuals.com>",
+      to: ["person@example.com"],
+      subject: "Mewtuals is researching your next partnership",
+    });
+    expect(body.html).toContain("You’re on our research list.");
+    expect(body.html).toContain("three partnership directions");
+    expect(body.html).toContain("later invitation");
+    expect(body.html).not.toContain("verified status");
+    expect(body.html).toContain(
+      "https://example.com/&lt;profile&gt;?owner=ada&amp;role=founder",
+    );
+    expect(body.html).not.toContain("<profile>");
+  });
+
+  it("returns failed for rejected or unavailable acknowledgement transport", async () => {
+    const rejected = createOpportunityBriefAcknowledgementSender({
+      environment: "production",
+      apiKey: "re_test_key",
+      from: "Mewtuals <hello@mewtuals.com>",
+      fetch: async () => new Response("unavailable", { status: 503 }),
+    });
+    const unavailable = createOpportunityBriefAcknowledgementSender({
+      environment: "production",
+      apiKey: "re_test_key",
+      from: "Mewtuals <hello@mewtuals.com>",
+      fetch: async () => {
+        throw new Error("secret network detail");
+      },
+    });
+    const delivery = {
+      email: "person@example.com",
+      profileUrl: "https://example.com/profile",
+    };
+
+    await expect(rejected.sendAcknowledgement(delivery)).resolves.toEqual({
+      status: "failed",
+      error: "Resend rejected the acknowledgement email (503).",
+    });
+    await expect(unavailable.sendAcknowledgement(delivery)).resolves.toEqual({
+      status: "failed",
+      error: "Acknowledgement email transport failed.",
+    });
+  });
+
+  it("keeps acknowledgement pending without credentials while magic-link production remains strict", async () => {
+    let requested = false;
+    const acknowledgement = createOpportunityBriefAcknowledgementSender({
+      environment: "production",
+      fetch: async () => {
+        requested = true;
+        throw new Error("should not request");
+      },
+    });
+
+    await expect(
+      acknowledgement.sendAcknowledgement({
+        email: "person@example.com",
+        profileUrl: "https://example.com/profile",
+      }),
+    ).resolves.toEqual({ status: "pending" });
+    expect(requested).toBe(false);
+    expect(() =>
+      createEmailSender({ environment: "production", fetch }),
+    ).toThrow("RESEND_API_KEY and EMAIL_FROM");
   });
 });
 
