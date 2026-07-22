@@ -24,7 +24,12 @@ const calendarDateSchema = z
     const [year, month, day] = value.split("-").map(Number);
     return new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10) === value;
   });
-const positiveIntegerSchema = z
+const pageSchema = z
+  .string()
+  .regex(/^[1-9]\d*$/)
+  .transform(Number)
+  .pipe(z.number().int().min(1).max(1_000_000));
+const pageSizeSchema = z
   .string()
   .regex(/^[1-9]\d*$/)
   .transform(Number)
@@ -124,7 +129,7 @@ function sameOriginFailure(error: unknown) {
   return jsonFailure(403, "Request origin does not match this site.");
 }
 
-type ListFilters = {
+export type OpportunityBriefAdminListFilters = {
   participantType?: string;
   status?: string;
   source?: string;
@@ -135,7 +140,14 @@ type ListFilters = {
   pageSize?: number;
 };
 
-function parseFilters(url: URL): ListFilters | null {
+export type ParsedOpportunityBriefAdminFilters = {
+  dashboardFilters: Record<string, string>;
+  serviceFilters: OpportunityBriefAdminListFilters;
+};
+
+export function parseOpportunityBriefAdminFilters(
+  searchParams: URLSearchParams,
+): ParsedOpportunityBriefAdminFilters | null {
   const supported = new Set([
     "participantType",
     "status",
@@ -146,52 +158,55 @@ function parseFilters(url: URL): ListFilters | null {
     "page",
     "pageSize",
   ]);
-  for (const key of url.searchParams.keys()) {
-    if (!supported.has(key) || url.searchParams.getAll(key).length !== 1) return null;
+  for (const key of searchParams.keys()) {
+    if (!supported.has(key) || searchParams.getAll(key).length !== 1) return null;
   }
-  const filters: ListFilters = {};
-  for (const [key, value] of url.searchParams) {
-    if (!value.trim()) return null;
+  const serviceFilters: OpportunityBriefAdminListFilters = {};
+  const dashboardFilters: Record<string, string> = {};
+  for (const [key, rawValue] of searchParams) {
+    const value = rawValue.trim();
+    if (!value) return null;
     if (key === "participantType") {
       const parsed = opportunityBriefParticipantTypeSchema.safeParse(value);
       if (!parsed.success) return null;
-      filters.participantType = parsed.data;
+      serviceFilters.participantType = parsed.data;
     } else if (key === "status") {
       const parsed = opportunityBriefStatusSchema.safeParse(value);
       if (!parsed.success) return null;
-      filters.status = parsed.data;
+      serviceFilters.status = parsed.data;
     } else if (key === "source") {
       if (value.length > 100) return null;
-      filters.source = value;
+      serviceFilters.source = value;
     } else if (key === "from" || key === "to") {
       const parsed = calendarDateSchema.safeParse(value);
       if (!parsed.success) return null;
-      filters[key === "from" ? "submittedFrom" : "submittedTo"] = parsed.data;
+      serviceFilters[key === "from" ? "submittedFrom" : "submittedTo"] = parsed.data;
     } else if (key === "linked") {
       if (value !== "linked" && value !== "unlinked") return null;
-      filters.linked = value === "linked";
+      serviceFilters.linked = value === "linked";
     } else if (key === "page" || key === "pageSize") {
-      const parsed = positiveIntegerSchema.safeParse(value);
+      const parsed = (key === "page" ? pageSchema : pageSizeSchema).safeParse(value);
       if (!parsed.success) return null;
-      filters[key] = parsed.data;
+      serviceFilters[key] = parsed.data;
     }
+    dashboardFilters[key] = value;
   }
-  return filters;
+  return { dashboardFilters, serviceFilters };
 }
 
 export function createOpportunityBriefAdminGetHandler(dependencies: {
   getSession: SessionReader;
   list: (
     actor: OpportunityBriefAdminActor,
-    filters: ListFilters,
+    filters: OpportunityBriefAdminListFilters,
   ) => Promise<AdminHttpResult>;
 }) {
   return async function GET(request: Request) {
     const session = await dependencies.getSession();
     if (!session) return signedOutFailure();
-    const filters = parseFilters(new URL(request.url));
+    const filters = parseOpportunityBriefAdminFilters(new URL(request.url).searchParams);
     if (!filters) return invalidRequestFailure();
-    const result = await dependencies.list(actorFrom(session), filters);
+    const result = await dependencies.list(actorFrom(session), filters.serviceFilters);
     if (!result.ok) return serviceResponse(result);
     const snapshot = result.snapshot;
     if (!snapshot || typeof snapshot !== "object") {

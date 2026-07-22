@@ -53,6 +53,36 @@ const snapshot: OpportunityBriefDashboardSnapshot = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Opportunity Brief dashboard", () => {
+  it("adopts a new authoritative snapshot and canonical filters on rerender", () => {
+    const creatorRequest = {
+      ...request,
+      id: "00000000-0000-4000-8000-000000000303",
+      participantType: "creator" as const,
+      profileUrl: "https://youtube.com/@creator",
+      email: "creator@example.com",
+    };
+    const { rerender } = render(
+      <OpportunityBriefDashboard snapshot={snapshot} filters={{}} />,
+    );
+
+    rerender(
+      <OpportunityBriefDashboard
+        snapshot={{
+          ...snapshot,
+          summary: { ...snapshot.summary, total: 11, unlinked: 9 },
+          requests: [creatorRequest],
+        }}
+        filters={{ participantType: "creator", linked: "unlinked" }}
+      />,
+    );
+
+    expect(screen.getByRole("group", { name: "Opportunity Brief summary" })).toHaveTextContent("Total requests11");
+    expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent("creator@example.com");
+    expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).not.toHaveTextContent("founder@example.com");
+    expect(screen.getByLabelText("Participant type")).toHaveValue("creator");
+    expect(screen.getByLabelText("Candidate link")).toHaveValue("unlinked");
+  });
+
   it("renders queue metrics, required table fields, and no private data", () => {
     render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
 
@@ -251,7 +281,7 @@ describe("Opportunity Brief dashboard", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent(candidateId);
     expect(fetchMock.mock.calls[1]).toEqual([
       "/api/admin/opportunity-briefs?participantType=company&linked=unlinked&page=1&pageSize=25",
-      { method: "GET", headers: { Accept: "application/json" } },
+      expect.objectContaining({ method: "GET", headers: { Accept: "application/json" } }),
     ]);
 
     await user.click(screen.getByRole("button", { name: "Unlink candidate" }));
@@ -313,6 +343,143 @@ describe("Opportunity Brief dashboard", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Save notes" })).toBeEnabled(),
     );
+  });
+
+  it("ignores an old refresh after closing its dialog and opening another request", async () => {
+    const user = userEvent.setup();
+    const creatorRequest = {
+      ...request,
+      id: "00000000-0000-4000-8000-000000000303",
+      participantType: "creator" as const,
+      profileUrl: "https://youtube.com/@creator",
+      email: "creator@example.com",
+    };
+    const twoRequestSnapshot = { ...snapshot, requests: [request, creatorRequest] };
+    const researchingRequest = {
+      ...request,
+      status: "researching" as const,
+      updatedAt: "2026-07-22T07:00:00.000Z",
+    };
+    let resolveRefresh!: (response: Response) => void;
+    const refresh = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ request: researchingRequest }), { status: 200 }))
+        .mockReturnValueOnce(refresh),
+    );
+    render(<OpportunityBriefDashboard snapshot={twoRequestSnapshot} filters={{}} />);
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.selectOptions(screen.getByLabelText("Status"), "researching");
+    await user.click(screen.getByRole("button", { name: "Save status" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Refreshing queue totals");
+
+    await user.click(screen.getByRole("button", { name: "Close Company Opportunity Brief" }));
+    await user.click(screen.getByRole("button", { name: "View creator Opportunity Brief details" }));
+    expect(screen.getByRole("dialog", { name: "Creator Opportunity Brief" })).toBeVisible();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    resolveRefresh(
+      new Response(
+        JSON.stringify({
+          snapshot: {
+            ...snapshot,
+            summary: { ...snapshot.summary, total: 999, unlinked: 999 },
+            requests: [researchingRequest],
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("dialog", { name: "Creator Opportunity Brief" })).toBeVisible(),
+    );
+    expect(screen.getByRole("group", { name: "Opportunity Brief summary" })).not.toHaveTextContent("999");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("preserves drafts and focus while advancing optimistic versions without remounting", async () => {
+    const user = userEvent.setup();
+    const statusVersion = {
+      ...request,
+      status: "researching" as const,
+      updatedAt: "2026-07-22T07:00:00.000Z",
+    };
+    const notesVersion = {
+      ...statusVersion,
+      adminNotes: "Unsaved research note",
+      updatedAt: "2026-07-22T08:00:00.000Z",
+    };
+    const linkedVersion = {
+      ...notesVersion,
+      linkedCandidateId: candidateId,
+      updatedAt: "2026-07-22T09:00:00.000Z",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request: statusVersion }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: { ...snapshot, requests: [statusVersion] } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request: notesVersion }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: { ...snapshot, requests: [notesVersion] } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request: linkedVersion }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: { ...snapshot, summary: { ...snapshot.summary, linkedCandidates: 3, unlinked: 4 }, requests: [linkedVersion] } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.clear(screen.getByLabelText("Administrator notes"));
+    await user.type(screen.getByLabelText("Administrator notes"), "Unsaved research note");
+    await user.type(screen.getByLabelText("Candidate UUID"), candidateId);
+    await user.selectOptions(screen.getByLabelText("Status"), "researching");
+    const statusButton = screen.getByRole("button", { name: "Save status" });
+    await user.click(statusButton);
+
+    await waitFor(() => expect(statusButton).toBeEnabled());
+    expect(screen.getByLabelText("Administrator notes")).toHaveValue("Unsaved research note");
+    expect(screen.getByLabelText("Candidate UUID")).toHaveValue(candidateId);
+    expect(screen.getByRole("button", { name: "Close Company Opportunity Brief" })).not.toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Save notes" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save notes" })).toBeEnabled());
+    expect(screen.getByLabelText("Candidate UUID")).toHaveValue(candidateId);
+    await user.click(screen.getByRole("button", { name: "Link candidate" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Unlink candidate" })).toBeVisible());
+    expect(screen.getByLabelText("Candidate UUID")).toHaveValue("");
+
+    const patchBodies = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "PATCH")
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(patchBodies).toEqual([
+      { expectedUpdatedAt: request.updatedAt, status: "researching" },
+      { expectedUpdatedAt: statusVersion.updatedAt, notes: "Unsaved research note" },
+      { expectedUpdatedAt: notesVersion.updatedAt, linkedCandidateId: candidateId },
+    ]);
+  });
+
+  it("never renders an out-of-range page label", () => {
+    render(
+      <OpportunityBriefDashboard
+        snapshot={{ ...snapshot, page: 100, totalPages: 3 }}
+        filters={{ page: "100" }}
+      />,
+    );
+
+    expect(screen.getByRole("navigation", { name: "Opportunity Brief pages" })).toHaveTextContent("Page 3 of 3");
+    expect(screen.queryByText("Page 100 of 3")).not.toBeInTheDocument();
+  });
+
+  it("keeps mobile queue links on the 44px touch-target contract", async () => {
+    render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+    expect(screen.getByRole("link", { name: "Clear filters" }).className).toContain(
+      "opportunityClearFilters",
+    );
+    const css = await import("node:fs/promises").then((fs) =>
+      fs.readFile(`${process.cwd()}/app/components/product/product.module.css`, "utf8"),
+    );
+    expect(css).toMatch(/\.opportunityClearFilters[\s\S]*?min-height:\s*44px/);
+    expect(css).toMatch(/\.opportunityRecord\s*>\s*a[\s\S]*?min-height:\s*44px/);
   });
 
   it("shows service validation errors and loads current data after a 409", async () => {

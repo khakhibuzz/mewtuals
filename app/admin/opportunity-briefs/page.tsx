@@ -3,44 +3,28 @@ import { redirect } from "next/navigation";
 import { OpportunityBriefDashboard } from "../../components/product/OpportunityBriefDashboard";
 import { ProductShell } from "../../components/product/ProductShell";
 import { getOpportunityBriefService } from "../../server/opportunity-brief";
-import { serializeOpportunityBriefAdminSnapshot } from "../../server/opportunity-brief-admin-route";
+import {
+  parseOpportunityBriefAdminFilters,
+  serializeOpportunityBriefAdminSnapshot,
+} from "../../server/opportunity-brief-admin-route";
 import { getCurrentSession } from "../../server/session";
 
 type OpportunityBriefAdminPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
-const filterKeys = [
-  "participantType",
-  "status",
-  "source",
-  "from",
-  "to",
-  "linked",
-  "page",
-  "pageSize",
-] as const;
-
-function pageFilters(
+function searchParamsFromPage(
   searchParams: Record<string, string | string[] | undefined> | undefined,
 ) {
-  const dashboardFilters: Record<string, string> = {};
-  const serviceFilters: Record<string, string> = {};
-  for (const key of filterKeys) {
-    const value = searchParams?.[key];
-    if (Array.isArray(value)) return null;
-    const normalized = value?.trim();
-    if (!normalized) continue;
-    dashboardFilters[key] = normalized;
-    if (key === "linked") {
-      if (normalized !== "linked" && normalized !== "unlinked") return null;
-      serviceFilters.linked = normalized === "linked";
-    } else {
-      serviceFilters[key === "from" ? "submittedFrom" : key === "to" ? "submittedTo" : key] =
-        normalized;
+  const result = new URLSearchParams();
+  for (const [key, value] of Object.entries(searchParams ?? {})) {
+    if (Array.isArray(value)) {
+      for (const item of value) result.append(key, item);
+    } else if (value !== undefined) {
+      result.append(key, String(value));
     }
   }
-  return { dashboardFilters, serviceFilters };
+  return result;
 }
 
 export const serializeOpportunityBriefSnapshot =
@@ -52,13 +36,18 @@ export default async function OpportunityBriefAdminPage({
   const session = await getCurrentSession();
   if (!session) redirect("/login");
 
-  const filters = pageFilters(await searchParams);
-  if (!filters) redirect("/admin/opportunity-briefs");
-  const result = await getOpportunityBriefService().getAdminSnapshot(
-    { userId: session.user.id, email: session.user.email },
-    filters.serviceFilters,
+  const service = getOpportunityBriefService();
+  const actor = { userId: session.user.id, email: session.user.email };
+  if (!service.isAdministrator(actor)) redirect("/dashboard");
+
+  const filters = parseOpportunityBriefAdminFilters(
+    searchParamsFromPage(await searchParams),
   );
-  if (!result.ok) redirect("/dashboard");
+  if (!filters) redirect("/admin/opportunity-briefs");
+  const result = await service.getAdminSnapshot(actor, filters.serviceFilters);
+  if (!result.ok) {
+    redirect(result.status === 400 ? "/admin/opportunity-briefs" : "/dashboard");
+  }
 
   return (
     <ProductShell

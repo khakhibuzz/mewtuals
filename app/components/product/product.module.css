@@ -1566,6 +1566,13 @@
     min-height: 44px;
   }
 
+  .opportunityClearFilters,
+  .opportunityRecord > a {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
   .discoveryLinks a,
   .discoveryDetailButton,
   .discoveryTextLink,

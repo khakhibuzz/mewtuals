@@ -998,6 +998,14 @@ describe("Opportunity Brief administrator persistence", () => {
     expect(
       new Set([...firstPage.requests, ...secondPage.requests].map(({ id }) => id)).size,
     ).toBe(3);
+
+    const outOfRangePage = await repository.getAdminSnapshot(baseTime, {
+      page: 100,
+      pageSize: 2,
+    });
+    expect(outOfRangePage).toMatchObject({ page: 2, pageSize: 2, totalPages: 2 });
+    expect(outOfRangePage.requests).toHaveLength(1);
+    expect(outOfRangePage.requests[0]?.id).toBe(secondPage.requests[0]?.id);
   });
 
   it("keeps summary, sources, filtered totals, and page rows on one repeatable snapshot", async () => {

@@ -57,6 +57,7 @@ describe("Opportunity Brief administrator page", () => {
       user: { id: "member", email: "member@example.com", name: null },
     });
     vi.mocked(getOpportunityBriefService).mockReturnValue({
+      isAdministrator: vi.fn(() => false),
       getAdminSnapshot: vi.fn(async () => ({
         ok: false,
         status: 403,
@@ -72,7 +73,10 @@ describe("Opportunity Brief administrator page", () => {
   it("loads the safe snapshot and cross-links every admin operation", async () => {
     const getAdminSnapshot = vi.fn(async () => ({ ok: true as const, snapshot }));
     vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
-    vi.mocked(getOpportunityBriefService).mockReturnValue({ getAdminSnapshot } as never);
+    vi.mocked(getOpportunityBriefService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
+      getAdminSnapshot,
+    } as never);
 
     render(await OpportunityBriefAdminPage({ searchParams: Promise.resolve({}) }));
 
@@ -94,7 +98,10 @@ describe("Opportunity Brief administrator page", () => {
   it("passes only supported filters to the service", async () => {
     const getAdminSnapshot = vi.fn(async () => ({ ok: true as const, snapshot }));
     vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
-    vi.mocked(getOpportunityBriefService).mockReturnValue({ getAdminSnapshot } as never);
+    vi.mocked(getOpportunityBriefService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
+      getAdminSnapshot,
+    } as never);
 
     render(await OpportunityBriefAdminPage({
       searchParams: Promise.resolve({
@@ -106,7 +113,6 @@ describe("Opportunity Brief administrator page", () => {
         to: "2026-07-22",
         page: "2",
         pageSize: "50",
-        ignored: "private",
       }),
     }));
 
@@ -119,10 +125,70 @@ describe("Opportunity Brief administrator page", () => {
         linked: false,
         submittedFrom: "2026-07-01",
         submittedTo: "2026-07-22",
-        page: "2",
-        pageSize: "50",
+        page: 2,
+        pageSize: 50,
       },
     );
+  });
+
+  it.each([
+    { status: "impossible" },
+    { from: "2026-02-30" },
+    { page: "0" },
+    { pageSize: "101" },
+    { unknown: "private" },
+    { status: ["submitted", "researching"] },
+  ])("resets invalid authorized filters to the canonical queue %#", async (searchParams) => {
+    const getAdminSnapshot = vi.fn();
+    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
+    vi.mocked(getOpportunityBriefService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
+      getAdminSnapshot,
+    } as never);
+
+    await expect(
+      OpportunityBriefAdminPage({ searchParams: Promise.resolve(searchParams) }),
+    ).rejects.toThrow("redirect:/admin/opportunity-briefs");
+    expect(getAdminSnapshot).not.toHaveBeenCalled();
+    expect(redirectMock).not.toHaveBeenCalledWith("/dashboard");
+  });
+
+  it.each([
+    [400, "/admin/opportunity-briefs"],
+    [500, "/dashboard"],
+  ] as const)("distinguishes service status %s on the page", async (status, path) => {
+    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
+    vi.mocked(getOpportunityBriefService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
+      getAdminSnapshot: vi.fn(async () => ({
+        ok: false,
+        status,
+        error: "Safe failure",
+      })),
+    } as never);
+
+    await expect(
+      OpportunityBriefAdminPage({ searchParams: Promise.resolve({}) }),
+    ).rejects.toThrow(`redirect:${path}`);
+  });
+
+  it("renders the normalized page returned by the service", async () => {
+    const getAdminSnapshot = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: { ...snapshot, page: 2, totalPages: 2 },
+    }));
+    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
+    vi.mocked(getOpportunityBriefService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
+      getAdminSnapshot,
+    } as never);
+
+    render(
+      await OpportunityBriefAdminPage({
+        searchParams: Promise.resolve({ page: "100" }),
+      }),
+    );
+    expect(screen.getByRole("navigation", { name: "Opportunity Brief pages" })).toHaveTextContent("Page 2 of 2");
   });
 
   it("serializes dates and excludes private fields", () => {

@@ -476,6 +476,9 @@ export function createOpportunityBriefRepository(
           .select({ count: sql<number>`count(*)::integer` })
           .from(opportunityBriefRequests)
           .where(requestWhere);
+        const total = filteredCount?.count ?? 0;
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const normalizedPage = Math.min(page, totalPages);
         const requests = await transaction
           .select(adminRequestSelection)
           .from(opportunityBriefRequests)
@@ -485,8 +488,7 @@ export function createOpportunityBriefRepository(
             desc(opportunityBriefRequests.id),
           )
           .limit(pageSize)
-          .offset((page - 1) * pageSize);
-        const total = filteredCount?.count ?? 0;
+          .offset((normalizedPage - 1) * pageSize);
 
         return {
           summary: {
@@ -508,9 +510,9 @@ export function createOpportunityBriefRepository(
             ),
           },
           requests,
-          page,
+          page: normalizedPage,
           pageSize,
-          totalPages: total === 0 ? 0 : Math.ceil(total / pageSize),
+          totalPages,
         };
       }, {
         isolationLevel: "repeatable read",

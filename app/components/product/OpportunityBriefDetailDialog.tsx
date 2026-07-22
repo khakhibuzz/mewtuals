@@ -101,7 +101,7 @@ export function OpportunityBriefDetailDialog({
   request: OpportunityBriefDashboardRequest;
   pendingAction: "status" | "notes" | "link" | "unlink" | null;
   feedback: OpportunityBriefFeedback;
-  onMutate: (mutation: OpportunityBriefMutation) => Promise<void>;
+  onMutate: (mutation: OpportunityBriefMutation) => Promise<boolean>;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -133,19 +133,19 @@ export function OpportunityBriefDetailDialog({
     };
   }, [onClose]);
 
-  function submitStatus(event: FormEvent) {
+  async function submitStatus(event: FormEvent) {
     event.preventDefault();
-    void onMutate({ status });
+    await onMutate({ status });
   }
 
-  function submitNotes(event: FormEvent) {
+  async function submitNotes(event: FormEvent) {
     event.preventDefault();
-    void onMutate({ notes });
+    await onMutate({ notes });
   }
 
-  function submitCandidate(event: FormEvent) {
+  async function submitCandidate(event: FormEvent) {
     event.preventDefault();
-    void onMutate({ linkedCandidateId: candidateId });
+    if (await onMutate({ linkedCandidateId: candidateId })) setCandidateId("");
   }
 
   const title = `${label(request.participantType)} Opportunity Brief`;
