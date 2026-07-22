@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   OpportunityBriefDetailDialog,
@@ -274,10 +274,12 @@ export function OpportunityBriefDashboard({
     feedback: Exclude<OpportunityBriefFeedback, null>;
     view: string;
   }>();
+  const [mutationBusy, setMutationBusy] = useState(false);
   const returnFocusRef = useRef<HTMLButtonElement | null>(null);
   const activeViewRef = useRef(viewToken);
   const latestSnapshotRef = useRef(snapshot);
   const latestFiltersRef = useRef(canonicalFilters);
+  const snapshotRevisionRef = useRef(0);
   const operationSequenceRef = useRef(0);
   const dialogSessionRef = useRef(0);
   const mutationInFlightRef = useRef(false);
@@ -312,7 +314,12 @@ export function OpportunityBriefDashboard({
   const totalPages = Math.max(1, currentSnapshot.totalPages);
   const currentPage = Math.min(Math.max(1, currentSnapshot.page), totalPages);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (latestSnapshotRef.current !== snapshot) {
+      snapshotRevisionRef.current += 1;
+      refreshControllerRef.current?.abort();
+      refreshControllerRef.current = undefined;
+    }
     latestSnapshotRef.current = snapshot;
     latestFiltersRef.current = canonicalFilters;
   }, [snapshot, canonicalFilters]);
@@ -383,6 +390,7 @@ export function OpportunityBriefDashboard({
 
   async function mutate(mutation: OpportunityBriefMutation): Promise<boolean> {
     if (!selectedRequest || mutationInFlightRef.current) return false;
+    abortRefresh();
     const kind = mutationKind(mutation);
     const operationId = operationSequenceRef.current + 1;
     operationSequenceRef.current = operationId;
@@ -390,6 +398,7 @@ export function OpportunityBriefDashboard({
     const requestId = selectedRequest.id;
     const dialogSession = dialogSessionRef.current;
     mutationInFlightRef.current = true;
+    setMutationBusy(true);
     const isLatestMutation = () => operationSequenceRef.current === operationId;
     const isSameView = () =>
       mountedRef.current && activeViewRef.current === operationView;
@@ -408,6 +417,11 @@ export function OpportunityBriefDashboard({
         });
       }
     };
+    const finishPatch = () => {
+      if (!isLatestMutation() || !mutationInFlightRef.current) return;
+      mutationInFlightRef.current = false;
+      if (mountedRef.current) setMutationBusy(false);
+    };
     setPendingState({ action: kind, requestId, view: operationView });
     setFeedbackState(undefined);
     setGlobalFeedbackState(undefined);
@@ -421,6 +435,7 @@ export function OpportunityBriefDashboard({
         error?: unknown;
         request?: unknown;
       };
+      finishPatch();
       const current = requestFromResponse(result.request);
       if (response.status === 409 && current) {
         if (isSameView()) replaceRequest(current, isCurrentDialog());
@@ -474,6 +489,7 @@ export function OpportunityBriefDashboard({
       refreshControllerRef.current?.abort();
       const refreshController = new AbortController();
       refreshControllerRef.current = refreshController;
+      const refreshSnapshotRevision = snapshotRevisionRef.current;
       let refreshed: OpportunityBriefDashboardSnapshot | null = null;
       try {
         const refreshResponse = await fetch(
@@ -494,7 +510,9 @@ export function OpportunityBriefDashboard({
         refreshed = null;
       }
       const isCurrentRefresh = () =>
-        isSameView() && refreshControllerRef.current === refreshController;
+        isSameView() &&
+        snapshotRevisionRef.current === refreshSnapshotRevision &&
+        refreshControllerRef.current === refreshController;
       if (!isCurrentRefresh()) return true;
       refreshControllerRef.current = undefined;
       if (!refreshed) {
@@ -533,8 +551,8 @@ export function OpportunityBriefDashboard({
       );
       return false;
     } finally {
+      finishPatch();
       if (isLatestMutation()) {
-        mutationInFlightRef.current = false;
         setPendingState(undefined);
       }
     }
@@ -621,6 +639,7 @@ export function OpportunityBriefDashboard({
         <OpportunityBriefDetailDialog
           key={selectedRequest.id}
           request={selectedRequest}
+          mutationBusy={mutationBusy}
           pendingAction={pendingAction}
           feedback={feedback}
           onMutate={mutate}

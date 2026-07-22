@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -331,6 +331,155 @@ describe("Opportunity Brief dashboard", () => {
     expect(screen.getByRole("group", { name: "Opportunity Brief summary" })).toHaveTextContent(
       "Total requests8",
     );
+  });
+
+  it("rejects a stale refresh after a newer same-view snapshot prop arrives", async () => {
+    const user = userEvent.setup();
+    const researchingRequest = {
+      ...request,
+      status: "researching" as const,
+      updatedAt: "2026-07-22T07:00:00.000Z",
+    };
+    const newerRequest = {
+      ...request,
+      status: "rejected" as const,
+      adminNotes: "Newer server note",
+      updatedAt: "2026-07-22T09:00:00.000Z",
+    };
+    const newerSnapshot = {
+      ...snapshot,
+      summary: { ...snapshot.summary, total: 42 },
+      requests: [newerRequest],
+    };
+    let resolveRefresh!: (response: Response) => void;
+    const refresh = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ request: researchingRequest }), { status: 200 }),
+      )
+      .mockReturnValueOnce(refresh);
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<OpportunityBriefDashboard snapshot={snapshot} filters={{}} />);
+
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.clear(screen.getByLabelText("Administrator notes"));
+    await user.type(screen.getByLabelText("Administrator notes"), "Unsaved draft");
+    await user.selectOptions(screen.getByLabelText("Status"), "researching");
+    await user.click(screen.getByRole("button", { name: "Save status" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Refreshing queue totals");
+    const refreshSignal = fetchMock.mock.calls[1]?.[1]?.signal as AbortSignal;
+    expect(refreshSignal.aborted).toBe(false);
+
+    rerender(<OpportunityBriefDashboard snapshot={newerSnapshot} filters={{}} />);
+    expect(refreshSignal.aborted).toBe(true);
+    expect(screen.getByRole("group", { name: "Opportunity Brief summary" })).toHaveTextContent(
+      "Total requests42",
+    );
+    expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent(
+      "Rejected",
+    );
+    expect(screen.getByRole("dialog")).toHaveTextContent("Rejected");
+    expect(screen.getByLabelText("Administrator notes")).toHaveValue("Unsaved draft");
+
+    await act(async () => {
+      resolveRefresh(
+        new Response(
+          JSON.stringify({
+            snapshot: {
+              ...snapshot,
+              summary: { ...snapshot.summary, total: 999 },
+              requests: [researchingRequest],
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("group", { name: "Opportunity Brief summary" })).toHaveTextContent(
+      "Total requests42",
+    );
+    expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent(
+      "Rejected",
+    );
+    expect(screen.getByRole("dialog")).toHaveTextContent("Rejected");
+    expect(screen.getByLabelText("Administrator notes")).toHaveValue("Unsaved draft");
+  });
+
+  it("shows and clears global mutation busy state when another dialog opens", async () => {
+    const user = userEvent.setup();
+    const creatorRequest = {
+      ...request,
+      id: "00000000-0000-4000-8000-000000000303",
+      participantType: "creator" as const,
+      profileUrl: "https://youtube.com/@creator",
+      email: "creator@example.com",
+    };
+    const twoRequestSnapshot = { ...snapshot, requests: [request, creatorRequest] };
+    const researchingRequest = {
+      ...request,
+      status: "researching" as const,
+      updatedAt: "2026-07-22T07:00:00.000Z",
+    };
+    let resolvePatch!: (response: Response) => void;
+    const patch = new Promise<Response>((resolve) => {
+      resolvePatch = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(patch)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            snapshot: {
+              ...twoRequestSnapshot,
+              requests: [researchingRequest, creatorRequest],
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<OpportunityBriefDashboard snapshot={twoRequestSnapshot} filters={{}} />);
+
+    await user.click(screen.getByRole("button", { name: "View company Opportunity Brief details" }));
+    await user.selectOptions(screen.getByLabelText("Status"), "researching");
+    await user.click(screen.getByRole("button", { name: "Save status" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "View creator Opportunity Brief details" }));
+
+    const creatorDialog = screen.getByRole("dialog", { name: "Creator Opportunity Brief" });
+    expect(within(creatorDialog).getByRole("status")).toHaveTextContent(
+      "Another update is completing",
+    );
+    expect(within(creatorDialog).getByLabelText("Status")).toBeDisabled();
+    expect(within(creatorDialog).getByLabelText("Administrator notes")).toBeDisabled();
+    expect(within(creatorDialog).getByLabelText("Candidate UUID")).toBeDisabled();
+    expect(within(creatorDialog).getByRole("button", { name: "Save status" })).toBeDisabled();
+    expect(within(creatorDialog).getByRole("button", { name: "Save notes" })).toBeDisabled();
+    expect(within(creatorDialog).getByRole("button", { name: "Link candidate" })).toBeDisabled();
+    expect(
+      within(creatorDialog).getByRole("button", { name: "Close Creator Opportunity Brief" }),
+    ).toBeEnabled();
+    await user.click(within(creatorDialog).getByRole("button", { name: "Save notes" }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolvePatch(new Response(JSON.stringify({ request: researchingRequest }), { status: 200 }));
+
+    await waitFor(() =>
+      expect(within(creatorDialog).getByRole("button", { name: "Save notes" })).toBeEnabled(),
+    );
+    expect(within(creatorDialog).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(creatorDialog).queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "Opportunity Brief requests" })).toHaveTextContent(
+      "Researching",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("shows global recovery when PATCH outcome cannot be confirmed after close", async () => {

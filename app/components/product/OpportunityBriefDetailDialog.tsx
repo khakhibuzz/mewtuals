@@ -93,12 +93,14 @@ function closeDialog(dialog: HTMLDialogElement | null) {
 
 export function OpportunityBriefDetailDialog({
   request,
+  mutationBusy,
   pendingAction,
   feedback,
   onMutate,
   onClose,
 }: {
   request: OpportunityBriefDashboardRequest;
+  mutationBusy: boolean;
   pendingAction: "status" | "notes" | "link" | "unlink" | null;
   feedback: OpportunityBriefFeedback;
   onMutate: (mutation: OpportunityBriefMutation) => Promise<boolean>;
@@ -149,6 +151,7 @@ export function OpportunityBriefDetailDialog({
   }
 
   const title = `${label(request.participantType)} Opportunity Brief`;
+  const actionsDisabled = mutationBusy || pendingAction !== null;
   const utmEntries = Object.entries(request.utm).filter((entry): entry is [string, string] =>
     Boolean(entry[1]),
   );
@@ -225,17 +228,23 @@ export function OpportunityBriefDetailDialog({
           </p>
         ) : null}
 
+        {mutationBusy && pendingAction === null ? (
+          <p className={styles.status} role="status">
+            Another update is completing. Mutation controls will be available when it finishes.
+          </p>
+        ) : null}
+
         <div className={styles.opportunityActions}>
           <form onSubmit={submitStatus}>
             <label className={styles.field}>
               <span className={styles.label}>Status</span>
-              <select value={status} onChange={(event) => setStatus(event.target.value as OpportunityBriefStatus)}>
+              <select disabled={actionsDisabled} value={status} onChange={(event) => setStatus(event.target.value as OpportunityBriefStatus)}>
                 {transitions[request.status].map((value) => (
                   <option key={value} value={value}>{label(value)}</option>
                 ))}
               </select>
             </label>
-            <button className={styles.button} type="submit" disabled={pendingAction !== null} aria-label={pendingAction === "status" ? "Saving status" : "Save status"}>
+            <button className={styles.button} type="submit" disabled={actionsDisabled} aria-label={pendingAction === "status" ? "Saving status" : "Save status"}>
               {pendingAction === "status" ? "Saving…" : "Save status"}
             </button>
           </form>
@@ -243,9 +252,9 @@ export function OpportunityBriefDetailDialog({
           <form onSubmit={submitNotes}>
             <label className={styles.field}>
               <span className={styles.label}>Administrator notes</span>
-              <textarea className={styles.textarea} value={notes} maxLength={5000} onChange={(event) => setNotes(event.target.value)} />
+              <textarea className={styles.textarea} disabled={actionsDisabled} value={notes} maxLength={5000} onChange={(event) => setNotes(event.target.value)} />
             </label>
-            <button className={styles.button} type="submit" disabled={pendingAction !== null} aria-label={pendingAction === "notes" ? "Saving notes" : "Save notes"}>
+            <button className={styles.button} type="submit" disabled={actionsDisabled} aria-label={pendingAction === "notes" ? "Saving notes" : "Save notes"}>
               {pendingAction === "notes" ? "Saving…" : "Save notes"}
             </button>
           </form>
@@ -255,6 +264,7 @@ export function OpportunityBriefDetailDialog({
               <span className={styles.label}>Candidate UUID</span>
               <input
                 value={candidateId}
+                disabled={actionsDisabled}
                 onChange={(event) => setCandidateId(event.target.value)}
                 required
                 pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
@@ -262,7 +272,7 @@ export function OpportunityBriefDetailDialog({
               />
             </label>
             <div className={styles.opportunityActionRow}>
-              <button className={styles.button} type="submit" disabled={pendingAction !== null} aria-label={pendingAction === "link" ? "Linking candidate" : "Link candidate"}>
+              <button className={styles.button} type="submit" disabled={actionsDisabled} aria-label={pendingAction === "link" ? "Linking candidate" : "Link candidate"}>
                 {pendingAction === "link" ? "Linking…" : "Link candidate"}
               </button>
               <Link href="/admin/discovery">Open Discovery candidates</Link>
@@ -273,7 +283,7 @@ export function OpportunityBriefDetailDialog({
             <button
               className={styles.secondaryButton}
               type="button"
-              disabled={pendingAction !== null}
+              disabled={actionsDisabled}
               aria-label={pendingAction === "unlink" ? "Unlinking candidate" : "Unlink candidate"}
               onClick={() => void onMutate({ unlink: true })}
             >
