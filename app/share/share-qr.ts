@@ -1,6 +1,7 @@
 import QRCode from "qrcode";
 
-export const SHARE_DESTINATION = "https://mewtuals.com/join";
+export const SHARE_DESTINATION =
+  "https://mewtuals.com/join?source=bengaluru-meetup";
 
 export function generateShareQrDataUrl() {
   return QRCode.toDataURL(SHARE_DESTINATION, {

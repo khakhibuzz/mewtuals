@@ -19,7 +19,9 @@ describe("conference share QR", () => {
   it("decodes to the public join destination", async () => {
     const dataUrl = await generateShareQrDataUrl();
 
-    expect(SHARE_DESTINATION).toBe("https://mewtuals.com/join");
+    expect(SHARE_DESTINATION).toBe(
+      "https://mewtuals.com/join?source=bengaluru-meetup",
+    );
     expect(decodeQrDataUrl(dataUrl)).toBe(SHARE_DESTINATION);
   });
 

@@ -36,7 +36,7 @@ async function waitForProductHydration(page: Page) {
 
 async function requestAndConfirmMagicLink(page: Page, mode: "join" | "login") {
   if (!memberEmail) throw new Error("Browser member email is not available.");
-  await page.goto(mode === "join" ? "/join" : "/login");
+  await page.goto(mode === "join" ? "/network/join" : "/login");
   await waitForProductHydration(page);
   await page.getByLabel("Email address").fill(memberEmail);
   await page

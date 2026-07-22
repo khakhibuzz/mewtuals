@@ -243,6 +243,103 @@
   font-size: 0.83rem;
 }
 
+.honeypot {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.opportunityErrorSummary {
+  padding: 1rem;
+  border: 1px solid #9c2f20;
+  color: #842818;
+}
+
+.opportunityErrorSummary p,
+.opportunityErrorSummary ul {
+  margin: 0;
+}
+
+.opportunityErrorSummary ul {
+  padding: 0.5rem 0 0 1.25rem;
+}
+
+.opportunityErrorSummary:focus,
+.opportunitySuccessTitle:focus {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.opportunityTrustLine {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.opportunitySuccess {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: clamp(2.5rem, 6vw, 4.5rem);
+}
+
+.opportunitySuccessTitle {
+  max-width: 34rem;
+  margin: 0;
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  font-weight: 500;
+  letter-spacing: -0.05em;
+  line-height: 1;
+}
+
+.opportunitySuccess > p {
+  max-width: 36rem;
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.65;
+}
+
+.opportunityConfirmation {
+  display: grid;
+  gap: 1rem;
+  margin: 0;
+  padding: 1.25rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.opportunityConfirmation div {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.opportunityConfirmation dt {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.opportunityConfirmation dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.opportunityConfirmation a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
 .dashboardStack {
   display: grid;
   gap: clamp(4rem, 8vw, 7rem);
