@@ -91,7 +91,7 @@ Release limits are explicit:
 - WhatsApp: after removing spaces, hyphens, and parentheses, an optional leading `+` followed by 8–15 digits; the normalized value preserves the leading `+` when supplied;
 - `open_to_text`: at most 1,000 characters;
 - `source`: at most 100 characters using letters, numbers, `.`, `_`, and `-`;
-- each standard UTM value: at most 200 characters;
+- each accepted UTM value (`utm_source`, `utm_medium`, `utm_campaign`, `utm_term`, and `utm_content`): at most 200 characters;
 - stored repeat-source history: newest 20 entries only;
 - serialized `source_metadata`: at most 8 KiB.
 
@@ -294,3 +294,5 @@ The acknowledgement email, seven-state request record, required summary/filter f
 7. An exact existing candidate links; an unmatched request remains safely unlinked and queued for research.
 8. An email acknowledgement is attempted without making request persistence depend on delivery.
 9. Existing account login, onboarding, verification, Discovery Agent, and member dashboard behavior continues to pass its regression tests.
+10. Administrator status, notes, link, and unlink mutations enforce authorization, concurrency, type compatibility, and the defined transition rules.
+11. The ninth valid submission from one requester inside 15 minutes is rejected with `429` without creating another request or attempt row.
