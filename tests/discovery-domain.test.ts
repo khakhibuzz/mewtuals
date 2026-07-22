@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   allocateCandidates,
+  candidateIdentifierForProfileUrl,
   candidateIdentifiers,
   candidateStatusSchema,
   candidateStatuses,
@@ -299,6 +300,36 @@ describe("discovery candidate normalization", () => {
 });
 
 describe("discovery candidate identity", () => {
+  it.each([
+    [
+      "https://www.signal-studio.com/",
+      { kind: "website_host", value: "signal-studio.com" },
+    ],
+    [
+      "https://www.linkedin.com/company/signal-studio/",
+      {
+        kind: "linkedin_url",
+        value: "https://linkedin.com/company/signal-studio",
+      },
+    ],
+    [
+      "https://www.instagram.com/SignalStudio/",
+      {
+        kind: "social_url",
+        value: "https://instagram.com/SignalStudio",
+      },
+    ],
+    [
+      "https://directory.example.com/companies/signal-studio/",
+      {
+        kind: "canonical",
+        value: "https://directory.example.com/companies/signal-studio",
+      },
+    ],
+  ] as const)("classifies submitted profile URL %s", (profileUrl, expected) => {
+    expect(candidateIdentifierForProfileUrl(profileUrl)).toEqual(expected);
+  });
+
   it("prioritizes company website host, LinkedIn, then stable social identity", () => {
     const identifiers = candidateIdentifiers({
       type: "company",

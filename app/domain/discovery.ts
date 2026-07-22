@@ -601,6 +601,12 @@ function canonicalIdentifier(
   return { kind: "website_host", value: host };
 }
 
+export function candidateIdentifierForProfileUrl(
+  profileUrl: string,
+): CandidateIdentifier {
+  return canonicalIdentifier(profileUrl, undefined);
+}
+
 export function candidateIdentifiers(
   input: DiscoveryCandidateInput,
 ): CandidateIdentifier[] {
