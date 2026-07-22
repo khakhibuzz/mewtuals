@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -440,9 +441,7 @@ export const discoveryCandidates = pgTable(
       .notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
-    mostRecentRunId: uuid("most_recent_run_id")
-      .notNull()
-      .references(() => discoveryRuns.id),
+    mostRecentRunId: uuid("most_recent_run_id").notNull(),
     discoveryScore: integer("discovery_score").notNull(),
     status: discoveryCandidateStatusEnum("status")
       .default("discovered")
@@ -456,6 +455,12 @@ export const discoveryCandidates = pgTable(
       table.type,
       table.canonicalIdentityKey,
     ),
+    unique("discovery_candidates_id_type_unique").on(table.id, table.type),
+    foreignKey({
+      name: "discovery_candidates_recent_run_fk",
+      columns: [table.mostRecentRunId],
+      foreignColumns: [discoveryRuns.id],
+    }),
     index("discovery_candidates_type_idx").on(table.type),
     index("discovery_candidates_geography_idx").on(table.geography),
     index("discovery_candidates_category_idx").on(table.category),
@@ -478,9 +483,7 @@ export const discoveryCandidateIdentifiers = pgTable(
   "discovery_candidate_identifiers",
   {
     id: id(),
-    candidateId: uuid("candidate_id")
-      .notNull()
-      .references(() => discoveryCandidates.id, { onDelete: "cascade" }),
+    candidateId: uuid("candidate_id").notNull(),
     candidateType: discoveryCandidateTypeEnum("candidate_type").notNull(),
     kind: discoveryIdentifierKindEnum("kind").notNull(),
     normalizedValue: text("normalized_value").notNull(),
@@ -491,6 +494,11 @@ export const discoveryCandidateIdentifiers = pgTable(
       table.candidateType,
       table.normalizedValue,
     ),
+    foreignKey({
+      name: "discovery_identifiers_candidate_type_fk",
+      columns: [table.candidateId, table.candidateType],
+      foreignColumns: [discoveryCandidates.id, discoveryCandidates.type],
+    }).onDelete("cascade"),
     index("discovery_candidate_identifiers_candidate_idx").on(
       table.candidateId,
     ),
@@ -505,12 +513,8 @@ export const discoveryCandidateSources = pgTable(
   "discovery_candidate_sources",
   {
     id: id(),
-    candidateId: uuid("candidate_id")
-      .notNull()
-      .references(() => discoveryCandidates.id, { onDelete: "cascade" }),
-    discoveryRunId: uuid("discovery_run_id")
-      .notNull()
-      .references(() => discoveryRuns.id),
+    candidateId: uuid("candidate_id").notNull(),
+    discoveryRunId: uuid("discovery_run_id").notNull(),
     sourceName: text("source_name").notNull(),
     sourceUrl: text("source_url").notNull(),
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
@@ -530,7 +534,21 @@ export const discoveryCandidateSources = pgTable(
       table.sourceName,
       table.sourceUrl,
     ),
+    foreignKey({
+      name: "discovery_sources_candidate_fk",
+      columns: [table.candidateId],
+      foreignColumns: [discoveryCandidates.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "discovery_sources_run_fk",
+      columns: [table.discoveryRunId],
+      foreignColumns: [discoveryRuns.id],
+    }),
     index("discovery_candidate_sources_candidate_idx").on(table.candidateId),
     index("discovery_candidate_sources_run_idx").on(table.discoveryRunId),
+    index("discovery_candidate_sources_source_candidate_idx").on(
+      table.sourceName,
+      table.candidateId,
+    ),
   ],
 );

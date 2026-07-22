@@ -47,6 +47,9 @@ const indexNames = (table: Parameters<typeof getTableConfig>[0]) =>
 const uniqueConstraintNames = (table: Parameters<typeof getTableConfig>[0]) =>
   configFor(table).uniqueConstraints.map((constraint) => constraint.name);
 
+const foreignKeyNames = (table: Parameters<typeof getTableConfig>[0]) =>
+  configFor(table).foreignKeys.map((foreignKey) => foreignKey.getName());
+
 const hasUniqueIndex = (
   table: Parameters<typeof getTableConfig>[0],
   name: string,
@@ -231,6 +234,12 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(uniqueConstraintNames(discoveryCandidates)).toContain(
       "discovery_candidates_type_canonical_identity_unique",
     );
+    expect(uniqueConstraintNames(discoveryCandidates)).toContain(
+      "discovery_candidates_id_type_unique",
+    );
+    expect(foreignKeyNames(discoveryCandidates)).toEqual([
+      "discovery_candidates_recent_run_fk",
+    ]);
     expect(indexNames(discoveryCandidates)).toEqual(
       expect.arrayContaining([
         "discovery_candidates_type_idx",
@@ -265,6 +274,13 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(
       configFor(discoveryCandidateIdentifiers).foreignKeys[0]?.onDelete,
     ).toBe("cascade");
+    expect(foreignKeyNames(discoveryCandidateIdentifiers)).toEqual([
+      "discovery_identifiers_candidate_type_fk",
+    ]);
+    expect(
+      configFor(discoveryCandidateIdentifiers).foreignKeys[0]?.reference()
+        .columns.map((column) => column.name),
+    ).toEqual(["candidate_id", "candidate_type"]);
   });
 
   it("retains per-run discovery source evidence", () => {
@@ -289,6 +305,7 @@ describe("Mewtuals PostgreSQL schema", () => {
       expect.arrayContaining([
         "discovery_candidate_sources_candidate_idx",
         "discovery_candidate_sources_run_idx",
+        "discovery_candidate_sources_source_candidate_idx",
       ]),
     );
     expect(
@@ -296,6 +313,10 @@ describe("Mewtuals PostgreSQL schema", () => {
         (foreignKey) => foreignKey.onDelete === "cascade",
       ),
     ).toBe(true);
+    expect(foreignKeyNames(discoveryCandidateSources)).toEqual([
+      "discovery_sources_candidate_fk",
+      "discovery_sources_run_fk",
+    ]);
   });
 
   it("enforces identity ownership and idempotent workflow writes", () => {

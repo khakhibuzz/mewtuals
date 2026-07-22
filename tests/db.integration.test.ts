@@ -143,6 +143,14 @@ async function waitForLockWaiters(
 }
 
 async function cleanDiscoveryRows() {
+  const [database] = await db.execute<{ databaseName: string }>(
+    sql`select current_database() as "databaseName"`,
+  );
+  if (database?.databaseName !== "mewtuals_test") {
+    throw new Error(
+      `Refusing discovery integration cleanup in ${database?.databaseName ?? "an unknown database"}.`,
+    );
+  }
   await db.delete(discoveryCandidateSources);
   await db.delete(discoveryCandidateIdentifiers);
   await db.delete(discoveryCandidates);
@@ -1626,6 +1634,159 @@ describe("PostgreSQL authentication repository", () => {
     ).toMatchObject([{ status: "queued" }]);
   });
 
+  it("claims only the selected discovery trigger", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const baseInput = {
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    };
+    const scheduled = await discoveryRepository.queueRun({
+      ...baseInput,
+      externalRunKey: `discovery-selector-scheduled-${testRun}`,
+      trigger: "scheduled",
+      now: new Date("2026-07-22T03:00:00.000Z"),
+    });
+    const manual = await discoveryRepository.queueRun({
+      ...baseInput,
+      externalRunKey: `discovery-selector-manual-${testRun}`,
+      trigger: "manual",
+      now: new Date("2026-07-22T03:01:00.000Z"),
+    });
+
+    const claimed = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T03:02:00.000Z"),
+      leaseTokenHash: "lease-hash-trigger-selector",
+      leaseExpiresAt: new Date("2026-07-22T05:02:00.000Z"),
+      triggers: ["scheduled"],
+    });
+
+    expect(claimed).toMatchObject({ id: scheduled.id, status: "running" });
+    expect(
+      await discoveryRepository.getRun(manual.id),
+    ).toMatchObject({ id: manual.id, status: "queued" });
+  });
+
+  it("claims only the selected discovery external key", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const baseInput = {
+      trigger: "trial" as const,
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    };
+    const first = await discoveryRepository.queueRun({
+      ...baseInput,
+      externalRunKey: `discovery-selector-first-${testRun}`,
+      now: new Date("2026-07-22T03:00:00.000Z"),
+    });
+    const target = await discoveryRepository.queueRun({
+      ...baseInput,
+      externalRunKey: `discovery-selector-target-${testRun}`,
+      now: new Date("2026-07-22T03:01:00.000Z"),
+    });
+
+    const claimed = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T03:02:00.000Z"),
+      leaseTokenHash: "lease-hash-key-selector",
+      leaseExpiresAt: new Date("2026-07-22T05:02:00.000Z"),
+      externalRunKey: target.externalRunKey,
+    });
+
+    expect(claimed).toMatchObject({ id: target.id, status: "running" });
+    expect(await discoveryRepository.getRun(first.id)).toMatchObject({
+      id: first.id,
+      status: "queued",
+    });
+  });
+
+  it("atomically prefers a queued manual run over the exact daily fallback", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const baseInput = {
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    };
+    const daily = await discoveryRepository.queueRun({
+      ...baseInput,
+      externalRunKey: `discovery-fallback-daily-${testRun}`,
+      trigger: "scheduled",
+      now: new Date("2026-07-22T03:00:00.000Z"),
+    });
+    const manual = await discoveryRepository.queueRun({
+      ...baseInput,
+      externalRunKey: `discovery-fallback-manual-${testRun}`,
+      trigger: "manual",
+      now: new Date("2026-07-22T03:01:00.000Z"),
+    });
+
+    const claimed = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T03:02:00.000Z"),
+      leaseTokenHash: "lease-hash-manual-fallback",
+      leaseExpiresAt: new Date("2026-07-22T05:02:00.000Z"),
+      triggers: ["manual"],
+      fallbackExternalRunKey: daily.externalRunKey,
+    });
+
+    expect(claimed).toMatchObject({ id: manual.id, status: "running" });
+    expect(await discoveryRepository.getRun(daily.id)).toMatchObject({
+      id: daily.id,
+      status: "queued",
+    });
+  });
+
+  it("claims a queued manual run without creating the missing daily fallback", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const now = new Date("2026-07-22T03:12:00.000Z");
+    const baseInput = {
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    };
+    const manual = await discoveryRepository.queueRun({
+      ...baseInput,
+      externalRunKey: `discovery-no-orphan-manual-${testRun}`,
+      trigger: "manual",
+      now: new Date("2026-07-22T03:11:00.000Z"),
+    });
+    const dailyExternalRunKey = `discovery-no-orphan-daily-${testRun}`;
+
+    const claimed = await discoveryRepository.claimRun({
+      now,
+      leaseTokenHash: "lease-hash-no-orphan-fallback",
+      leaseExpiresAt: new Date("2026-07-22T05:12:00.000Z"),
+      triggers: ["manual"],
+      fallbackExternalRunKey: dailyExternalRunKey,
+      queueIfMissing: {
+        ...baseInput,
+        externalRunKey: dailyExternalRunKey,
+        trigger: "scheduled",
+        now,
+        requestedByEmail: null,
+      },
+    });
+
+    expect(claimed).toMatchObject({ id: manual.id, status: "running" });
+    expect(
+      await db
+        .select()
+        .from(discoveryRuns)
+        .where(eq(discoveryRuns.externalRunKey, dailyExternalRunKey)),
+    ).toHaveLength(0);
+  });
+
   it("completes a leased discovery run with one new candidate and its evidence", async () => {
     await cleanDiscoveryRows();
     const discoveryRepository = createDiscoveryRepository(db);
@@ -2091,27 +2252,21 @@ describe("PostgreSQL authentication repository", () => {
     expect(JSON.stringify(snapshot)).not.toContain("admin-secret-submission-hash");
   });
 
-  it("allows only one concurrent discovery claimant without leaking the active-run race", async () => {
+  it("atomically queues and claims only one of two concurrent trial runs", async () => {
     await cleanDiscoveryRows();
-    const discoveryRepository = createDiscoveryRepository(db);
     const queueInput = {
       trigger: "trial" as const,
+      now: new Date("2026-07-22T10:00:00.000Z"),
       geography: "India",
       candidateType: "both" as const,
       sourcesUsed: ["codex_web"],
       requestedCount: 20,
       companyPercentage: 50,
     };
-    await discoveryRepository.queueRun({
-      ...queueInput,
-      externalRunKey: `discovery-race-one-${testRun}`,
-      now: new Date("2026-07-22T10:00:00.000Z"),
-    });
-    await discoveryRepository.queueRun({
-      ...queueInput,
-      externalRunKey: `discovery-race-two-${testRun}`,
-      now: new Date("2026-07-22T10:01:00.000Z"),
-    });
+    const externalRunKeys = [
+      `discovery-race-one-${testRun}`,
+      `discovery-race-two-${testRun}`,
+    ];
     const connections = [
       createIndependentDatabase(`discovery-claim-a-${testRun}`),
       createIndependentDatabase(`discovery-claim-b-${testRun}`),
@@ -2123,22 +2278,138 @@ describe("PostgreSQL authentication repository", () => {
             now: new Date("2026-07-22T10:02:00.000Z"),
             leaseTokenHash: `race-lease-${index}`,
             leaseExpiresAt: new Date("2026-07-22T12:02:00.000Z"),
+            externalRunKey: externalRunKeys[index],
+            queueIfMissing: {
+              ...queueInput,
+              externalRunKey: externalRunKeys[index]!,
+            },
           }),
         ),
       );
       expect(results.filter(Boolean)).toHaveLength(1);
       expect(results.filter((result) => result === null)).toHaveLength(1);
-      const runs = await db
-        .select({ status: discoveryRuns.status })
-        .from(discoveryRuns)
-        .orderBy(discoveryRuns.createdAt);
-      expect(runs.map(({ status }) => status).sort()).toEqual([
-        "queued",
-        "running",
+      const winner = results.find((result) => result !== null)!;
+      const loserKey = externalRunKeys.find(
+        (externalRunKey) => externalRunKey !== winner.externalRunKey,
+      );
+      const runs = await db.select().from(discoveryRuns);
+      expect(runs).toMatchObject([
+        { externalRunKey: winner.externalRunKey, status: "running" },
       ]);
+      expect(runs).toHaveLength(1);
+      expect(
+        runs.some(({ externalRunKey }) => externalRunKey === loserKey),
+      ).toBe(false);
     } finally {
       await closeIndependentDatabases(connections);
     }
+  });
+
+  it("serializes concurrent scheduled claims around one queued manual run", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const base = {
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    };
+    const manual = await discoveryRepository.queueRun({
+      ...base,
+      externalRunKey: `discovery-serialized-manual-${testRun}`,
+      trigger: "manual",
+      now: new Date("2026-07-22T10:05:00.000Z"),
+    });
+    const dailyExternalRunKeys = [
+      `discovery-serialized-daily-a-${testRun}`,
+      `discovery-serialized-daily-b-${testRun}`,
+    ];
+    const connections = [
+      createIndependentDatabase(`discovery-scheduled-a-${testRun}`),
+      createIndependentDatabase(`discovery-scheduled-b-${testRun}`),
+    ];
+
+    try {
+      const results = await Promise.all(
+        connections.map(({ database }, index) => {
+          const externalRunKey = dailyExternalRunKeys[index]!;
+          return createDiscoveryRepository(database).claimRun({
+            now: new Date("2026-07-22T10:06:00.000Z"),
+            leaseTokenHash: `serialized-scheduled-lease-${index}`,
+            leaseExpiresAt: new Date("2026-07-22T12:06:00.000Z"),
+            triggers: ["manual"],
+            fallbackExternalRunKey: externalRunKey,
+            queueIfMissing: {
+              ...base,
+              externalRunKey,
+              trigger: "scheduled",
+              now: new Date("2026-07-22T10:06:00.000Z"),
+              requestedByEmail: null,
+            },
+          });
+        }),
+      );
+
+      expect(results.filter(Boolean)).toMatchObject([
+        { id: manual.id, status: "running" },
+      ]);
+      expect(results.filter((result) => result === null)).toHaveLength(1);
+      const dailyRuns = await db
+        .select()
+        .from(discoveryRuns)
+        .where(
+          sql`${discoveryRuns.externalRunKey} in (${dailyExternalRunKeys[0]}, ${dailyExternalRunKeys[1]})`,
+        );
+      expect(dailyRuns).toHaveLength(0);
+    } finally {
+      await closeIndependentDatabases(connections);
+    }
+  });
+
+  it("does not queue a requested trial while another run has an active lease", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const base = {
+      trigger: "trial" as const,
+      geography: "India",
+      candidateType: "both" as const,
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    };
+    const active = await discoveryRepository.queueRun({
+      ...base,
+      externalRunKey: `discovery-active-${testRun}`,
+      now: new Date("2026-07-22T10:10:00.000Z"),
+    });
+    await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T10:11:00.000Z"),
+      leaseTokenHash: "active-lease",
+      leaseExpiresAt: new Date("2026-07-22T12:11:00.000Z"),
+      externalRunKey: active.externalRunKey,
+    });
+    const trialKey = `discovery-blocked-trial-${testRun}`;
+
+    const claimed = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T10:12:00.000Z"),
+      leaseTokenHash: "blocked-trial-lease",
+      leaseExpiresAt: new Date("2026-07-22T12:12:00.000Z"),
+      externalRunKey: trialKey,
+      queueIfMissing: {
+        ...base,
+        externalRunKey: trialKey,
+        now: new Date("2026-07-22T10:12:00.000Z"),
+      },
+    });
+
+    expect(claimed).toBeNull();
+    expect(
+      await db
+        .select()
+        .from(discoveryRuns)
+        .where(eq(discoveryRuns.externalRunKey, trialKey)),
+    ).toHaveLength(0);
   });
 
   it("records an identity conflict without merging candidates owned by different aliases", async () => {
@@ -2356,19 +2627,24 @@ describe("PostgreSQL authentication repository", () => {
       leaseTokenHash: "expired-lease",
       leaseExpiresAt: new Date("2026-07-22T13:02:00.000Z"),
     });
-    const nextRun = await discoveryRepository.queueRun({
-      ...base,
-      externalRunKey: `discovery-after-expired-${testRun}`,
-      now: new Date("2026-07-22T13:02:30.000Z"),
-    });
+    const nextRunKey = `discovery-after-expired-${testRun}`;
 
     const claimed = await discoveryRepository.claimRun({
       now: new Date("2026-07-22T13:03:00.000Z"),
       leaseTokenHash: "replacement-lease",
       leaseExpiresAt: new Date("2026-07-22T15:03:00.000Z"),
+      externalRunKey: nextRunKey,
+      queueIfMissing: {
+        ...base,
+        externalRunKey: nextRunKey,
+        now: new Date("2026-07-22T13:02:30.000Z"),
+      },
     });
 
-    expect(claimed).toMatchObject({ id: nextRun.id, status: "running" });
+    expect(claimed).toMatchObject({
+      externalRunKey: nextRunKey,
+      status: "running",
+    });
     expect(
       await db
         .select()
@@ -2472,7 +2748,12 @@ describe("PostgreSQL authentication repository", () => {
       submissionHash: "empty-submission",
       now: new Date("2026-07-22T15:02:00.000Z"),
       candidates: [],
-      sourceErrors: [],
+      sourceErrors: [
+        {
+          sourceName: "failed_empty_source",
+          message: "e".repeat(1_500),
+        },
+      ],
     });
 
     expect(result).toMatchObject({
@@ -2482,7 +2763,253 @@ describe("PostgreSQL authentication repository", () => {
         foundCount: 0,
         newCount: 0,
         duplicateCount: 0,
+        errorSummary: {
+          failure: {
+            code: "empty_submission",
+            message: "No valid discovery candidates were submitted.",
+          },
+          sourceErrors: [
+            {
+              sourceName: "failed_empty_source",
+              message: "e".repeat(1_000),
+            },
+          ],
+          identityConflicts: [],
+        },
       },
     });
+  });
+
+  it("rejects an identifier whose candidate type disagrees with its owner", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const run = await discoveryRepository.queueRun({
+      externalRunKey: `discovery-identifier-type-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T16:00:00.000Z"),
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 100,
+    });
+    const [candidate] = await db
+      .insert(discoveryCandidates)
+      .values({
+        type: "company",
+        name: "Identifier Type Owner",
+        normalizedName: "identifier type owner",
+        canonicalIdentityKey: "website_host:identifier-type.example.com",
+        canonicalUrl: "https://identifier-type.example.com",
+        websiteUrl: "https://identifier-type.example.com",
+        discoveredDescription: "Composite foreign-key fixture.",
+        category: "technology",
+        geography: "India",
+        firstSourceName: "codex_web",
+        firstSourceUrl: "https://source.example.com/identifier-type",
+        mostRecentRunId: run.id,
+        discoveryScore: 80,
+      })
+      .returning();
+    expect(candidate).toBeDefined();
+
+    await expect(
+      db.insert(discoveryCandidateIdentifiers).values({
+        candidateId: candidate!.id,
+        candidateType: "creator",
+        kind: "website_host",
+        normalizedValue: "identifier-type.example.com",
+      }),
+    ).rejects.toThrow();
+    expect(await db.select().from(discoveryCandidateIdentifiers)).toHaveLength(0);
+  });
+
+  it("allows one optimistic status writer when competing timestamps are equal", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const timestamp = new Date("2026-07-22T17:00:00.000Z");
+    const run = await discoveryRepository.queueRun({
+      externalRunKey: `discovery-status-race-${testRun}`,
+      trigger: "manual",
+      now: timestamp,
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 100,
+    });
+    const [candidate] = await db
+      .insert(discoveryCandidates)
+      .values({
+        type: "company",
+        name: "Status Race Labs",
+        normalizedName: "status race labs",
+        canonicalIdentityKey: "website_host:status-race.example.com",
+        canonicalUrl: "https://status-race.example.com",
+        websiteUrl: "https://status-race.example.com",
+        discoveredDescription: "Equal timestamp race fixture.",
+        category: "technology",
+        geography: "India",
+        firstSourceName: "codex_web",
+        firstSourceUrl: "https://source.example.com/status-race",
+        discoveredAt: timestamp,
+        lastSeenAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        mostRecentRunId: run.id,
+        discoveryScore: 80,
+      })
+      .returning();
+    expect(candidate).toBeDefined();
+    const connections = [
+      createIndependentDatabase(`discovery-status-race-a-${testRun}`),
+      createIndependentDatabase(`discovery-status-race-b-${testRun}`),
+    ];
+
+    try {
+      const results = await Promise.all([
+        createDiscoveryRepository(connections[0]!.database).updateCandidateStatus({
+          candidateId: candidate!.id,
+          status: "shortlisted",
+          expectedUpdatedAt: timestamp,
+          now: timestamp,
+        }),
+        createDiscoveryRepository(connections[1]!.database).updateCandidateStatus({
+          candidateId: candidate!.id,
+          status: "rejected",
+          expectedUpdatedAt: timestamp,
+          now: timestamp,
+        }),
+      ]);
+
+      expect(results.map(({ outcome }) => outcome).sort()).toEqual([
+        "conflict",
+        "updated",
+      ]);
+      const winner = results.find(({ outcome }) => outcome === "updated");
+      expect(winner?.outcome).toBe("updated");
+      if (winner?.outcome !== "updated") return;
+      const followUp = await discoveryRepository.updateCandidateStatus({
+        candidateId: candidate!.id,
+        status: "queued_for_profile",
+        expectedUpdatedAt: winner.candidate.updatedAt,
+        now: winner.candidate.updatedAt,
+      });
+      expect(followUp).toMatchObject({
+        outcome: "updated",
+        candidate: { status: "queued_for_profile" },
+      });
+      const [persisted] = await db
+        .select({
+          status: discoveryCandidates.status,
+          timestampIncreased: sql<boolean>`
+            ${discoveryCandidates.updatedAt} > ${timestamp.toISOString()}::timestamptz
+          `,
+        })
+        .from(discoveryCandidates)
+        .where(eq(discoveryCandidates.id, candidate!.id));
+      expect(persisted!.timestampIncreased).toBe(true);
+      expect(persisted!.status).toBe("queued_for_profile");
+    } finally {
+      await closeIndependentDatabases(connections);
+    }
+  });
+
+  it("clamps the discovery admin page to the documented maximum", async () => {
+    await cleanDiscoveryRows();
+    const snapshot = await createDiscoveryRepository(db).getAdminSummary({
+      todayStart: new Date("2026-07-22T00:00:00.000Z"),
+      page: 10_000,
+      pageSize: 25,
+    });
+
+    expect(snapshot.candidates.page).toBe(100);
+    expect(snapshot.candidates.pageSize).toBe(25);
+  });
+
+  it("rejects non-finite or non-integer discovery admin pagination", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const baseFilters = {
+      todayStart: new Date("2026-07-22T00:00:00.000Z"),
+    };
+
+    await expect(
+      discoveryRepository.getAdminSummary({ ...baseFilters, page: Number.NaN }),
+    ).rejects.toThrow("Discovery admin page must be a finite integer.");
+    await expect(
+      discoveryRepository.getAdminSummary({
+        ...baseFilters,
+        pageSize: Number.POSITIVE_INFINITY,
+      }),
+    ).rejects.toThrow("Discovery admin pageSize must be a finite integer.");
+    await expect(
+      discoveryRepository.getAdminSummary({ ...baseFilters, runLimit: 1.5 }),
+    ).rejects.toThrow("Discovery admin runLimit must be a finite integer.");
+  });
+
+  it("returns all discovery admin evidence with deterministic ordering", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const timestamp = new Date("2026-07-22T18:00:00.000Z");
+    const run = await discoveryRepository.queueRun({
+      externalRunKey: `discovery-evidence-cap-${testRun}`,
+      trigger: "trial",
+      now: timestamp,
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 100,
+    });
+    const [candidate] = await db
+      .insert(discoveryCandidates)
+      .values({
+        type: "company",
+        name: "Evidence Cap Labs",
+        normalizedName: "evidence cap labs",
+        canonicalIdentityKey: "website_host:evidence-cap.example.com",
+        canonicalUrl: "https://evidence-cap.example.com",
+        websiteUrl: "https://evidence-cap.example.com",
+        discoveredDescription: "Evidence pagination fixture.",
+        category: "technology",
+        geography: "India",
+        firstSourceName: "source-000",
+        firstSourceUrl: "https://source.example.com/evidence/000",
+        discoveredAt: timestamp,
+        lastSeenAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        mostRecentRunId: run.id,
+        discoveryScore: 80,
+      })
+      .returning();
+    expect(candidate).toBeDefined();
+    await db.insert(discoveryCandidateSources).values(
+      Array.from({ length: 501 }, (_, index) => {
+        const suffix = String(index).padStart(3, "0");
+        return {
+          candidateId: candidate!.id,
+          discoveryRunId: run.id,
+          sourceName: `source-${suffix}`,
+          sourceUrl: `https://source.example.com/evidence/${suffix}`,
+          firstSeenAt: timestamp,
+          lastSeenAt: timestamp,
+          rawMetadata: {},
+          createdAt: timestamp,
+        };
+      }),
+    );
+
+    const snapshot = await discoveryRepository.getAdminSummary({
+      todayStart: new Date("2026-07-22T00:00:00.000Z"),
+      page: 1,
+      pageSize: 25,
+    });
+
+    expect(snapshot.evidence).toHaveLength(501);
+    expect(snapshot.evidence[0]?.sourceName).toBe("source-000");
+    expect(snapshot.evidence[499]?.sourceName).toBe("source-499");
+    expect(snapshot.evidence[500]?.sourceName).toBe("source-500");
   });
 });

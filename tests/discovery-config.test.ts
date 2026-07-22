@@ -93,10 +93,24 @@ describe("discovery configuration", () => {
     expect(
       readDiscoveryConfig({
         NODE_ENV: "production",
-        DISCOVERY_WORKER_SECRET: "worker-secret",
+        DISCOVERY_WORKER_SECRET: "worker-secret-with-at-least-32-bytes",
       }).workerSecret,
-    ).toBe("worker-secret");
+    ).toBe("worker-secret-with-at-least-32-bytes");
   });
+
+  it.each(["short", "x".repeat(31)])(
+    "rejects a short production worker secret",
+    (DISCOVERY_WORKER_SECRET) => {
+      expect(() =>
+        readDiscoveryConfig({
+          NODE_ENV: "production",
+          DISCOVERY_WORKER_SECRET,
+        }),
+      ).toThrow(
+        "Invalid discovery configuration: DISCOVERY_WORKER_SECRET must contain at least 32 characters in production.",
+      );
+    },
+  );
 
   it("treats a missing NODE_ENV as production", () => {
     expect(() => readDiscoveryConfig({})).toThrow(
@@ -172,7 +186,7 @@ describe("discovery configuration", () => {
   it("returns a public worker config without the secret", () => {
     const config = readDiscoveryConfig({
       NODE_ENV: "production",
-      DISCOVERY_WORKER_SECRET: "never-return-this-secret",
+      DISCOVERY_WORKER_SECRET: "never-return-this-secret-1234567890",
       DISCOVERY_API_BASE_URL: "https://mewtuals.com",
     });
     const publicConfig = publicDiscoveryWorkerConfig(config);
@@ -185,6 +199,8 @@ describe("discovery configuration", () => {
       workerApiBaseUrl: "https://mewtuals.com",
     });
     expect("workerSecret" in publicConfig).toBe(false);
-    expect(JSON.stringify(publicConfig)).not.toContain("never-return-this-secret");
+    expect(JSON.stringify(publicConfig)).not.toContain(
+      "never-return-this-secret-1234567890",
+    );
   });
 });

@@ -229,7 +229,7 @@ export const rawMetadataSchema = z
     }
   });
 
-export const discoveryCandidateInputSchema = z.object({
+export const discoveryCandidateInputSchema = z.strictObject({
   type: candidateTypeSchema,
   name: normalizedNameSchema,
   canonicalUrl: canonicalDiscoveryUrlSchema,
@@ -258,12 +258,12 @@ export const discoveryCandidateInputSchema = z.object({
   rawMetadata: rawMetadataSchema.default({}),
 });
 
-export const discoverySourceErrorSchema = z.object({
+export const discoverySourceErrorSchema = z.strictObject({
   sourceName: boundedRequiredString("Discovery source name", 100),
   message: boundedRequiredString("Discovery source error", 1_000),
 });
 
-const discoveryBatchObjectSchema = z.object({
+const discoveryBatchObjectSchema = z.strictObject({
   runId: z.string().uuid({ message: "Discovery run id must be a valid UUID." }),
   leaseToken: boundedRequiredString("Discovery lease token", 512),
   promptVersion: z.literal("codex-web-v1", {

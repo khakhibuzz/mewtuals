@@ -1,5 +1,5 @@
 {
-  "id": "33d8f5e3-aba5-4325-b6ca-5427a4380bc4",
+  "id": "0aecb91c-09c8-46ab-ad14-b7d52448dfc1",
   "prevId": "9631e865-11a7-4e0b-af75-52139d1be46a",
   "version": "7",
   "dialect": "postgresql",
@@ -67,15 +67,17 @@
         }
       },
       "foreignKeys": {
-        "discovery_candidate_identifiers_candidate_id_discovery_candidates_id_fk": {
-          "name": "discovery_candidate_identifiers_candidate_id_discovery_candidates_id_fk",
+        "discovery_identifiers_candidate_type_fk": {
+          "name": "discovery_identifiers_candidate_type_fk",
           "tableFrom": "discovery_candidate_identifiers",
           "tableTo": "discovery_candidates",
           "columnsFrom": [
-            "candidate_id"
+            "candidate_id",
+            "candidate_type"
           ],
           "columnsTo": [
-            "id"
+            "id",
+            "type"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
@@ -195,11 +197,32 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "discovery_candidate_sources_source_candidate_idx": {
+          "name": "discovery_candidate_sources_source_candidate_idx",
+          "columns": [
+            {
+              "expression": "source_name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "candidate_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
-        "discovery_candidate_sources_candidate_id_discovery_candidates_id_fk": {
-          "name": "discovery_candidate_sources_candidate_id_discovery_candidates_id_fk",
+        "discovery_sources_candidate_fk": {
+          "name": "discovery_sources_candidate_fk",
           "tableFrom": "discovery_candidate_sources",
           "tableTo": "discovery_candidates",
           "columnsFrom": [
@@ -211,8 +234,8 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "discovery_candidate_sources_discovery_run_id_discovery_runs_id_fk": {
-          "name": "discovery_candidate_sources_discovery_run_id_discovery_runs_id_fk",
+        "discovery_sources_run_fk": {
+          "name": "discovery_sources_run_fk",
           "tableFrom": "discovery_candidate_sources",
           "tableTo": "discovery_runs",
           "columnsFrom": [
@@ -501,8 +524,8 @@
         }
       },
       "foreignKeys": {
-        "discovery_candidates_most_recent_run_id_discovery_runs_id_fk": {
-          "name": "discovery_candidates_most_recent_run_id_discovery_runs_id_fk",
+        "discovery_candidates_recent_run_fk": {
+          "name": "discovery_candidates_recent_run_fk",
           "tableFrom": "discovery_candidates",
           "tableTo": "discovery_runs",
           "columnsFrom": [
@@ -523,6 +546,14 @@
           "columns": [
             "type",
             "canonical_identity_key"
+          ]
+        },
+        "discovery_candidates_id_type_unique": {
+          "name": "discovery_candidates_id_type_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "type"
           ]
         }
       },

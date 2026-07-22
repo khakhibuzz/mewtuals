@@ -96,6 +96,11 @@ export function readDiscoveryConfig(
       "Invalid discovery configuration: DISCOVERY_WORKER_SECRET is required in production.",
     );
   }
+  if (environment === "production" && workerSecret!.length < 32) {
+    throw new Error(
+      "Invalid discovery configuration: DISCOVERY_WORKER_SECRET must contain at least 32 characters in production.",
+    );
+  }
 
   return {
     geographies: commaSeparated(source.DISCOVERY_GEOGRAPHIES, ["India"]),

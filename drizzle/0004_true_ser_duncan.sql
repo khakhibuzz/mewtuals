@@ -53,6 +53,7 @@ CREATE TABLE "discovery_candidates" (
 	"status" "discovery_candidate_status" DEFAULT 'discovered' NOT NULL,
 	"raw_metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	CONSTRAINT "discovery_candidates_type_canonical_identity_unique" UNIQUE("type","canonical_identity_key"),
+	CONSTRAINT "discovery_candidates_id_type_unique" UNIQUE("id","type"),
 	CONSTRAINT "discovery_candidates_score_check" CHECK ("discovery_candidates"."discovery_score" >= 0 AND "discovery_candidates"."discovery_score" <= 100),
 	CONSTRAINT "discovery_candidates_name_check" CHECK (length(btrim("discovery_candidates"."name")) > 0 AND length(btrim("discovery_candidates"."normalized_name")) > 0)
 );
@@ -86,13 +87,14 @@ CREATE TABLE "discovery_runs" (
 	CONSTRAINT "discovery_runs_running_lease_check" CHECK ("discovery_runs"."status" <> 'running' OR ("discovery_runs"."started_at" IS NOT NULL AND "discovery_runs"."lease_token_hash" IS NOT NULL AND "discovery_runs"."lease_expires_at" IS NOT NULL AND "discovery_runs"."completed_at" IS NULL))
 );
 --> statement-breakpoint
-ALTER TABLE "discovery_candidate_identifiers" ADD CONSTRAINT "discovery_candidate_identifiers_candidate_id_discovery_candidates_id_fk" FOREIGN KEY ("candidate_id") REFERENCES "public"."discovery_candidates"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "discovery_candidate_sources" ADD CONSTRAINT "discovery_candidate_sources_candidate_id_discovery_candidates_id_fk" FOREIGN KEY ("candidate_id") REFERENCES "public"."discovery_candidates"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "discovery_candidate_sources" ADD CONSTRAINT "discovery_candidate_sources_discovery_run_id_discovery_runs_id_fk" FOREIGN KEY ("discovery_run_id") REFERENCES "public"."discovery_runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "discovery_candidates" ADD CONSTRAINT "discovery_candidates_most_recent_run_id_discovery_runs_id_fk" FOREIGN KEY ("most_recent_run_id") REFERENCES "public"."discovery_runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "discovery_candidate_identifiers" ADD CONSTRAINT "discovery_identifiers_candidate_type_fk" FOREIGN KEY ("candidate_id","candidate_type") REFERENCES "public"."discovery_candidates"("id","type") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "discovery_candidate_sources" ADD CONSTRAINT "discovery_sources_candidate_fk" FOREIGN KEY ("candidate_id") REFERENCES "public"."discovery_candidates"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "discovery_candidate_sources" ADD CONSTRAINT "discovery_sources_run_fk" FOREIGN KEY ("discovery_run_id") REFERENCES "public"."discovery_runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "discovery_candidates" ADD CONSTRAINT "discovery_candidates_recent_run_fk" FOREIGN KEY ("most_recent_run_id") REFERENCES "public"."discovery_runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "discovery_candidate_identifiers_candidate_idx" ON "discovery_candidate_identifiers" USING btree ("candidate_id");--> statement-breakpoint
 CREATE INDEX "discovery_candidate_sources_candidate_idx" ON "discovery_candidate_sources" USING btree ("candidate_id");--> statement-breakpoint
 CREATE INDEX "discovery_candidate_sources_run_idx" ON "discovery_candidate_sources" USING btree ("discovery_run_id");--> statement-breakpoint
+CREATE INDEX "discovery_candidate_sources_source_candidate_idx" ON "discovery_candidate_sources" USING btree ("source_name","candidate_id");--> statement-breakpoint
 CREATE INDEX "discovery_candidates_type_idx" ON "discovery_candidates" USING btree ("type");--> statement-breakpoint
 CREATE INDEX "discovery_candidates_geography_idx" ON "discovery_candidates" USING btree ("geography");--> statement-breakpoint
 CREATE INDEX "discovery_candidates_category_idx" ON "discovery_candidates" USING btree ("category");--> statement-breakpoint

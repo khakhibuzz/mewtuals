@@ -30,6 +30,8 @@ import type {
   DiscoveryRun,
 } from "../types";
 
+export const MAX_DISCOVERY_ADMIN_PAGE = 100;
+
 export type QueueDiscoveryRunInput = {
   externalRunKey: string;
   trigger: "scheduled" | "manual" | "trial";
@@ -46,6 +48,10 @@ export type ClaimDiscoveryRunInput = {
   now: Date;
   leaseTokenHash: string;
   leaseExpiresAt: Date;
+  triggers?: readonly DiscoveryRun["trigger"][];
+  externalRunKey?: string;
+  fallbackExternalRunKey?: string;
+  queueIfMissing?: QueueDiscoveryRunInput;
 };
 
 export type ClaimedDiscoveryRun = DiscoveryRun;
@@ -140,6 +146,7 @@ export type DiscoveryRunResult =
 export type DiscoveryRepository = {
   queueRun(input: QueueDiscoveryRunInput): Promise<DiscoveryRun>;
   claimRun(input: ClaimDiscoveryRunInput): Promise<ClaimedDiscoveryRun | null>;
+  getRun(runId: string): Promise<DiscoveryRun | null>;
   completeRun(input: CompleteDiscoveryRunInput): Promise<DiscoveryRunResult>;
   failRun(input: FailDiscoveryRunInput): Promise<DiscoveryRunResult>;
   updateCandidateStatus(
@@ -147,6 +154,22 @@ export type DiscoveryRepository = {
   ): Promise<UpdateCandidateStatusResult>;
   getAdminSummary(filters: DiscoveryFilters): Promise<DiscoveryAdminSnapshot>;
 };
+
+function queuedRunValues(input: QueueDiscoveryRunInput) {
+  return {
+    externalRunKey: input.externalRunKey,
+    trigger: input.trigger,
+    status: "queued" as const,
+    geography: input.geography,
+    candidateType: input.candidateType,
+    sourcesUsed: [...input.sourcesUsed],
+    requestedCount: input.requestedCount,
+    companyPercentage: input.companyPercentage,
+    requestedByEmail: input.requestedByEmail ?? null,
+    createdAt: input.now,
+    updatedAt: input.now,
+  };
+}
 
 function isActiveRunUniqueViolation(error: unknown): boolean {
   let current = error;
@@ -226,6 +249,19 @@ function storedFailureMessage(run: DiscoveryRun): string | null {
   return typeof message === "string" ? message : null;
 }
 
+function boundedAdminInteger(
+  value: number | undefined,
+  fallback: number,
+  maximum: number,
+  label: "page" | "pageSize" | "runLimit",
+): number {
+  const resolved = value ?? fallback;
+  if (!Number.isFinite(resolved) || !Number.isInteger(resolved)) {
+    throw new Error(`Discovery admin ${label} must be a finite integer.`);
+  }
+  return Math.min(maximum, Math.max(1, resolved));
+}
+
 const adminRunSelection = {
   id: discoveryRuns.id,
   externalRunKey: discoveryRuns.externalRunKey,
@@ -254,19 +290,7 @@ export function createDiscoveryRepository(
     async queueRun(input) {
       const [created] = await database
         .insert(discoveryRuns)
-        .values({
-          externalRunKey: input.externalRunKey,
-          trigger: input.trigger,
-          status: "queued",
-          geography: input.geography,
-          candidateType: input.candidateType,
-          sourcesUsed: [...input.sourcesUsed],
-          requestedCount: input.requestedCount,
-          companyPercentage: input.companyPercentage,
-          requestedByEmail: input.requestedByEmail ?? null,
-          createdAt: input.now,
-          updatedAt: input.now,
-        })
+        .values(queuedRunValues(input))
         .onConflictDoNothing({ target: discoveryRuns.externalRunKey })
         .returning();
       if (created) return created;
@@ -283,8 +307,13 @@ export function createDiscoveryRepository(
     },
 
     async claimRun(input) {
+      if (input.triggers?.length === 0) return null;
       try {
         return await database.transaction(async (transaction) => {
+          await transaction.execute(
+            sql`select pg_advisory_xact_lock(1296385841, 1)`,
+          );
+
           await transaction
             .update(discoveryRuns)
             .set({
@@ -312,47 +341,100 @@ export function createDiscoveryRepository(
             .limit(1);
           if (active) return null;
 
-          const [claimable] = await transaction
-            .select({ id: discoveryRuns.id })
-            .from(discoveryRuns)
-            .where(eq(discoveryRuns.status, "queued"))
-            .orderBy(
-              sql`case ${discoveryRuns.trigger}
-                when 'manual' then 0
-                when 'scheduled' then 1
-                else 2
-              end`,
-              asc(discoveryRuns.createdAt),
-              asc(discoveryRuns.id),
-            )
-            .for("update", { skipLocked: true })
-            .limit(1);
-          if (!claimable) return null;
+          const claimQueuedRun = async (selectors: readonly SQL[]) => {
+            const [claimable] = await transaction
+              .select({ id: discoveryRuns.id })
+              .from(discoveryRuns)
+              .where(
+                and(eq(discoveryRuns.status, "queued"), ...selectors),
+              )
+              .orderBy(
+                sql`case ${discoveryRuns.trigger}
+                  when 'manual' then 0
+                  when 'scheduled' then 1
+                  else 2
+                end`,
+                asc(discoveryRuns.createdAt),
+                asc(discoveryRuns.id),
+              )
+              .for("update", { skipLocked: true })
+              .limit(1);
+            if (!claimable) return null;
 
-          const [claimed] = await transaction
-            .update(discoveryRuns)
-            .set({
-              status: "running",
-              startedAt: input.now,
-              completedAt: null,
-              leaseTokenHash: input.leaseTokenHash,
-              leaseExpiresAt: input.leaseExpiresAt,
-              updatedAt: input.now,
-              errorSummary: {},
-            })
-            .where(
-              and(
-                eq(discoveryRuns.id, claimable.id),
-                eq(discoveryRuns.status, "queued"),
+            const [claimed] = await transaction
+              .update(discoveryRuns)
+              .set({
+                status: "running",
+                startedAt: input.now,
+                completedAt: null,
+                leaseTokenHash: input.leaseTokenHash,
+                leaseExpiresAt: input.leaseExpiresAt,
+                updatedAt: input.now,
+                errorSummary: {},
+              })
+              .where(
+                and(
+                  eq(discoveryRuns.id, claimable.id),
+                  eq(discoveryRuns.status, "queued"),
+                ),
+              )
+              .returning();
+            return claimed ?? null;
+          };
+
+          if (input.fallbackExternalRunKey) {
+            if (input.triggers?.length) {
+              const triggeredRun = await claimQueuedRun([
+                inArray(discoveryRuns.trigger, [...input.triggers]),
+              ]);
+              if (triggeredRun) return triggeredRun;
+            }
+
+            if (input.queueIfMissing) {
+              await transaction
+                .insert(discoveryRuns)
+                .values(queuedRunValues(input.queueIfMissing))
+                .onConflictDoNothing({ target: discoveryRuns.externalRunKey });
+            }
+            return claimQueuedRun([
+              eq(
+                discoveryRuns.externalRunKey,
+                input.fallbackExternalRunKey,
               ),
-            )
-            .returning();
-          return claimed ?? null;
+            ]);
+          }
+
+          if (input.queueIfMissing) {
+            await transaction
+              .insert(discoveryRuns)
+              .values(queuedRunValues(input.queueIfMissing))
+              .onConflictDoNothing({ target: discoveryRuns.externalRunKey });
+          }
+
+          const selectors: SQL[] = [];
+          if (input.triggers) {
+            selectors.push(inArray(discoveryRuns.trigger, [...input.triggers]));
+          }
+          if (input.externalRunKey) {
+            selectors.push(
+              eq(discoveryRuns.externalRunKey, input.externalRunKey),
+            );
+          }
+          return claimQueuedRun(selectors);
         });
       } catch (error) {
         if (isActiveRunUniqueViolation(error)) return null;
         throw error;
       }
+    },
+
+    async getRun(runId) {
+      const [run] = await database
+        .select()
+        .from(discoveryRuns)
+        .where(eq(discoveryRuns.id, runId))
+        .limit(1);
+      return run ?? null;
     },
 
     async completeRun(input) {
@@ -593,6 +675,14 @@ export function createDiscoveryRepository(
             newCount,
             duplicateCount,
             errorSummary: {
+              ...(input.candidates.length === 0
+                ? {
+                    failure: {
+                      code: "empty_submission",
+                      message: "No valid discovery candidates were submitted.",
+                    },
+                  }
+                : {}),
               sourceErrors,
               identityConflicts,
             },
@@ -670,7 +760,13 @@ export function createDiscoveryRepository(
     async updateCandidateStatus(input) {
       const [updated] = await database
         .update(discoveryCandidates)
-        .set({ status: input.status, updatedAt: input.now })
+        .set({
+          status: input.status,
+          updatedAt: sql`greatest(
+            ${input.now.toISOString()}::timestamptz,
+            ${discoveryCandidates.updatedAt} + interval '1 millisecond'
+          )`,
+        })
         .where(
           and(
             eq(discoveryCandidates.id, input.candidateId),
@@ -691,15 +787,14 @@ export function createDiscoveryRepository(
     },
 
     async getAdminSummary(filters) {
-      const page = Math.max(1, Math.trunc(filters.page ?? 1));
-      const pageSize = Math.min(
-        100,
-        Math.max(1, Math.trunc(filters.pageSize ?? 25)),
+      const page = boundedAdminInteger(
+        filters.page,
+        1,
+        MAX_DISCOVERY_ADMIN_PAGE,
+        "page",
       );
-      const runLimit = Math.min(
-        100,
-        Math.max(1, Math.trunc(filters.runLimit ?? 20)),
-      );
+      const pageSize = boundedAdminInteger(filters.pageSize, 25, 100, "pageSize");
+      const runLimit = boundedAdminInteger(filters.runLimit, 20, 100, "runLimit");
       const candidateConditions: SQL[] = [];
       if (filters.type) {
         candidateConditions.push(eq(discoveryCandidates.type, filters.type));

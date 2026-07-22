@@ -63,6 +63,21 @@ describe("discovery candidate vocabulary", () => {
     expect(candidateStatusSchema.parse(status)).toBe(status);
   });
 
+  it.each([
+    ["candidate", batch({ candidates: [candidate({ unexpected: true })] })],
+    [
+      "source error",
+      batch({
+        sourceErrors: [
+          { sourceName: "codex_web", message: "failed", unexpected: true },
+        ],
+      }),
+    ],
+    ["batch", batch({ unexpected: true })],
+  ])("rejects unknown %s fields instead of stripping them", (_name, value) => {
+    expect(discoveryBatchSchema.safeParse(value).success).toBe(false);
+  });
+
 });
 
 describe("discovery candidate normalization", () => {
