@@ -83,6 +83,18 @@ A pure `app/domain/opportunity-brief.ts` module owns:
 
 The server does not fetch the submitted URL during the request.
 
+Release limits are explicit:
+
+- JSON body: at most 16 KiB;
+- profile URL: at most 2,048 characters before normalization;
+- email: at most 320 characters;
+- WhatsApp: after removing spaces, hyphens, and parentheses, an optional leading `+` followed by 8–15 digits; the normalized value preserves the leading `+` when supplied;
+- `open_to_text`: at most 1,000 characters;
+- `source`: at most 100 characters using letters, numbers, `.`, `_`, and `-`;
+- each standard UTM value: at most 200 characters;
+- stored repeat-source history: newest 20 entries only;
+- serialized `source_metadata`: at most 8 KiB.
+
 ### Submission behavior
 
 `POST /api/opportunity-briefs` is public but same-origin-only. It accepts JSON under a small fixed body limit, rejects a hidden honeypot value, derives a hashed requester identity with the existing session secret, validates the body, and calls one focused application service.
@@ -100,6 +112,22 @@ The service:
 9. returns a safe confirmation snapshot.
 
 An unmatched request is itself the durable research-queue record. It does not create a speculative Discovery candidate. Later manual or Discovery Agent research may create a source-supported candidate and link it. A request participant is never marked verified.
+
+The confirmation snapshot is built from the normalized values in the current submission, never by returning the merged database row. A person who repeats a public URL therefore cannot learn an email or phone number supplied by someone else earlier.
+
+### Status transitions
+
+The service permits only:
+
+- `submitted` → `researching` or `rejected`;
+- `researching` → `brief_ready` or `rejected`;
+- `brief_ready` → `researching`, `contacted`, or `rejected`;
+- `contacted` → `invited_to_join`, `converted`, or `rejected`;
+- `invited_to_join` → `contacted`, `converted`, or `rejected`;
+- `rejected` → `researching` for an explicit administrator restore;
+- `converted` is terminal.
+
+Selecting the current status is an idempotent no-op. All other transitions return `409`.
 
 ## PostgreSQL Model
 
@@ -149,13 +177,13 @@ Constraints and indexes:
 - positive submission count;
 - indexes for status, source, participant type, creation date, email, phone, and linked candidate.
 
-Add `opportunity_brief_submission_attempts` with an opaque requester hash, nullable linked request id, outcome, and creation time. It provides a durable rolling abuse window without storing raw IP addresses. The service allows a small meetup-friendly burst and returns a recoverable `429` response when exceeded.
+Add `opportunity_brief_submission_attempts` with an opaque requester hash, linked request id, and creation time. Inside a requester-scoped advisory-locked transaction, the service permits eight persisted submissions per requester in a rolling 15-minute window. Created and merged submissions consume the limit; invalid, honeypot, and throttled requests do not create attempt rows. The ninth valid attempt returns a recoverable `429` response. No raw IP address is stored.
 
 URL identity owns deduplication in this first release. A repeat of the same participant type and normalized profile URL updates the existing request, increments `submission_count`, refreshes non-empty contact/open-to/source data, and appends bounded source metadata. A contact reused for a different profile is indexed for administrator review but is not automatically merged, because one person may legitimately represent multiple profiles.
 
 ## Discovery Agent Integration
 
-The Opportunity Brief repository reuses Discovery candidate identifiers for one exact lookup by participant type and normalized URL identity. If an identifier exists, `linked_candidate_id` is stored. If none exists, the request remains unlinked.
+The Opportunity Brief repository reuses Discovery candidate identifiers for one exact lookup by participant type and normalized URL identity. The submitted URL is classified with the existing rules as `website_host`, `linkedin_url`, `social_url`, or `canonical`; only an equal `candidate_type` plus equal normalized identifier value qualifies. If that unique identifier exists, `linked_candidate_id` is stored. If none exists, the request remains unlinked.
 
 This release does not:
 
@@ -181,6 +209,8 @@ The page includes:
 - a paginated table with the requested fields;
 - an accessible detail dialog showing the complete submission and available linked candidate data.
 
+The table columns are participant type, profile URL, email/phone, open-to text, source, linked candidate, status, and submitted date. `New today` and submitted-date filters use `Asia/Kolkata`; date bounds are inclusive local calendar days and are converted to instants in the repository query.
+
 Minimum administrator mutations:
 
 - change status through allowed transitions;
@@ -201,6 +231,14 @@ When a submission contains email, the application requests an acknowledgement af
 - Explains that a later invitation may allow the recipient to claim the profile and join the verified network.
 
 The implementation reuses the Resend HTTP transport and HTML escaping. Email failure never loses or rolls back the request. Delivery updates acknowledgement status to `sent` or `failed`. When credentials are unavailable, status remains `pending`; no new provider is introduced. WhatsApp-only requests use `not_requested` and receive the on-screen confirmation only.
+
+Acknowledgement rules are intentionally narrow:
+
+- a newly created request with email is marked `pending` and receives one delivery attempt after commit;
+- a repeat with the same normalized email does not resend;
+- a repeat that adds or replaces email resets acknowledgement to `pending` and receives one attempt to the newly submitted address;
+- an interrupted post-commit attempt remains `pending`;
+- `failed` and `pending` delivery states are visible to administrators, but automatic retries and a resend action are deferred from this release.
 
 ## Error and Security Behavior
 
@@ -242,6 +280,8 @@ Generate and inspect the Drizzle migration, run it against the guarded local tes
 - automated invitations or account creation;
 - Profile, Verification, and Matching agents;
 - sophisticated cross-profile contact merging.
+
+The acknowledgement email, seven-state request record, required summary/filter fields, and minimum administrator mutations remain part of this release because they are explicit in the supplied brief. Their implementation stays small: one admin route, one table/detail dialog, no candidate typeahead, no background email worker, and no automatic research.
 
 ## Acceptance Criteria
 
