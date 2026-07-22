@@ -6,6 +6,10 @@ import {
   discoveryBatchSchema,
   MAX_DISCOVERY_BATCH_BYTES,
 } from "../app/domain/discovery";
+import {
+  discoveryRequestTimeoutMs,
+  type DiscoveryWorkerNetworkCommand,
+} from "./discovery-worker-timeout";
 import { loadLocalEnvironment } from "./load-local-env.mjs";
 
 type ParsedArguments = {
@@ -146,7 +150,7 @@ function workerEnvironment(): { baseUrl: URL; workerSecret: string } {
 }
 
 async function postWorkerJson(
-  command: string,
+  command: DiscoveryWorkerNetworkCommand,
   path: string,
   body: string,
 ): Promise<Record<string, unknown>> {
@@ -160,7 +164,7 @@ async function postWorkerJson(
         "Content-Type": "application/json",
       },
       body,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(discoveryRequestTimeoutMs(command)),
     });
   } catch {
     throw new DiscoveryCliError(
