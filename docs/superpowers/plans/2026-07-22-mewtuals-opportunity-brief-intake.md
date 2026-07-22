@@ -15,12 +15,14 @@
 - Create `app/domain/opportunity-brief.ts`: intake normalization, validation, metadata bounds, status transitions, and public types.
 - Modify `app/domain/discovery.ts`: expose one existing-rule-compatible identifier classifier for submitted profile URLs.
 - Create `app/server/opportunity-brief-service.ts`: public submission and administrator use cases plus framework-free repository/email ports.
-- Create `app/server/opportunity-brief-route.ts`: bounded JSON parsing, same-origin/public and authenticated/admin HTTP adapters.
+- Create `app/server/opportunity-brief-route.ts`: bounded JSON parsing and same-origin public HTTP adapter.
+- Create `app/server/opportunity-brief-admin-route.ts`: authenticated administrator GET/PATCH HTTP adapters.
 - Create `app/server/opportunity-brief.ts`: composition root using environment, repository, email, and session dependencies.
 - Modify `app/server/email.ts`: reuse Resend transport for acknowledgement delivery without changing strict magic-link behavior.
 - Create `db/repositories/opportunity-brief-repository.ts`: transactional rate limit, exact candidate lookup, idempotent upsert, admin queries, and mutations.
 - Modify `db/schema.ts` and `db/types.ts`: opportunity-brief enums/tables and inferred types.
 - Create `drizzle/0005_opportunity_brief_requests.sql` and `drizzle/meta/0005_snapshot.json`; modify `drizzle/meta/_journal.json` through Drizzle generation.
+- Rename `scripts/test-discovery-migrations.mjs` to `scripts/test-migrations.mjs`: general fresh/latest-upgrade harness for every ordered migration.
 - Create `app/api/opportunity-briefs/route.ts`: public POST route.
 - Create `app/api/admin/opportunity-briefs/route.ts`: admin list/summary GET route.
 - Create `app/api/admin/opportunity-briefs/[requestId]/route.ts`: admin mutation PATCH route.
@@ -34,6 +36,7 @@
 - Modify `app/admin/discovery/page.tsx` and `app/admin/verifications/page.tsx`: shared admin navigation link.
 - Create `app/admin/opportunity-briefs/page.tsx`: protected admin page and serialization.
 - Add focused unit, route, component, integration, acceptance, and browser tests listed by task below.
+- Modify `tests/e2e/product-v1.spec.ts` and `tests/e2e/mobile-pwa.spec.ts`: move account-entry expectations to `/network/join` and preserve network-only behavior for the new transactional `/join`.
 
 ## Task 1: Domain Contract and Discovery Identifier Reuse
 
@@ -104,6 +107,8 @@ git commit -m "feat: define opportunity brief intake rules"
 - Create: `drizzle/0005_opportunity_brief_requests.sql`
 - Create: `drizzle/meta/0005_snapshot.json`
 - Modify: `drizzle/meta/_journal.json`
+- Rename: `scripts/test-discovery-migrations.mjs` → `scripts/test-migrations.mjs`
+- Modify: `package.json`
 
 - [ ] **Step 1: Add failing schema contract tests**
 
@@ -127,14 +132,16 @@ Expected: Drizzle creates `drizzle/0005_opportunity_brief_requests.sql`, its sna
 
 - [ ] **Step 5: Run GREEN**
 
-Run: `npx vitest run tests/schema.test.ts && git diff --check`
+Generalize the migration harness before running it: read the ordered journal instead of hard-coding migration `0004` or a total count, assert contiguous indexes/tags, apply every migration to a fresh database, then build the upgrade database from all journal entries except the newest migration. Insert representative product and Discovery fixtures into that `0004` baseline, apply only the newest migration, and prove both fixture families survive alongside the new tables. Rename the script and keep `npm run test:migrations` as the stable command.
 
-Expected: PASS and no handwritten/generated drift.
+Run: `npx vitest run tests/schema.test.ts && npm run test:migrations && git diff --check`
+
+Expected: PASS for schema contracts, fresh migration, `0004` → `0005` upgrade, preserved product/Discovery fixtures, and no handwritten/generated drift.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add db/schema.ts db/types.ts tests/schema.test.ts drizzle
+git add db/schema.ts db/types.ts tests/schema.test.ts drizzle scripts/test-migrations.mjs package.json package-lock.json
 git commit -m "feat: persist opportunity brief requests"
 ```
 
@@ -167,11 +174,15 @@ type OpportunityBriefRepository = {
   submit(input: SubmitRepositoryInput): Promise<SubmitRepositoryResult>;
   recordAcknowledgement(id: string, outcome: AcknowledgementOutcome): Promise<void>;
   getAdminSnapshot(actorTime: Date, filters: AdminFilters): Promise<AdminSnapshot>;
-  mutate(actorTime: Date, requestId: string, mutation: AdminMutation): Promise<AdminMutationResult>;
+  getAdminRequest(requestId: string): Promise<AdminRequest | null>;
+  getCandidateType(candidateId: string): Promise<"company" | "creator" | null>;
+  applyAdminMutation(input: AtomicAdminMutation): Promise<AdminMutationResult>;
 };
 ```
 
 Keep validation in the domain and orchestration in the service. Administrator authorization reuses the normalized `ADMIN_EMAILS` set. Public success returns only current normalized input plus request id/status.
+
+For status changes, the service reads the current request, applies `transitionOpportunityBriefStatus`, and passes both `expectedStatus` and client-supplied `expectedUpdatedAt` to `applyAdminMutation`. The repository performs one conditional update matching id, status, and updated time; zero updated rows return conflict. For candidate linking, the service reads candidate type, rejects a mismatch, and the same optimistic conditional update applies the link. Candidate type is immutable in the current Discovery model and the database foreign key protects existence. Notes/unlink use the same `expectedUpdatedAt` guard. The repository does not decide status policy.
 
 - [ ] **Step 4: Reuse Resend without weakening auth**
 
@@ -215,6 +226,8 @@ Use a requester-hash advisory transaction lock, count attempts newer than 15 min
 
 Admin queries use parameterized Drizzle expressions, `Asia/Kolkata` day bounds supplied by the service, maximum page size 100, and never select requester hashes or attempt rows into public/admin UI models.
 
+Implement `getAdminRequest`, `getCandidateType`, and `applyAdminMutation` with the conditional contracts defined in Task 3; integration tests must create a real race by updating `updated_at` between read and mutation and observe `conflict`.
+
 - [ ] **Step 4: Run GREEN and migration rehearsal**
 
 Run the focused integration test twice after a fresh `db:test:prepare` to prove cleanup/idempotency, then run `npm run test:db`.
@@ -244,12 +257,16 @@ git commit -m "feat: store and deduplicate opportunity briefs"
 - Modify: `tests/product-pages.test.tsx`
 - Modify: `tests/share-page.test.tsx`
 - Modify: `tests/pwa.test.tsx`
+- Modify: `tests/e2e/product-v1.spec.ts`
+- Modify: `tests/e2e/mobile-pwa.spec.ts`
 
 - [ ] **Step 1: Write failing route and UI tests**
 
 Route tests cover same-origin, JSON content type, 16 KiB body cap with/without `Content-Length`, malformed JSON, honeypot, validation errors, 429, safe confirmation, and unexpected failures. UI tests cover exact copy, accessible labels, participant choices, one-contact requirement, loading/error focus, current-submission confirmation, source/UTM handoff, and no auth redirect.
 
 Regression tests prove `/network/join` renders the old MagicLink form, `/login` remains unchanged, `/share` decodes exactly to `https://mewtuals.com/join?source=bengaluru-meetup`, and `/join` remains absent from the PWA cache allowlist.
+
+Update the existing browser helpers and assertions in `tests/e2e/product-v1.spec.ts` and `tests/e2e/mobile-pwa.spec.ts`: member creation/magic-link requests navigate to `/network/join`; public navigation that intentionally enters acquisition remains `/join`; signed-out member-route redirects continue to `/login`; offline navigation to `/join` continues to use the network-required fallback and never exposes submitted data.
 
 - [ ] **Step 2: Run RED**
 
@@ -276,13 +293,14 @@ Expected: PASS with the QR decoder proving the tagged destination.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add app tests/opportunity-brief-routes.test.ts tests/opportunity-brief-form.test.tsx tests/product-pages.test.tsx tests/share-page.test.tsx tests/pwa.test.tsx
+git add app tests/opportunity-brief-routes.test.ts tests/opportunity-brief-form.test.tsx tests/product-pages.test.tsx tests/share-page.test.tsx tests/pwa.test.tsx tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts
 git commit -m "feat: launch public opportunity brief intake"
 ```
 
 ## Task 6: Administrator Queue and Mutations
 
 **Files:**
+- Create: `app/server/opportunity-brief-admin-route.ts`
 - Create: `app/api/admin/opportunity-briefs/route.ts`
 - Create: `app/api/admin/opportunity-briefs/[requestId]/route.ts`
 - Create: `app/admin/opportunity-briefs/page.tsx`
@@ -305,7 +323,7 @@ Run the three focused admin test files. Expected: FAIL because routes/page/compo
 
 - [ ] **Step 3: Implement thin admin adapters**
 
-Reuse current session reading and the Opportunity Brief service administrator check. GET returns the serialized snapshot; PATCH accepts one strict mutation object containing `expectedUpdatedAt` and exactly one of status, notes, linked candidate UUID, or unlink.
+Implement admin HTTP behavior only in `app/server/opportunity-brief-admin-route.ts`; do not add admin branches to the public route adapter from Task 5. Reuse current session reading and the Opportunity Brief service administrator check. GET returns the serialized snapshot; PATCH accepts one strict mutation object containing `expectedUpdatedAt` and exactly one of status, notes, linked candidate UUID, or unlink.
 
 - [ ] **Step 4: Implement the page and focused components**
 
@@ -349,6 +367,7 @@ Run fresh:
 
 ```bash
 npm test
+npm run test:migrations
 npm run test:db
 npm run test:acceptance
 npm run test:e2e
@@ -385,7 +404,18 @@ Run `npm run prepare:sites -- HEAD`, validate the generated request/digest, and 
 
 - [ ] **Step 3: Apply the production Postgres migration before code deployment**
 
-Use the configured production `DATABASE_URL` through the established guarded migration command. Inspect the migration log and query the new table/enums/indexes. If production database access is unavailable, do not deploy code that depends on the table; report the concrete blocker.
+Treat this as an explicit release gate, not a routine local command:
+
+1. In the managed Postgres provider, verify automated backups and the active point-in-time-recovery window, then create an on-demand snapshot. If the provider cannot create or identify a restorable backup, stop.
+2. Record the current Sites live commit/version and query the production Drizzle migration journal plus `information_schema` before mutation. Preserve this evidence outside the repository release artifact.
+3. Obtain the production URL through the approved secret channel without printing or persisting it. If it is available only inside Sites and cannot be used by the guarded migration process, stop and report the deployment blocker.
+4. Apply exactly:
+
+   `DATABASE_URL="$MEWTUALS_PRODUCTION_DATABASE_URL" npm run db:migrate`
+
+5. Query the Drizzle journal, both new tables, both new enums, the unique profile identity, contact check, foreign keys, and required indexes. Confirm existing user/profile/discovery row counts remain unchanged.
+
+Drizzle executes the migration transactionally; any error blocks code deployment. Application rollback remains source-only because `0005` is additive and backward compatible. Do not drop new production objects to roll back. If data recovery is required, restore the on-demand snapshot to an isolated database first, validate it, and coordinate a provider-level restore before changing live traffic.
 
 - [ ] **Step 4: Deploy through the existing public Sites project**
 
