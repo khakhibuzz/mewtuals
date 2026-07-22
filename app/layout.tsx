@@ -1,6 +1,7 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import PwaRegistration from "./pwa/PwaRegistration";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -12,11 +13,42 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const title = "Mewtuals — Partnerships for internet-native companies";
+const description =
+  "Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands.";
+const socialImage = {
+  url: "https://mewtuals.com/og.png",
+  width: 1200,
+  height: 630,
+  alt: "Mewtuals — One partnership can change a company. We find the right one.",
+};
+
 export const metadata: Metadata = {
-  title: "Mewtuals — Partnerships for internet-native companies",
-  description:
-    "Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands.",
-  icons: { icon: "/favicon.svg" },
+  title,
+  description,
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Mewtuals",
+  },
+  icons: { icon: "/favicon.svg", apple: "/icons/apple-touch-icon.png" },
+  openGraph: {
+    title,
+    description,
+    type: "website",
+    images: [socialImage],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+    images: [socialImage.url],
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#11110f",
 };
 
 export default function RootLayout({
@@ -29,6 +61,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        <PwaRegistration />
         {children}
       </body>
     </html>

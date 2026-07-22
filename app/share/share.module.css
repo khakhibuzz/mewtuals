@@ -1,0 +1,117 @@
+.page {
+  --share-qr-size: min(68vw, 38svh, 460px);
+
+  position: relative;
+  display: grid;
+  min-height: 100svh;
+  place-items: center;
+  overflow: hidden;
+  padding: clamp(24px, 4svh, 48px) clamp(20px, 6vw, 72px);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.page::before,
+.page::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--line) 68%, transparent);
+  content: "";
+  pointer-events: none;
+}
+
+.page::before {
+  left: clamp(16px, 5vw, 72px);
+}
+
+.page::after {
+  right: clamp(16px, 5vw, 72px);
+}
+
+.card {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: min(100%, 760px);
+  justify-items: center;
+  gap: clamp(16px, 2.5svh, 28px);
+  text-align: center;
+}
+
+.wordmark {
+  margin: 0;
+  font-size: clamp(1rem, 2vw, 1.25rem);
+  font-weight: 540;
+  letter-spacing: -0.045em;
+}
+
+.introduction {
+  display: grid;
+  width: 100%;
+  justify-items: center;
+  gap: clamp(10px, 1.5svh, 16px);
+}
+
+.introduction h1 {
+  max-width: 12ch;
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(2rem, 7vw, 4rem);
+  font-weight: 490;
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+}
+
+.introduction p {
+  width: min(100%, 46ch);
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: clamp(0.86rem, 1.5vw, 1rem);
+  line-height: 1.45;
+}
+
+.qrFrame {
+  display: grid;
+  width: calc(var(--share-qr-size) + clamp(18px, 2vw, 28px));
+  height: calc(var(--share-qr-size) + clamp(18px, 2vw, 28px));
+  place-items: center;
+  background: #fff;
+}
+
+.qrFrame img {
+  display: block;
+  width: var(--share-qr-size);
+  height: var(--share-qr-size);
+}
+
+.fallbackLink {
+  border-bottom: 1px solid currentColor;
+  color: var(--ink);
+  font-size: clamp(0.88rem, 1.4vw, 1rem);
+  font-weight: 520;
+  line-height: 1.5;
+}
+
+.fallbackLink:focus-visible {
+  border-bottom-color: transparent;
+  outline: 2px solid var(--ink);
+  outline-offset: 5px;
+}
+
+@media (max-height: 680px) {
+  .page {
+    --share-qr-size: min(62vw, 32svh, 460px);
+
+    padding-block: 18px;
+  }
+
+  .card {
+    gap: 12px;
+  }
+
+  .introduction {
+    gap: 8px;
+  }
+}

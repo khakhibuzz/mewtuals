@@ -1,4 +1,8 @@
 import type {
+  discoveryCandidateIdentifiers,
+  discoveryCandidates,
+  discoveryCandidateSources,
+  discoveryRuns,
   introductionRequests,
   magicLinks,
   onboardingDrafts,
@@ -31,3 +35,15 @@ export type ProfileOpportunity = typeof profileOpportunities.$inferSelect;
 export type NewProfileOpportunity = typeof profileOpportunities.$inferInsert;
 export type IntroductionRequest = typeof introductionRequests.$inferSelect;
 export type NewIntroductionRequest = typeof introductionRequests.$inferInsert;
+export type DiscoveryRun = typeof discoveryRuns.$inferSelect;
+export type NewDiscoveryRun = typeof discoveryRuns.$inferInsert;
+export type DiscoveryCandidate = typeof discoveryCandidates.$inferSelect;
+export type NewDiscoveryCandidate = typeof discoveryCandidates.$inferInsert;
+export type DiscoveryCandidateIdentifier =
+  typeof discoveryCandidateIdentifiers.$inferSelect;
+export type NewDiscoveryCandidateIdentifier =
+  typeof discoveryCandidateIdentifiers.$inferInsert;
+export type DiscoveryCandidateSource =
+  typeof discoveryCandidateSources.$inferSelect;
+export type NewDiscoveryCandidateSource =
+  typeof discoveryCandidateSources.$inferInsert;

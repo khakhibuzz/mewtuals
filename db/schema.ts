@@ -2,8 +2,10 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -64,6 +66,40 @@ export const partnershipDirectionEnum = pgEnum("partnership_direction", [
   "creator_creator",
   "startup_distribution_partner",
 ]);
+
+export const discoveryCandidateTypeEnum = pgEnum("discovery_candidate_type", [
+  "company",
+  "creator",
+]);
+
+export const discoveryCandidateStatusEnum = pgEnum(
+  "discovery_candidate_status",
+  ["discovered", "shortlisted", "rejected", "queued_for_profile"],
+);
+
+export const discoveryRunStatusEnum = pgEnum("discovery_run_status", [
+  "queued",
+  "running",
+  "succeeded",
+  "partial",
+  "failed",
+]);
+
+export const discoveryRunTriggerEnum = pgEnum("discovery_run_trigger", [
+  "scheduled",
+  "manual",
+  "trial",
+]);
+
+export const discoveryRunCandidateTypeEnum = pgEnum(
+  "discovery_run_candidate_type",
+  ["company", "creator", "both"],
+);
+
+export const discoveryIdentifierKindEnum = pgEnum(
+  "discovery_identifier_kind",
+  ["canonical", "website_host", "social_url", "linkedin_url"],
+);
 
 const id = () => uuid("id").defaultRandom().primaryKey();
 const createdAt = () =>
@@ -312,5 +348,207 @@ export const introductionRequests = pgTable(
   },
   (table) => [
     index("introduction_requests_state_idx").on(table.state),
+  ],
+);
+
+export const discoveryRuns = pgTable(
+  "discovery_runs",
+  {
+    id: id(),
+    externalRunKey: text("external_run_key")
+      .notNull()
+      .unique("discovery_runs_external_run_key_unique"),
+    trigger: discoveryRunTriggerEnum("trigger").notNull(),
+    status: discoveryRunStatusEnum("status").default("queued").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    leaseTokenHash: text("lease_token_hash"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    submissionHash: text("submission_hash"),
+    geography: text("geography").notNull(),
+    candidateType: discoveryRunCandidateTypeEnum("candidate_type").notNull(),
+    sourcesUsed: text("sources_used")
+      .array()
+      .default(sql`ARRAY[]::text[]`)
+      .notNull(),
+    requestedCount: integer("requested_count").notNull(),
+    companyPercentage: integer("company_percentage").notNull(),
+    foundCount: integer("found_count").default(0).notNull(),
+    newCount: integer("new_count").default(0).notNull(),
+    duplicateCount: integer("duplicate_count").default(0).notNull(),
+    errorSummary: jsonb("error_summary").$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
+    requestedByEmail: text("requested_by_email"),
+  },
+  (table) => [
+    uniqueIndex("discovery_runs_one_running_idx")
+      .on(sql`(true)`)
+      .where(sql`${table.status} = 'running'`),
+    index("discovery_runs_claim_idx").on(
+      table.status,
+      table.trigger,
+      table.createdAt,
+    ),
+    index("discovery_runs_lease_expiry_idx").on(
+      table.status,
+      table.leaseExpiresAt,
+    ),
+    check(
+      "discovery_runs_requested_count_check",
+      sql`${table.requestedCount} > 0 AND ${table.requestedCount} <= 50`,
+    ),
+    check(
+      "discovery_runs_company_percentage_check",
+      sql`${table.companyPercentage} >= 0 AND ${table.companyPercentage} <= 100`,
+    ),
+    check(
+      "discovery_runs_counts_check",
+      sql`${table.foundCount} >= 0 AND ${table.newCount} >= 0 AND ${table.duplicateCount} >= 0`,
+    ),
+    check(
+      "discovery_runs_running_lease_check",
+      sql`${table.status} <> 'running' OR (${table.startedAt} IS NOT NULL AND ${table.leaseTokenHash} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL AND ${table.completedAt} IS NULL)`,
+    ),
+  ],
+);
+
+export const discoveryCandidates = pgTable(
+  "discovery_candidates",
+  {
+    id: id(),
+    type: discoveryCandidateTypeEnum("type").notNull(),
+    name: text("name").notNull(),
+    normalizedName: text("normalized_name").notNull(),
+    canonicalIdentityKey: text("canonical_identity_key").notNull(),
+    canonicalUrl: text("canonical_url").notNull(),
+    websiteUrl: text("website_url"),
+    primarySocialUrl: text("primary_social_url"),
+    linkedinUrl: text("linkedin_url"),
+    discoveredDescription: text("discovered_description").notNull(),
+    category: text("category").notNull(),
+    subcategory: text("subcategory"),
+    geography: text("geography").notNull(),
+    firstSourceName: text("first_source_name").notNull(),
+    firstSourceUrl: text("first_source_url").notNull(),
+    discoveredAt: timestamp("discovered_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    mostRecentRunId: uuid("most_recent_run_id").notNull(),
+    discoveryScore: integer("discovery_score").notNull(),
+    status: discoveryCandidateStatusEnum("status")
+      .default("discovered")
+      .notNull(),
+    rawMetadata: jsonb("raw_metadata").$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
+  },
+  (table) => [
+    unique("discovery_candidates_type_canonical_identity_unique").on(
+      table.type,
+      table.canonicalIdentityKey,
+    ),
+    unique("discovery_candidates_id_type_unique").on(table.id, table.type),
+    foreignKey({
+      name: "discovery_candidates_recent_run_fk",
+      columns: [table.mostRecentRunId],
+      foreignColumns: [discoveryRuns.id],
+    }),
+    index("discovery_candidates_type_idx").on(table.type),
+    index("discovery_candidates_geography_idx").on(table.geography),
+    index("discovery_candidates_category_idx").on(table.category),
+    index("discovery_candidates_source_idx").on(table.firstSourceName),
+    index("discovery_candidates_status_idx").on(table.status),
+    index("discovery_candidates_discovered_at_idx").on(table.discoveredAt),
+    index("discovery_candidates_recent_run_idx").on(table.mostRecentRunId),
+    check(
+      "discovery_candidates_score_check",
+      sql`${table.discoveryScore} >= 0 AND ${table.discoveryScore} <= 100`,
+    ),
+    check(
+      "discovery_candidates_name_check",
+      sql`length(btrim(${table.name})) > 0 AND length(btrim(${table.normalizedName})) > 0`,
+    ),
+  ],
+);
+
+export const discoveryCandidateIdentifiers = pgTable(
+  "discovery_candidate_identifiers",
+  {
+    id: id(),
+    candidateId: uuid("candidate_id").notNull(),
+    candidateType: discoveryCandidateTypeEnum("candidate_type").notNull(),
+    kind: discoveryIdentifierKindEnum("kind").notNull(),
+    normalizedValue: text("normalized_value").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    unique("discovery_candidate_identifiers_type_value_unique").on(
+      table.candidateType,
+      table.normalizedValue,
+    ),
+    foreignKey({
+      name: "discovery_identifiers_candidate_type_fk",
+      columns: [table.candidateId, table.candidateType],
+      foreignColumns: [discoveryCandidates.id, discoveryCandidates.type],
+    }).onDelete("cascade"),
+    index("discovery_candidate_identifiers_candidate_idx").on(
+      table.candidateId,
+    ),
+    check(
+      "discovery_candidate_identifiers_value_check",
+      sql`length(btrim(${table.normalizedValue})) > 0`,
+    ),
+  ],
+);
+
+export const discoveryCandidateSources = pgTable(
+  "discovery_candidate_sources",
+  {
+    id: id(),
+    candidateId: uuid("candidate_id").notNull(),
+    discoveryRunId: uuid("discovery_run_id").notNull(),
+    sourceName: text("source_name").notNull(),
+    sourceUrl: text("source_url").notNull(),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    rawMetadata: jsonb("raw_metadata").$type<Record<string, unknown>>()
+      .default({})
+      .notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    unique("discovery_candidate_sources_evidence_unique").on(
+      table.candidateId,
+      table.sourceName,
+      table.sourceUrl,
+    ),
+    foreignKey({
+      name: "discovery_sources_candidate_fk",
+      columns: [table.candidateId],
+      foreignColumns: [discoveryCandidates.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "discovery_sources_run_fk",
+      columns: [table.discoveryRunId],
+      foreignColumns: [discoveryRuns.id],
+    }),
+    index("discovery_candidate_sources_candidate_idx").on(table.candidateId),
+    index("discovery_candidate_sources_run_idx").on(table.discoveryRunId),
+    index("discovery_candidate_sources_source_candidate_idx").on(
+      table.sourceName,
+      table.candidateId,
+    ),
   ],
 );

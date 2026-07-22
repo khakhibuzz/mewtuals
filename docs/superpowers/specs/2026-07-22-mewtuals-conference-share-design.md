@@ -1,6 +1,6 @@
 # Mewtuals Conference Share Design
 
-**Date:** 2026-07-22  
+**Date:** 2026-07-22
 **Status:** Approved
 
 ## Goal
