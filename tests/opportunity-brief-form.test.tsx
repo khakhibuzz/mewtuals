@@ -52,7 +52,7 @@ describe("public Opportunity Brief form", () => {
     expect(screen.getByRole("group", { name: "I’m joining as" })).toBeVisible();
     expect(screen.getByRole("radio", { name: "Company / Startup / Brand" })).toBeChecked();
     expect(screen.getByRole("radio", { name: "Creator / Podcaster / Media" })).not.toBeChecked();
-    expect(screen.getByLabelText("Public profile URL")).toHaveAttribute("type", "url");
+    expect(screen.getByLabelText("Public profile URL")).toHaveAttribute("type", "text");
     expect(screen.getByLabelText("Public profile URL")).toHaveAttribute("inputmode", "url");
     expect(screen.getByLabelText("Email address (optional)")).toHaveAttribute("autocomplete", "email");
     expect(screen.getByLabelText("WhatsApp number (optional)")).toHaveAttribute("inputmode", "tel");
@@ -67,19 +67,36 @@ describe("public Opportunity Brief form", () => {
     expect(container.querySelector('input[name="website"]')).toHaveAttribute("tabindex", "-1");
   });
 
-  it("requires at least one contact method and focuses the error summary", async () => {
+  it("submits a schemeless profile without a contact method", async () => {
     const user = userEvent.setup();
-    const fetch = vi.fn();
+    const fetch = vi.fn(async () => successfulResponse({
+      submission: {
+        participantType: "company",
+        profileUrl: "https://example.com/Founder",
+        email: null,
+        phoneNumber: null,
+        openToText: null,
+        source: "bengaluru-meetup",
+        utm: tracking.utm,
+      },
+    }));
     vi.stubGlobal("fetch", fetch);
     render(<OpportunityBriefForm tracking={tracking} />);
 
-    await user.type(screen.getByLabelText("Public profile URL"), "https://example.com");
+    await user.type(screen.getByLabelText("Public profile URL"), "example.com/Founder");
     await user.click(screen.getByRole("button", { name: "Get my opportunity brief" }));
 
-    const summary = await screen.findByRole("alert");
-    expect(summary).toHaveTextContent("Email or WhatsApp number is required.");
-    expect(summary).toHaveFocus();
-    expect(fetch).not.toHaveBeenCalled();
+    const heading = await screen.findByRole("heading", { name: "You’re on our research list." });
+    expect(heading).toHaveFocus();
+    expect(screen.getByRole("link", { name: "https://example.com/Founder" })).toBeVisible();
+    expect(screen.queryByText("Email", { selector: "dt" })).not.toBeInTheDocument();
+    expect(screen.queryByText("WhatsApp", { selector: "dt" })).not.toBeInTheDocument();
+    const request = fetch.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toEqual(expect.objectContaining({
+      profileUrl: "example.com/Founder",
+      email: "",
+      phoneNumber: "",
+    }));
   });
 
   it("keeps focus in a field while correcting client validation errors", async () => {

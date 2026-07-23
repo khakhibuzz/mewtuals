@@ -288,11 +288,14 @@ describe("opportunity brief public submission service", () => {
     }
   });
 
-  it("rejects validation and honeypot failures before persistence or email", async () => {
+  it("accepts contactless submissions and rejects honeypots before persistence", async () => {
     const repository = new MemoryRepository();
+    repository.submitResult = acceptedSubmitResult({
+      acknowledgement: { status: "not_requested", delivery: null },
+    });
     const { service, sender } = createService(repository);
 
-    const invalid = await service.submit(
+    const contactless = await service.submit(
       submission({ email: "", phoneNumber: "" }),
       "requester-hash",
     );
@@ -301,9 +304,16 @@ describe("opportunity brief public submission service", () => {
       "requester-hash",
     );
 
-    expect(invalid).toMatchObject({ ok: false, status: 400, errors: { email: expect.any(String) } });
+    expect(contactless).toMatchObject({
+      ok: true,
+      submission: { email: null, phoneNumber: null },
+    });
     expect(honeypot).toMatchObject({ ok: false, status: 400, errors: { website: expect.any(String) } });
-    expect(repository.submissions).toHaveLength(0);
+    expect(repository.submissions).toHaveLength(1);
+    expect(repository.submissions[0]).toMatchObject({
+      email: null,
+      phoneNumber: null,
+    });
     expect(sender.deliveries).toHaveLength(0);
   });
 

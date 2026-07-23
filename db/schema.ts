@@ -643,10 +643,6 @@ export const opportunityBriefRequests = pgTable(
       table.normalizedPhoneNumber,
     ),
     check(
-      "opportunity_brief_requests_contact_check",
-      sql`${table.normalizedEmail} IS NOT NULL OR ${table.normalizedPhoneNumber} IS NOT NULL`,
-    ),
-    check(
       "opportunity_brief_requests_submission_count_check",
       sql`${table.submissionCount} > 0`,
     ),

@@ -382,13 +382,13 @@ describe("Opportunity Brief transactional submission persistence", () => {
     expect(JSON.stringify(result)).not.toContain("+919111111111");
   });
 
-  it("keeps invalid and honeypot submissions outside the repository boundary", async () => {
+  it("persists contactless submissions and keeps honeypots outside the repository boundary", async () => {
     const service = createOpportunityBriefService({
       repository,
       adminEmails: [],
       now: () => baseTime,
     });
-    const invalid = await service.submit(
+    const contactless = await service.submit(
       {
         participantType: "company",
         profileUrl: profileUrl("invalid"),
@@ -415,7 +415,10 @@ describe("Opportunity Brief transactional submission persistence", () => {
       `honeypot-${testId}`,
     );
 
-    expect(invalid).toMatchObject({ ok: false, status: 400 });
+    expect(contactless).toMatchObject({
+      ok: true,
+      submission: { email: null, phoneNumber: null },
+    });
     expect(honeypot).toMatchObject({ ok: false, status: 400 });
     const requests = await database
       .select({ id: opportunityBriefRequests.id })
@@ -430,8 +433,8 @@ describe("Opportunity Brief transactional submission persistence", () => {
           `honeypot-${testId}`,
         ]),
       );
-    expect(requests).toHaveLength(0);
-    expect(attempts).toHaveLength(0);
+    expect(requests).toHaveLength(1);
+    expect(attempts).toHaveLength(1);
   });
 
   it("upserts only by participant and normalized profile while refreshing current non-empty fields", async () => {

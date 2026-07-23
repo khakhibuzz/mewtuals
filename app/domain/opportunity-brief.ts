@@ -40,7 +40,11 @@ const boundedProfileUrlSchema = z
   })
   .transform((value, context) => {
     try {
-      return normalizeDiscoveryUrl(value);
+      const trimmedValue = value.trim();
+      const valueWithScheme = /^https?:\/\//i.test(trimmedValue)
+        ? trimmedValue
+        : `https://${trimmedValue}`;
+      return normalizeDiscoveryUrl(valueWithScheme);
     } catch (error) {
       context.addIssue({
         code: "custom",
@@ -117,30 +121,16 @@ export const opportunityBriefUtmSchema = z.strictObject({
   content: optionalUtmValueSchema,
 });
 
-function requireEmailOrPhone(
-  input: { email?: string; phoneNumber?: string },
-  context: z.RefinementCtx,
-): void {
-  if (input.email || input.phoneNumber) return;
-  context.addIssue({
-    code: "custom",
-    message: "Email or WhatsApp number is required.",
-    path: ["email"],
-  });
-}
-
-export const opportunityBriefInputSchema = z
-  .strictObject({
-    participantType: opportunityBriefParticipantTypeSchema,
-    profileUrl: boundedProfileUrlSchema,
-    email: optionalNormalizedEmailSchema,
-    phoneNumber: optionalNormalizedWhatsappSchema,
-    openToText: optionalBoundedTextSchema,
-    source: optionalSourceSchema,
-    utm: opportunityBriefUtmSchema,
-    website: z.string().max(0),
-  })
-  .superRefine(requireEmailOrPhone);
+export const opportunityBriefInputSchema = z.strictObject({
+  participantType: opportunityBriefParticipantTypeSchema,
+  profileUrl: boundedProfileUrlSchema,
+  email: optionalNormalizedEmailSchema,
+  phoneNumber: optionalNormalizedWhatsappSchema,
+  openToText: optionalBoundedTextSchema,
+  source: optionalSourceSchema,
+  utm: opportunityBriefUtmSchema,
+  website: z.string().max(0),
+});
 
 export const opportunityBriefSourceHistoryEntrySchema = z.strictObject({
   source: optionalSourceSchema,

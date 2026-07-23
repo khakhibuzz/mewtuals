@@ -217,9 +217,12 @@ export function OpportunityBriefForm({
           className={styles.input}
           id="profileUrl"
           name="profileUrl"
-          type="url"
+          type="text"
           inputMode="url"
           autoComplete="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           value={values.profileUrl}
           onChange={(event) => update("profileUrl", event.target.value)}
           aria-invalid={Boolean(errors.profileUrl)}

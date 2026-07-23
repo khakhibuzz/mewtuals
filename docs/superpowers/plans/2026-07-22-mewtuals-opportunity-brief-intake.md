@@ -48,7 +48,7 @@
 
 - [ ] **Step 1: Write failing domain tests**
 
-Cover the two participant values, seven statuses, exact transition graph, URL normalization, email normalization, accepted WhatsApp formats, contact requirement, field/body limits, source slug rules, five UTM keys, 20-entry history bound, and 8 KiB metadata bound. Add Discovery tests proving a company root domain maps to `website_host`, LinkedIn to `linkedin_url`, supported social profiles to `social_url`, and a stable non-root profile to `canonical`.
+Cover the two participant values, seven statuses, exact transition graph, URL normalization including missing `https://`, optional email normalization, accepted optional WhatsApp formats, field/body limits, source slug rules, five UTM keys, 20-entry history bound, and 8 KiB metadata bound. Add Discovery tests proving a company root domain maps to `website_host`, LinkedIn to `linkedin_url`, supported social profiles to `social_url`, and a stable non-root profile to `canonical`.
 
 - [ ] **Step 2: Run RED**
 
@@ -112,7 +112,7 @@ git commit -m "feat: define opportunity brief intake rules"
 
 - [ ] **Step 1: Add failing schema contract tests**
 
-Assert the two new enums, request and attempt table names, candidate `ON DELETE SET NULL` foreign key, contact check, positive submission check, unique participant/profile identity, requester-window indexes, admin filter indexes, and inferred type exports.
+Assert the two new enums, request and attempt table names, candidate `ON DELETE SET NULL` foreign key, nullable contact columns, positive submission check, unique participant/profile identity, requester-window indexes, admin filter indexes, and inferred type exports.
 
 - [ ] **Step 2: Run RED**
 
@@ -263,7 +263,7 @@ git commit -m "feat: store and deduplicate opportunity briefs"
 
 - [ ] **Step 1: Write failing route and UI tests**
 
-Route tests cover same-origin, JSON content type, 16 KiB body cap with/without `Content-Length`, malformed JSON, honeypot, validation errors, 429, safe confirmation, and unexpected failures. UI tests cover exact copy, accessible labels, participant choices, one-contact requirement, loading/error focus, current-submission confirmation, source/UTM handoff, and no auth redirect.
+Route tests cover same-origin, JSON content type, 16 KiB body cap with/without `Content-Length`, malformed JSON, honeypot, validation errors, 429, safe confirmation, and unexpected failures. UI tests cover exact copy, accessible labels, participant choices, contactless and schemeless submission, loading/error focus, current-submission confirmation, source/UTM handoff, and no auth redirect.
 
 Regression tests prove `/network/join` renders the old MagicLink form, `/login` remains unchanged, `/share` decodes exactly to `https://mewtuals.com/join?source=bengaluru-meetup`, and `/join` remains absent from the PWA cache allowlist.
 
@@ -414,7 +414,7 @@ Treat this as an explicit release gate, not a routine local command:
 
    `DATABASE_URL="$MEWTUALS_PRODUCTION_DATABASE_URL" npm run db:migrate`
 
-5. Query the Drizzle journal, both new tables, both new enums, the unique profile identity, contact check, foreign keys, and required indexes. Confirm existing user/profile/discovery row counts remain unchanged.
+5. Query the Drizzle journal, both new tables, both new enums, the unique profile identity, nullable contacts, foreign keys, and required indexes. Confirm existing user/profile/discovery row counts remain unchanged.
 
 Drizzle executes the migration transactionally; any error blocks code deployment. Application rollback remains source-only because `0005` is additive and backward compatible. Do not drop new production objects to roll back. If data recovery is required, restore the on-demand snapshot to an isolated database first, validate it, and coordinate a provider-level restore before changing live traffic.
 

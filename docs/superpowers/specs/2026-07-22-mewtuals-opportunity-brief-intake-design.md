@@ -5,7 +5,7 @@
 
 ## Goal
 
-Turn `/join` into a low-friction public intake that a meetup participant can complete in under 30 seconds without authentication. The participant submits one public profile URL and at least one contact method, immediately sees confirmation, and appears in an administrator-owned Opportunity Brief Requests queue.
+Turn `/join` into a low-friction public intake that a meetup participant can complete in under 30 seconds without authentication. The participant submits one public profile URL, optionally adds a contact method, immediately sees confirmation, and appears in an administrator-owned Opportunity Brief Requests queue.
 
 This release captures the request and supports manual research. It does not generate opportunity briefs automatically.
 
@@ -42,8 +42,8 @@ Copy:
 Fields:
 
 1. Participant type: `Company / Startup / Brand` or `Creator / Podcaster / Media`.
-2. Public profile URL, required.
-3. Email and WhatsApp number; at least one is required.
+2. Public profile URL, required. A missing scheme is normalized to `https://`.
+3. Optional email and optional WhatsApp number.
 4. Optional `What are you open to?` textarea.
 
 Inputs use accessible labels, touch targets of at least 44px, mobile keyboard hints, useful autocomplete attributes, field-level errors, an error summary, and an explicit loading state.
@@ -59,7 +59,7 @@ After a successful submission the form is replaced in place with:
 - Headline: `You’re on our research list.`
 - Body: `We’ll study your profile and look for three partnerships worth exploring. Strong matches may also receive an invitation to join the verified Mewtuals network.`
 - The normalized submitted profile URL.
-- The recorded email, WhatsApp number, or both.
+- Any email or WhatsApp number supplied in the current submission.
 
 The user is not redirected to authentication or onboarding.
 
@@ -173,7 +173,6 @@ Add `opportunity_brief_requests` with:
 Constraints and indexes:
 
 - unique `(participant_type, normalized_profile_url)`;
-- check that email or phone is present;
 - positive submission count;
 - indexes for status, source, participant type, creation date, email, phone, and linked candidate.
 
@@ -256,7 +255,7 @@ Acknowledgement rules are intentionally narrow:
 
 Test-first implementation covers:
 
-- validation, URL/email/phone normalization, contact requirement, and transitions;
+- validation, schemeless URL normalization, optional email/phone normalization, and transitions;
 - deduplication and concurrent upsert behavior;
 - source and UTM capture with bounded repeat history;
 - exact candidate linking and unmatched null linkage;
@@ -286,7 +285,7 @@ The acknowledgement email, seven-state request record, required summary/filter f
 ## Acceptance Criteria
 
 1. `/share` encodes `/join?source=bengaluru-meetup`.
-2. A participant can submit one public profile URL and email or WhatsApp in under 30 seconds without authentication.
+2. A participant can submit one public profile URL, with or without email or WhatsApp, in under 30 seconds without authentication.
 3. The participant immediately sees the specified confirmation and recorded details without an account redirect.
 4. The durable request appears in the administrator Opportunity Brief queue.
 5. Source and UTM data are stored.

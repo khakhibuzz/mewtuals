@@ -125,6 +125,24 @@ describe("opportunity brief intake normalization", () => {
     ).toBe(false);
   });
 
+  it("adds https:// when the public profile URL has no scheme", () => {
+    const parsed = opportunityBriefInputSchema.parse(
+      submission({ profileUrl: "  Example.COM/Creators/Ada  " }),
+    );
+
+    expect(parsed.profileUrl).toBe("https://example.com/Creators/Ada");
+  });
+
+  it.each(["ftp://example.com/profile", "javascript:alert(1)"])(
+    "still rejects unsupported profile URL scheme %s",
+    (profileUrl) => {
+      expect(
+        opportunityBriefInputSchema.safeParse(submission({ profileUrl }))
+          .success,
+      ).toBe(false);
+    },
+  );
+
   it("normalizes email and enforces its 320-character bound", () => {
     expect(
       opportunityBriefInputSchema.parse(
@@ -174,12 +192,13 @@ describe("opportunity brief intake normalization", () => {
     ).toBe(false);
   });
 
-  it("requires at least an email or WhatsApp number", () => {
-    expect(
-      opportunityBriefInputSchema.safeParse(
-        submission({ email: "", phoneNumber: "" }),
-      ).success,
-    ).toBe(false);
+  it("accepts a submission without email or WhatsApp", () => {
+    const parsed = opportunityBriefInputSchema.parse(
+      submission({ email: "", phoneNumber: "" }),
+    );
+
+    expect(parsed.email).toBeUndefined();
+    expect(parsed.phoneNumber).toBeUndefined();
     expect(
       opportunityBriefInputSchema.safeParse(
         submission({ email: "hello@example.com", phoneNumber: "" }),

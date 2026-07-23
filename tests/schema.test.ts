@@ -122,11 +122,11 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(uniqueConstraintNames(requests)).toContain(
       "opportunity_brief_requests_participant_profile_unique",
     );
-    expect(checkNames(requests)).toEqual(
-      expect.arrayContaining([
-        "opportunity_brief_requests_contact_check",
-        "opportunity_brief_requests_submission_count_check",
-      ]),
+    expect(checkNames(requests)).toContain(
+      "opportunity_brief_requests_submission_count_check",
+    );
+    expect(checkNames(requests)).not.toContain(
+      "opportunity_brief_requests_contact_check",
     );
     expect(foreignKeyNames(requests)).toEqual([
       "opportunity_brief_requests_linked_candidate_fk",

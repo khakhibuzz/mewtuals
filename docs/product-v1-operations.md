@@ -295,8 +295,8 @@ credentials, or the full managed database URL.
 
 ### Public intake, deduplication, and privacy
 
-`/join` accepts a company or creator public profile URL plus at least one email
-or WhatsApp contact. `/share` encodes
+`/join` accepts a company or creator public profile URL, adding `https://` when
+the scheme is omitted. Email and WhatsApp are both optional. `/share` encodes
 `https://mewtuals.com/join?source=bengaluru-meetup`; standard UTM values are
 also stored. The same-origin JSON endpoint has a 16 KiB body limit, a hidden
 honeypot, and a requester limit of eight attempts per rolling 15 minutes.

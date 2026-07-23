@@ -362,7 +362,7 @@ describe("Opportunity Brief complete durable journey", () => {
     const second = await submitPublicRequest(
       {
         participantType: "company",
-        profileUrl: ` HTTPS://${profileHost.toUpperCase()}/unmatched/?utm_medium=qr#profile `,
+        profileUrl: ` ${profileHost.toUpperCase()}/unmatched/?utm_medium=qr#profile `,
         email: "",
         phoneNumber: "+919876543210",
         openToText: "Current partnership context",
