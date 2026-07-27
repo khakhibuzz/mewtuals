@@ -510,9 +510,9 @@ momentum_score = 0.25 independent entity breadth
                + 0.10 evidence quality
 ```
 
-A momentum record becomes `qualified` only when its evidence gates pass and
-the configurable class threshold is met. Otherwise it may remain
-`newly_discovered`, `needs_review`, or `monitoring`.
+A momentum record may be human-qualified only when its evidence gates pass and
+the configurable class threshold is met. Thresholds never qualify records
+automatically.
 
 ### Freshness
 
@@ -675,10 +675,12 @@ logic. Disabling an entry preserves the row and history.
 
 ### `global_radar_promotions`
 
-Stores idempotency/request hashes, Radar entity and supporting signal,
-Discovery run/candidate links, actor, reason, source snapshot digest, status,
-promotion and reversal timestamps/actors/reasons. One entity has at most one
-active promotion. Failed/conflicted attempts remain inspectable.
+Stores idempotency/request hashes, Radar entity, primary supporting signal,
+all supporting signal IDs, eligibility path, expected revisions, previous
+entity/signal statuses, Discovery run/candidate links, actor, reason, source
+snapshot digest, status, promotion and reversal timestamps/actors/reasons. One
+entity has at most one active promotion. Failed/conflicted attempts remain
+inspectable.
 
 ### `global_radar_admin_events`
 
@@ -718,6 +720,12 @@ Radar statuses are `queued`, `running`, `succeeded`, `partial`, and `failed`.
 Signal statuses are exactly `newly_discovered`, `needs_review`, `monitoring`,
 `qualified`, `dismissed`, `expired`, and `promoted`.
 
+New valid signals start `newly_discovered`. A deterministic compliance or
+missing-score-coverage condition may start them `needs_review`; ingestion never
+starts a signal `qualified` or `promoted`. Class thresholds do not control
+persistence. They control within-tab high-quality metrics and are required
+preconditions for the administrator's `qualify` action.
+
 Allowed human-visible transitions are explicit:
 
 - newly discovered -> needs review, monitoring, dismissed, or expired;
@@ -738,6 +746,13 @@ hash. Weekly thematic keys include ISO week, theme, and config hash. Manual
 requests use an administrator request UUID and have claim priority. A valid
 Radar run does not block India Discovery and vice versa.
 
+Claim recovery is terminal and deterministic. Inside the Radar claim
+transaction, every `running` row whose lease has expired is changed to
+`failed`, receives `completed_at`, and records bounded `lease_expired` failure
+metadata before the active-run check and next selection. The expired run is not
+silently requeued; a later scheduled key or explicit administrator request
+creates the next attempt.
+
 Worker endpoints are separate:
 
 - `POST /api/global-radar/worker/claim`
@@ -757,6 +772,15 @@ Claim writes the secret-bearing response only to a private temporary file with
 mode `0600` and prints a bounded safe summary. Submit uses 120 seconds; other
 network commands use 30 seconds. The worker secret and HMAC purpose are unique
 to Radar, so Radar credentials cannot invoke Discovery routes.
+
+`fail` is the normal terminal path when the worker still has its lease but
+cannot submit a valid batch. `abandon` is Radar-secret-authenticated orphan
+recovery used only when the claim artifact/lease token is irrecoverably lost.
+It may change a currently `running` Radar run to `failed` with bounded
+`abandoned` metadata and `completed_at`; it cannot change a queued or successful
+run. Repeating the same abandonment for the already-abandoned run is an
+idempotent replay, while a different reason or another terminal state
+conflicts. Either terminal path releases the Radar-only partial running index.
 
 The batch is capped at 20 accepted signals, 100 evidence items, 100
 requirements, 120 executed queries, 50 entities, 50 bounded source errors, and
@@ -797,9 +821,25 @@ HTTP 409 with the latest safe DTO.
 ## Controlled Promotion Boundary
 
 Promotion is the only deliberate bridge into `discovery_candidates`. It
-requires a human administrator, a qualified India-facing direct demand or
-repeated high-value India-compatible signals, a supported reason, public
-identity evidence, matching revisions, and no unresolved identifier conflict.
+requires a human administrator, a supported reason, public identity evidence,
+matching revisions, no unresolved identifier conflict, and one explicitly
+selected eligibility path:
+
+1. `qualified_india_direct_demand`: one qualified direct demand at or above the
+   direct threshold, with a non-`no_current_India_fit` relevance type;
+2. `repeated_india_compatible_signals`: at least three qualified direct-demand
+   or precursor signals in the trailing 180 days, each at or above its class
+   threshold and each non-`no_current_India_fit`;
+3. `documented_indian_relationship`: a non-dismissed signal with primary
+   evidence explicitly supporting an existing Indian relationship or presence;
+4. `exceptional_strategic_relevance`: a qualified entity, at least two
+   independent primary sources, and an administrator rationale recorded in the
+   audit event.
+
+The administrator selects one primary supporting signal. The promotion record
+also stores every supporting signal ID used for the chosen eligibility path,
+the eligibility path, and immutable snapshots of the entity and primary signal
+states.
 
 A focused bridge repository owns one transaction across Radar and Discovery
 tables. It reuses the existing candidate identity rules, creates or resolves a
@@ -815,8 +855,11 @@ candidate status is preserved. Promotion never creates or verifies a member
 profile, queues matching, generates an opportunity, or initiates outreach.
 
 Reversal is compensating and non-destructive: it marks the promotion reversed,
-clears the active Radar link when still current, returns the Radar signal to
-`qualified`, and preserves the Discovery candidate and all history unchanged.
+clears `promoted_candidate_id` when it still matches, restores the entity and
+primary signal statuses captured by the promotion, and preserves the Discovery
+candidate and all history unchanged. Reversal requires matching current
+revisions; if later administrator changes make restoration unsafe, it returns
+409 rather than guessing a state.
 
 ## Admin Information Architecture
 
@@ -900,9 +943,14 @@ New configuration is parsed at the server/CLI edge:
 - `GLOBAL_RADAR_THEMES`
 - `GLOBAL_RADAR_ENABLED_SOURCES` (default `codex_public_web`)
 - `GLOBAL_RADAR_RESULT_LIMIT` (default 20, maximum 20)
-- `GLOBAL_RADAR_DIRECT_THRESHOLD`
-- `GLOBAL_RADAR_PRECURSOR_THRESHOLD`
-- `GLOBAL_RADAR_MOMENTUM_THRESHOLD`
+- `GLOBAL_RADAR_DIRECT_THRESHOLD` (default 70)
+- `GLOBAL_RADAR_PRECURSOR_THRESHOLD` (default 65)
+- `GLOBAL_RADAR_MOMENTUM_THRESHOLD` (default 70)
+
+Thresholds do not reject otherwise valid evidence-backed records. They define
+the high-quality summary metrics and the minimum score for an administrator to
+qualify that class. Promotion applies the explicit eligibility rules above;
+scores alone never promote an entity.
 
 The runbook documents exact commands, private-file handling, safe output,
 manual runs, failure/replay recovery, and source rules. The proposed automation
