@@ -766,7 +766,7 @@ The worker command family is:
 - `npm run global-radar:validate -- --file <batch.json>`
 - `npm run global-radar:submit -- --claim-file <claim.json> --file <batch.json>`
 - `npm run global-radar:fail -- --claim-file <claim.json> --message <safe-message>`
-- `npm run global-radar:abandon -- --claim-file <claim.json> --message <safe-message>`
+- `npm run global-radar:abandon -- --run-id <run-id> --message <safe-message>`
 
 Claim writes the secret-bearing response only to a private temporary file with
 mode `0600` and prints a bounded safe summary. Submit uses 120 seconds; other
@@ -776,6 +776,8 @@ to Radar, so Radar credentials cannot invoke Discovery routes.
 `fail` is the normal terminal path when the worker still has its lease but
 cannot submit a valid batch. `abandon` is Radar-secret-authenticated orphan
 recovery used only when the claim artifact/lease token is irrecoverably lost.
+It authenticates with `GLOBAL_RADAR_WORKER_SECRET` from the local environment
+and requires the explicit safe run ID, not the lost claim file.
 It may change a currently `running` Radar run to `failed` with bounded
 `abandoned` metadata and `completed_at`; it cannot change a queued or successful
 run. Repeating the same abandonment for the already-abandoned run is an
@@ -820,21 +822,21 @@ HTTP 409 with the latest safe DTO.
 
 ## Controlled Promotion Boundary
 
-Promotion is the only deliberate bridge into `discovery_candidates`. It
-requires a human administrator, a supported reason, public identity evidence,
-matching revisions, no unresolved identifier conflict, and one explicitly
-selected eligibility path:
+Promotion is the only deliberate bridge into `discovery_candidates`. Every
+path requires a human administrator, a currently qualified primary supporting
+signal, a supported reason, public identity evidence, matching revisions, no
+unresolved identifier conflict, and one explicitly selected eligibility path:
 
 1. `qualified_india_direct_demand`: one qualified direct demand at or above the
    direct threshold, with a non-`no_current_India_fit` relevance type;
 2. `repeated_india_compatible_signals`: at least three qualified direct-demand
    or precursor signals in the trailing 180 days, each at or above its class
    threshold and each non-`no_current_India_fit`;
-3. `documented_indian_relationship`: a non-dismissed signal with primary
+3. `documented_indian_relationship`: the qualified primary signal has primary
    evidence explicitly supporting an existing Indian relationship or presence;
-4. `exceptional_strategic_relevance`: a qualified entity, at least two
-   independent primary sources, and an administrator rationale recorded in the
-   audit event.
+4. `exceptional_strategic_relevance`: the primary signal and entity are both
+   qualified, at least two independent primary sources support the case, and an
+   administrator rationale is recorded in the audit event.
 
 The administrator selects one primary supporting signal. The promotion record
 also stores every supporting signal ID used for the chosen eligibility path,
