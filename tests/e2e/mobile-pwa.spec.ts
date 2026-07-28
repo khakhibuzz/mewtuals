@@ -266,7 +266,9 @@ test("mobile member and administrator journey stays responsive and private offli
       .last()
       .click();
     await expect(
-      discoveryDrawer.getByText(/Earlier ecosystem assessment/i),
+      discoveryDrawer.getByText(
+        "Earlier ecosystem assessment of an Indian motion-control participant and its place between component suppliers and robot integrators.",
+      ),
     ).toBeVisible();
     expect(admin.errors).toEqual([]);
   } finally {
