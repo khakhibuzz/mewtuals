@@ -8,8 +8,11 @@ import {
   candidateTypes,
   discoveryBatchSchema,
   discoveryCandidateInputSchema,
+  DISCOVERY_V1_PROMPT_VERSION,
+  DISCOVERY_V2_PROMPT_VERSION,
   MAX_DISCOVERY_BATCH_BYTES,
   normalizeDiscoveryUrl,
+  PHYSICAL_AI_ANALYSIS_VERSION,
 } from "../app/domain/discovery";
 
 function candidate(overrides: Record<string, unknown> = {}) {
@@ -40,6 +43,26 @@ function batch(overrides: Record<string, unknown> = {}) {
     sourceErrors: [],
     ...overrides,
   };
+}
+
+function research(overrides: Record<string, unknown> = {}) {
+  return {
+    summary:
+      "A motion-control supplier connecting local robot builders to dependable actuation.",
+    findings:
+      "Domain and category\n" + "Evidence-backed fact [S1].\n".repeat(40),
+    sourceUrls: ["https://evidence.example.com/company"],
+    analysisVersion: "physical-ai-v1",
+    ...overrides,
+  };
+}
+
+function physicalAiBatch(overrides: Record<string, unknown> = {}) {
+  return batch({
+    promptVersion: "codex-web-v2",
+    candidates: [candidate({ research: research() })],
+    ...overrides,
+  });
 }
 
 describe("discovery candidate vocabulary", () => {
@@ -473,6 +496,130 @@ describe("candidate allocation", () => {
 });
 
 describe("discovery batch validation", () => {
+  it("keeps V1 strict while accepting the research-bearing V2 envelope", () => {
+    expect(discoveryBatchSchema.parse(batch()).promptVersion).toBe(
+      DISCOVERY_V1_PROMPT_VERSION,
+    );
+    expect(discoveryBatchSchema.parse(physicalAiBatch())).toMatchObject({
+      promptVersion: DISCOVERY_V2_PROMPT_VERSION,
+      candidates: [
+        {
+          research: {
+            analysisVersion: PHYSICAL_AI_ANALYSIS_VERSION,
+          },
+        },
+      ],
+    });
+
+    expect(
+      discoveryBatchSchema.safeParse(
+        batch({ candidates: [candidate({ research: research() })] }),
+      ).success,
+    ).toBe(false);
+    expect(
+      discoveryBatchSchema.safeParse(
+        physicalAiBatch({ candidates: [candidate()] }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("accepts an empty V2 candidate array", () => {
+    expect(
+      discoveryBatchSchema.parse(physicalAiBatch({ candidates: [] }))
+        .candidates,
+    ).toEqual([]);
+  });
+
+  it("enforces exact physical-AI research text limits", () => {
+    for (const [field, length, success] of [
+      ["summary", 79, false],
+      ["summary", 80, true],
+      ["summary", 1_200, true],
+      ["summary", 1_201, false],
+      ["findings", 599, false],
+      ["findings", 600, true],
+      ["findings", 12_000, true],
+      ["findings", 12_001, false],
+    ] as const) {
+      const result = discoveryBatchSchema.safeParse(
+        physicalAiBatch({
+          candidates: [candidate({ research: research({ [field]: "x".repeat(length) }) })],
+        }),
+      );
+      expect(result.success, `${field} length ${length}`).toBe(success);
+    }
+  });
+
+  it("requires one to twelve unique public research URLs of at most 2048 characters", () => {
+    const prefix = "https://evidence.example.com/";
+    const urlOfLength = (length: number) =>
+      `${prefix}${"a".repeat(length - prefix.length)}`;
+    const twelveUrls = Array.from(
+      { length: 12 },
+      (_, index) => `https://evidence.example.com/source-${index}`,
+    );
+
+    for (const [sourceUrls, success] of [
+      [[], false],
+      [["https://evidence.example.com/company"], true],
+      [twelveUrls, true],
+      [[...twelveUrls, "https://evidence.example.com/extra"], false],
+      [[urlOfLength(2_048)], true],
+      [[urlOfLength(2_049)], false],
+      [["http://127.0.0.1/private"], false],
+      [["https://evidence.example.com/company", "https://evidence.example.com/company/"], false],
+    ] as const) {
+      expect(
+        discoveryBatchSchema.safeParse(
+          physicalAiBatch({
+            candidates: [candidate({ research: research({ sourceUrls }) })],
+          }),
+        ).success,
+      ).toBe(success);
+    }
+  });
+
+  it("requires the approved physical-AI analysis version", () => {
+    expect(
+      discoveryBatchSchema.safeParse(
+        physicalAiBatch({
+          candidates: [
+            candidate({ research: research({ analysisVersion: "future-v2" }) }),
+          ],
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects duplicate stable candidate identifiers within a batch", () => {
+    const result = discoveryBatchSchema.safeParse(
+      physicalAiBatch({
+        candidates: [
+          candidate({ research: research() }),
+          candidate({
+            name: "Signal Studio Robotics",
+            canonicalUrl: "https://signal-studio.com/robotics",
+            websiteUrl: "https://www.signal-studio.com/products",
+            sourceUrl: "https://directory.example.com/companies/signal-studio-robotics",
+            research: research({
+              sourceUrls: ["https://evidence.example.com/robotics"],
+            }),
+          }),
+        ],
+      }),
+    );
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({
+          path: ["candidates", 1],
+          message: "Candidate duplicates another candidate in this batch.",
+        }),
+      );
+    }
+  });
+
   it("accepts the approved worker completion envelope", () => {
     expect(discoveryBatchSchema.parse(batch())).toMatchObject({
       runId: "019f85b2-f34f-7bf3-85a6-f84446175371",
@@ -490,7 +637,7 @@ describe("discovery batch validation", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.issues[0]?.message).toBe(
-        "Discovery prompt version must be codex-web-v1.",
+        "Invalid discriminator value. Expected 'codex-web-v1' | 'codex-web-v2'",
       );
     }
   });
@@ -551,26 +698,38 @@ describe("discovery batch validation", () => {
     }
   });
 
-  it("limits a serialized batch to 512 KiB", () => {
+  it("limits a serialized batch to 1 MiB", () => {
     const candidates = Array.from({ length: 50 }, (_, index) =>
       candidate({
         name: `Signal Studio ${index}`,
+        canonicalUrl: `https://signal-studio-${index}.com`,
+        websiteUrl: `https://signal-studio-${index}.com`,
         sourceUrl: `https://directory.example.com/${"s".repeat(4_000)}${index}`,
         rawMetadata: { evidence: "e".repeat(7_000) },
+        research: research({
+          findings: "f".repeat(12_000),
+          sourceUrls: Array.from(
+            { length: 12 },
+            (_, sourceIndex) =>
+              `https://evidence.example.com/${index}/${sourceIndex}/${"u".repeat(1_000)}`,
+          ),
+        }),
       }),
     );
-    const result = discoveryBatchSchema.safeParse(batch({ candidates }));
+    const result = discoveryBatchSchema.safeParse(
+      physicalAiBatch({ candidates }),
+    );
 
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.issues.at(-1)?.message).toBe(
-        "Discovery batch must be at most 524288 bytes.",
+        "Discovery batch must be at most 1048576 bytes.",
       );
     }
   });
 
   it("exports the raw-body byte limit for route enforcement", () => {
-    expect(MAX_DISCOVERY_BATCH_BYTES).toBe(512 * 1_024);
+    expect(MAX_DISCOVERY_BATCH_BYTES).toBe(1_024 * 1_024);
   });
 });
 
