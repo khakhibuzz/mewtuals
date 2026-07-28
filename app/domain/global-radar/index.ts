@@ -2,6 +2,7 @@ export {
   GLOBAL_RADAR_PROMPT_VERSION,
   GLOBAL_RADAR_SCHEMA_VERSION,
   MAX_GLOBAL_RADAR_BATCH_BYTES,
+  MAX_PUBLIC_HTTP_URL_LENGTH,
   boundedRecordSchema,
   boundedShortStringSchema,
   businessEmailSchema,

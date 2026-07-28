@@ -27,6 +27,7 @@ const MAX_SIGNAL_TITLE_LENGTH = 300;
 const MAX_BATCH_EVIDENCE_ITEMS = 100;
 const MAX_BATCH_REQUIREMENTS = 100;
 export const MAX_GLOBAL_RADAR_BATCH_BYTES = 2 * 1_024 * 1_024;
+export const MAX_PUBLIC_HTTP_URL_LENGTH = 2_048;
 const MAX_BATCH_EXECUTED_QUERIES = 120;
 const MAX_BATCH_ENTITIES = 50;
 const MAX_BATCH_SIGNALS = 20;
@@ -37,6 +38,20 @@ const MAX_REQUIREMENT_SUMMARY_LENGTH = 1_000;
 const MAX_SHORT_STRING_LENGTH = 200;
 const MAX_SOURCE_ERROR_LENGTH = 1_000;
 const MAX_SUPPORTED_FIELD_PATH_LENGTH = 200;
+const BATCH_BYTES_MESSAGE =
+  "Global Radar batch must be at most 2097152 bytes.";
+const DOCUMENT_MARKUP_MESSAGE =
+  "Concise text must not contain HTML or document markup.";
+const FORBIDDEN_RECORD_KEY_MESSAGE =
+  "Record must not contain full-page content keys.";
+const forbiddenRecordKeys = new Set([
+  "body",
+  "fullpage",
+  "html",
+  "rawcontent",
+]);
+const documentMarkupPattern =
+  /<(?:!doctype\b|\?xml\b|!\[cdata\[|\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\/?>)/i;
 
 export const GLOBAL_RADAR_SCHEMA_VERSION = "global-radar-batch-v1" as const;
 export const GLOBAL_RADAR_PROMPT_VERSION = "codex-public-web-v1" as const;
@@ -131,18 +146,25 @@ export const professionalResponsePathTypeLookup = createLookup(
   professionalResponsePathTypes,
 );
 
-export const publicHttpUrlSchema = z.string().transform((value, context) => {
-  try {
-    return normalizePublicHttpUrl(value, "Global Radar URL");
-  } catch (error) {
-    context.addIssue({
-      code: "custom",
-      message:
-        error instanceof Error ? error.message : "Global Radar URL is invalid.",
-    });
-    return z.NEVER;
-  }
-});
+export const publicHttpUrlSchema = z
+  .string()
+  .max(MAX_PUBLIC_HTTP_URL_LENGTH, {
+    message: "Global Radar URL must be at most 2048 characters.",
+  })
+  .transform((value, context) => {
+    try {
+      return normalizePublicHttpUrl(value, "Global Radar URL");
+    } catch (error) {
+      context.addIssue({
+        code: "custom",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Global Radar URL is invalid.",
+      });
+      return z.NEVER;
+    }
+  });
 
 export const boundedShortStringSchema = z
   .string()
@@ -170,6 +192,7 @@ type RecordInspectionTask =
 type RecordInspectionIssue =
   | "bytes"
   | "depth"
+  | "forbidden_key"
   | "invalid"
   | "key_length"
   | "keys";
@@ -238,6 +261,10 @@ function inspectBoundedRecord(
         if (!array && key.length > MAX_BOUNDED_RECORD_KEY_LENGTH) {
           return "key_length";
         }
+        const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (!array && forbiddenRecordKeys.has(normalizedKey)) {
+          return "forbidden_key";
+        }
         if (!("value" in descriptor)) return "invalid";
         tasks.push({
           action: "visit",
@@ -258,6 +285,7 @@ function inspectBoundedRecord(
 const boundedRecordMessages = {
   bytes: "Record must be at most 8192 serialized bytes.",
   depth: "Record must have JSON depth at most 3.",
+  forbidden_key: FORBIDDEN_RECORD_KEY_MESSAGE,
   invalid: "Record must contain only JSON-compatible values.",
   key_length: "Record keys must be at most 64 characters.",
   keys: "Record must contain at most 20 keys.",
@@ -315,6 +343,13 @@ function boundedRequiredString(maximumLength: number) {
   return z.string().trim().min(1).max(maximumLength);
 }
 
+function conciseRequiredString(maximumLength: number) {
+  return boundedRequiredString(maximumLength).refine(
+    (value) => !documentMarkupPattern.test(value),
+    { message: DOCUMENT_MARKUP_MESSAGE },
+  );
+}
+
 export const executedQuerySchema = z.strictObject({
   fingerprint: fingerprintSchema,
   query: boundedRequiredString(MAX_QUERY_LENGTH),
@@ -353,9 +388,9 @@ export const evidenceSchema = z.strictObject({
   sourceFamily: z.enum(globalRadarSourceFamilies),
   sourceLanguage: boundedRequiredString(MAX_LANGUAGE_LENGTH),
   sourceCountry: boundedRequiredString(MAX_COUNTRY_LENGTH),
-  claim: boundedRequiredString(MAX_EVIDENCE_CLAIM_LENGTH),
-  excerpt: boundedRequiredString(MAX_EVIDENCE_EXCERPT_LENGTH).nullable(),
-  englishSummary: boundedRequiredString(MAX_EVIDENCE_SUMMARY_LENGTH),
+  claim: conciseRequiredString(MAX_EVIDENCE_CLAIM_LENGTH),
+  excerpt: conciseRequiredString(MAX_EVIDENCE_EXCERPT_LENGTH).nullable(),
+  englishSummary: conciseRequiredString(MAX_EVIDENCE_SUMMARY_LENGTH),
   publishedAt: isoTimestampSchema.nullable(),
   observedAt: isoTimestampSchema,
   evidenceConfidence: confidenceSchema,
@@ -370,16 +405,16 @@ export const evidenceSchema = z.strictObject({
 
 export const requirementSchema = z.strictObject({
   kind: z.enum(requirementKinds),
-  summary: boundedRequiredString(MAX_REQUIREMENT_SUMMARY_LENGTH),
+  summary: conciseRequiredString(MAX_REQUIREMENT_SUMMARY_LENGTH),
   confidence: confidenceSchema,
   rawMetadata: boundedRecordSchema,
 });
 
 export const signalDraftSchema = z.strictObject({
   signalClass: z.enum(signalClasses),
-  title: boundedRequiredString(MAX_SIGNAL_TITLE_LENGTH),
-  factualSummary: boundedRequiredString(MAX_SIGNAL_SUMMARY_LENGTH),
-  interpretationSummary: boundedRequiredString(MAX_SIGNAL_SUMMARY_LENGTH),
+  title: conciseRequiredString(MAX_SIGNAL_TITLE_LENGTH),
+  factualSummary: conciseRequiredString(MAX_SIGNAL_SUMMARY_LENGTH),
+  interpretationSummary: conciseRequiredString(MAX_SIGNAL_SUMMARY_LENGTH),
   sourceCountry: boundedRequiredString(MAX_COUNTRY_LENGTH),
   observedAt: isoTimestampSchema,
   evidence: z.array(evidenceSchema).min(1).max(MAX_BATCH_EVIDENCE_ITEMS),
@@ -410,7 +445,7 @@ const globalRadarBatchObjectSchema = z.strictObject({
   sourceErrors: z.array(sourceErrorSchema).max(MAX_BATCH_SOURCE_ERRORS),
 });
 
-export const globalRadarBatchSchema = globalRadarBatchObjectSchema.superRefine(
+const normalizedGlobalRadarBatchSchema = globalRadarBatchObjectSchema.superRefine(
   (batch, context) => {
     const evidenceCount = batch.signals.reduce(
       (total, signal) => total + signal.evidence.length,
@@ -437,7 +472,7 @@ export const globalRadarBatchSchema = globalRadarBatchObjectSchema.superRefine(
     if (serializedJsonByteLength(batch) > MAX_GLOBAL_RADAR_BATCH_BYTES) {
       context.addIssue({
         code: "custom",
-        message: "Global Radar batch must be at most 2097152 bytes.",
+        message: BATCH_BYTES_MESSAGE,
       });
     }
     if (batch.signals.length === 0 && batch.sourceErrors.length > 0) {
@@ -449,6 +484,16 @@ export const globalRadarBatchSchema = globalRadarBatchObjectSchema.superRefine(
       });
     }
   },
+);
+
+export const globalRadarBatchSchema = z.preprocess(
+  (input, context) => {
+    if (serializedJsonByteLength(input) > MAX_GLOBAL_RADAR_BATCH_BYTES) {
+      context.addIssue({ code: "custom", message: BATCH_BYTES_MESSAGE });
+    }
+    return input;
+  },
+  normalizedGlobalRadarBatchSchema,
 );
 
 export type SignalClass = (typeof signalClasses)[number];

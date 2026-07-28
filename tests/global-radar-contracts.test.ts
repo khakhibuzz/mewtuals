@@ -5,6 +5,7 @@ import * as globalRadarDomain from "../app/domain/global-radar";
 import {
   GLOBAL_RADAR_PROMPT_VERSION,
   GLOBAL_RADAR_SCHEMA_VERSION,
+  MAX_GLOBAL_RADAR_BATCH_BYTES,
   boundedShortStringSchema,
   boundedRecordSchema,
   confidenceSchema,
@@ -592,6 +593,73 @@ describe("Global Radar contracts", () => {
     });
   });
 
+  it("rejects hidden full-page metadata keys and document markup", () => {
+    const forbiddenMetadata = boundedRecordSchema.safeParse({
+      html: "<main>page</main>",
+    });
+    const markedUpEvidence = evidenceSchema.safeParse(
+      evidenceItem({ excerpt: "<!doctype html><html>page</html>" }),
+    );
+
+    expect({
+      bodyKey: boundedRecordSchema.safeParse({ nested: { Body: "page" } })
+        .success,
+      claimMarkup: evidenceSchema.safeParse(
+        evidenceItem({ claim: "<article>Supplier registration</article>" }),
+      ).success,
+      excerptMarkup: evidenceSchema.safeParse(
+        evidenceItem({ excerpt: "<!doctype html><html>page</html>" }),
+      ).success,
+      evidenceMetadata: evidenceSchema.safeParse(
+        evidenceItem({ rawMetadata: { html: "<main>page</main>" } }),
+      ).success,
+      fullPageKey: boundedRecordSchema.safeParse({ Full_Page: "page" })
+        .success,
+      htmlKey: boundedRecordSchema.safeParse({ html: "<main>page</main>" })
+        .success,
+      interpretationMarkup: signalDraftSchema.safeParse(
+        signalDraft({
+          interpretationSummary: "<?xml version='1.0'?><result>page</result>",
+        }),
+      ).success,
+      normalPunctuation: evidenceSchema.safeParse(
+        evidenceItem({
+          excerpt: "Capacity rose by 5% (year over year); registration is open.",
+        }),
+      ).success,
+      rawContentKey: boundedRecordSchema.safeParse({
+        nested: { "RAW-CONTENT": "page" },
+      }).success,
+      requirementMarkup: requirementSchema.safeParse(
+        requirement({ summary: "<section>Manufacturing capacity</section>" }),
+      ).success,
+      summaryMarkup: evidenceSchema.safeParse(
+        evidenceItem({ englishSummary: "<p>Registration is open.</p>" }),
+      ).success,
+    }).toEqual({
+      bodyKey: false,
+      claimMarkup: false,
+      excerptMarkup: false,
+      evidenceMetadata: false,
+      fullPageKey: false,
+      htmlKey: false,
+      interpretationMarkup: false,
+      normalPunctuation: true,
+      rawContentKey: false,
+      requirementMarkup: false,
+      summaryMarkup: false,
+    });
+    expect({
+      markupMessage:
+        !markedUpEvidence.success && markedUpEvidence.error.issues[0]?.message,
+      metadataMessage:
+        !forbiddenMetadata.success && forbiddenMetadata.error.issues[0]?.message,
+    }).toEqual({
+      markupMessage: "Concise text must not contain HTML or document markup.",
+      metadataMessage: "Record must not contain full-page content keys.",
+    });
+  });
+
   it("applies shared public-host safety to every batch URL field", () => {
     expect({
       evidence: evidenceSchema.safeParse(
@@ -687,6 +755,28 @@ describe("Global Radar contracts", () => {
     }).toEqual({
       bytesAboveLimit: true,
       nestedShapeValid: true,
+      valid: false,
+    });
+  });
+
+  it("measures the two MiB cap before trimming submitted strings", () => {
+    const paddedQuery = executedQuery({
+      query: `robotics${" ".repeat(MAX_GLOBAL_RADAR_BATCH_BYTES)}`,
+    });
+    const batch = {
+      ...honestEmptyBatch(),
+      executedQueries: [paddedQuery],
+    };
+
+    expect({
+      nestedShapeValidAfterNormalization:
+        executedQuerySchema.safeParse(paddedQuery).success,
+      rawBytesAboveLimit:
+        serializedJsonByteLength(batch) > MAX_GLOBAL_RADAR_BATCH_BYTES,
+      valid: globalRadarBatchSchema.safeParse(batch).success,
+    }).toEqual({
+      nestedShapeValidAfterNormalization: true,
+      rawBytesAboveLimit: true,
       valid: false,
     });
   });
@@ -820,6 +910,34 @@ describe("Global Radar contracts", () => {
         "https://WWW.Example.com/evidence/?utm_source=test#claim",
       ),
     ).toBe("https://example.com/evidence");
+  });
+
+  it("rejects public URLs above 2048 characters before normalization", () => {
+    const longPublicUrl = `https://example.com/${"a".repeat(2_049)}`;
+    const paddedPublicUrl = `https://example.com/evidence${" ".repeat(2_049)}`;
+
+    expect({
+      evidence: evidenceSchema.safeParse(
+        evidenceItem({ sourceUrl: longPublicUrl }),
+      ).success,
+      padded: publicHttpUrlSchema.safeParse(paddedPublicUrl).success,
+      response: professionalResponsePathSchema.safeParse({
+        type: "procurement_or_rfp_portal",
+        url: longPublicUrl,
+        businessEmail: null,
+        evidenceUrl: "https://example.com/evidence",
+      }).success,
+      url: publicHttpUrlSchema.safeParse(longPublicUrl).success,
+      website: observedEntitySchema.safeParse(
+        observedEntity({ websiteUrl: longPublicUrl }),
+      ).success,
+    }).toEqual({
+      evidence: false,
+      padded: false,
+      response: false,
+      url: false,
+      website: false,
+    });
   });
 
   it("preserves nullable versus known-empty bounded arrays", () => {
