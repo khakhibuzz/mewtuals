@@ -6,8 +6,15 @@ import {
   candidateStatusSchema,
   candidateTypeSchema,
   discoveryBatchSchema,
+  discoveryV1BatchSchema,
+  discoveryV2BatchSchema,
+  DISCOVERY_V1_PROMPT_VERSION,
+  DISCOVERY_V2_PROMPT_VERSION,
+  MAX_DISCOVERY_BATCH_BYTES,
 } from "../domain/discovery";
 import {
+  PHYSICAL_AI_CAMPAIGN_KEY,
+  physicalAiSeedConfig,
   publicDiscoveryWorkerConfig,
   type DiscoveryConfig,
 } from "./discovery-config";
@@ -26,8 +33,23 @@ export type DiscoveryAdminActor = {
   email: string;
 };
 
-export const DISCOVERY_PROMPT_VERSION = "codex-web-v1" as const;
+export const DISCOVERY_PROMPT_VERSION = DISCOVERY_V2_PROMPT_VERSION;
 export const DISCOVERY_LEASE_DURATION_MS = 2 * 60 * 60 * 1_000;
+
+export type DiscoveryClaimSelector = {
+  trigger: "scheduled" | "trial";
+  preset?: "robotics-seed";
+};
+
+const discoveryClaimSelectorSchema = z
+  .strictObject({
+    trigger: z.enum(["scheduled", "trial"]),
+    preset: z.literal("robotics-seed").optional(),
+  })
+  .refine((selector) => !selector.preset || selector.trigger === "trial", {
+    message: "Discovery presets are only available for trial claims.",
+    path: ["preset"],
+  });
 
 type MutableJsonSchema = {
   [key: string]: unknown;
@@ -36,12 +58,14 @@ type MutableJsonSchema = {
   propertyNames?: MutableJsonSchema;
 };
 
-function createDiscoveryOutputSchema(): MutableJsonSchema {
-  const output = z.toJSONSchema(discoveryBatchSchema, {
+function createDiscoveryOutputSchema(
+  schema: typeof discoveryV1BatchSchema | typeof discoveryV2BatchSchema,
+): MutableJsonSchema {
+  const output = z.toJSONSchema(schema, {
     io: "input",
   }) as MutableJsonSchema;
   output.description =
-    "Validated discovery batch. The serialized JSON body must be at most 524288 bytes.";
+    `Validated discovery batch. The serialized JSON body must be at most ${MAX_DISCOVERY_BATCH_BYTES} bytes.`;
 
   const candidate = output.properties?.candidates?.items;
   const candidateProperties = candidate?.properties;
@@ -87,10 +111,38 @@ function createDiscoveryOutputSchema(): MutableJsonSchema {
   });
   rawMetadata.propertyNames ??= {};
   rawMetadata.propertyNames.maxLength = 64;
+
+  const research = candidateProperties.research?.properties;
+  if (research) {
+    Object.assign(research.summary, {
+      minLength: 80,
+      maxLength: 1_200,
+      description:
+        "Concise systems and ecosystem context for the administrator drawer.",
+    });
+    Object.assign(research.findings, {
+      minLength: 600,
+      maxLength: 12_000,
+      description:
+        "Structured plain-text Physical AI findings with facts, assessments, unknowns, and source references.",
+    });
+    Object.assign(research.sourceUrls, {
+      minItems: 1,
+      maxItems: 12,
+      uniqueItems: true,
+      description: "Ordered public HTTP(S) evidence URLs, each at most 2048 characters.",
+    });
+  }
   return output;
 }
 
-export const discoveryOutputSchema = createDiscoveryOutputSchema();
+export const discoveryV1OutputSchema = createDiscoveryOutputSchema(
+  discoveryV1BatchSchema,
+);
+export const discoveryV2OutputSchema = createDiscoveryOutputSchema(
+  discoveryV2BatchSchema,
+);
+export const discoveryOutputSchema = discoveryV2OutputSchema;
 
 const discoveryFailureSchema = z.strictObject({
   runId: z.string().uuid({ message: "Discovery run id must be a valid UUID." }),
@@ -193,16 +245,19 @@ export function createDiscoveryService(
     externalRunKey: string,
     queuedAt: Date,
     requestedByEmail: string | null,
+    config: DiscoveryConfig = dependencies.config,
+    candidateType: "company" | "creator" | "both" = "both",
   ) {
     return {
       externalRunKey,
+      campaignKey: config.campaignKey,
       trigger,
       now: queuedAt,
-      geography: dependencies.config.geographies[0] ?? "India",
-      candidateType: "both" as const,
-      sourcesUsed: dependencies.config.enabledSources,
-      requestedCount: dependencies.config.totalCandidates,
-      companyPercentage: dependencies.config.companyPercentage,
+      geography: config.geographies[0] ?? "India",
+      candidateType,
+      sourcesUsed: config.enabledSources,
+      requestedCount: config.totalCandidates,
+      companyPercentage: config.companyPercentage,
       requestedByEmail,
     };
   }
@@ -228,6 +283,7 @@ export function createDiscoveryService(
     return [
       "discovery",
       "scheduled",
+      dependencies.config.campaignKey,
       indiaLocalDate(queuedAt),
       geography,
       "both",
@@ -277,6 +333,15 @@ export function createDiscoveryService(
       };
     }
     if (result.outcome === "conflict") {
+      if (result.reason === "duplicate_candidate_in_batch") {
+        return {
+          ok: false as const,
+          status: 409 as const,
+          error: "Discovery run cannot accept this submission.",
+          reason: result.reason,
+          details: result.details,
+        };
+      }
       return {
         ok: false as const,
         status: 409 as const,
@@ -294,6 +359,7 @@ export function createDiscoveryService(
   function publicWorkerRun(run: DiscoveryRun) {
     return {
       id: run.id,
+      campaignKey: run.campaignKey ?? "general_discovery",
       trigger: run.trigger,
       status: run.status,
       startedAt: run.startedAt,
@@ -313,6 +379,7 @@ export function createDiscoveryService(
   function workerConfigForRun(run: DiscoveryRun) {
     return publicDiscoveryWorkerConfig({
       ...dependencies.config,
+      campaignKey: run.campaignKey ?? "general_discovery",
       geographies: [run.geography],
       enabledSources: run.sourcesUsed,
       totalCandidates: run.requestedCount,
@@ -372,15 +439,25 @@ export function createDiscoveryService(
       ...selector,
     });
     if (!claimed) return null;
+    const promptVersion = promptVersionForRun(claimed);
     return {
       ok: true as const,
       claimed: true as const,
       runId: claimed.id,
       leaseToken,
-      promptVersion: DISCOVERY_PROMPT_VERSION,
+      promptVersion,
       config: workerConfigForRun(claimed),
-      outputSchema: discoveryOutputSchema,
+      outputSchema:
+        promptVersion === DISCOVERY_V2_PROMPT_VERSION
+          ? discoveryV2OutputSchema
+          : discoveryV1OutputSchema,
     };
+  }
+
+  function promptVersionForRun(run: Pick<DiscoveryRun, "campaignKey">) {
+    return run.campaignKey === PHYSICAL_AI_CAMPAIGN_KEY
+      ? DISCOVERY_V2_PROMPT_VERSION
+      : DISCOVERY_V1_PROMPT_VERSION;
   }
 
   return {
@@ -401,7 +478,7 @@ export function createDiscoveryService(
       const run = await dependencies.repository.queueRun(
         configuredRunInput(
           "manual",
-          `discovery:manual:${token()}`,
+          `discovery:manual:${dependencies.config.campaignKey}:${token()}`,
           queuedAt,
           actor.email.trim().toLowerCase(),
         ),
@@ -409,17 +486,44 @@ export function createDiscoveryService(
       return { ok: true as const, run: publicWorkerRun(run) };
     },
 
-    async claimRun(trigger: "scheduled" | "trial" = "scheduled") {
+    async claimRun(
+      input: DiscoveryClaimSelector | "scheduled" | "trial" = {
+        trigger: "scheduled",
+      },
+    ) {
+      const parsedSelector = discoveryClaimSelectorSchema.safeParse(
+        typeof input === "string" ? { trigger: input } : input,
+      );
+      if (!parsedSelector.success) {
+        return {
+          ok: false as const,
+          status: 400 as const,
+          error: "Submit a valid discovery claim selector.",
+          errors: validationDetails(parsedSelector.error),
+        };
+      }
+      const { trigger, preset } = parsedSelector.data;
       const claimedAt = now();
+      const runConfig = preset
+        ? physicalAiSeedConfig(dependencies.config)
+        : dependencies.config;
       const externalRunKey =
         trigger === "scheduled"
           ? dailyExternalRunKey(claimedAt)
-          : `discovery:trial:${token()}`;
+          : [
+              "discovery",
+              "trial",
+              runConfig.campaignKey,
+              ...(preset ? [preset] : []),
+              token(),
+            ].join(":");
       const queueIfMissing = configuredRunInput(
         trigger,
         externalRunKey,
         claimedAt,
         null,
+        runConfig,
+        preset === "robotics-seed" ? "company" : "both",
       );
       const claimed = await claimSelectedRun(
         claimedAt,
@@ -457,6 +561,14 @@ export function createDiscoveryService(
           ok: false as const,
           status: 404 as const,
           error: "Discovery run was not found.",
+        };
+      }
+      const expectedPromptVersion = promptVersionForRun(persistedRun);
+      if (parsed.data.promptVersion !== expectedPromptVersion) {
+        return {
+          ok: false as const,
+          status: 400 as const,
+          error: "Discovery batch prompt version does not match the claimed run.",
         };
       }
       const allocationError = persistedAllocationError(
@@ -591,6 +703,62 @@ export function createDiscoveryService(
         };
       }
       return { ok: true as const, candidate: result.candidate };
+    },
+
+    async getCandidateResearch(
+      actor: DiscoveryAdminActor,
+      candidateId: string,
+    ) {
+      if (!isAdministrator(actor)) {
+        return {
+          ok: false as const,
+          status: 403 as const,
+          error: "Administrator access is required.",
+        };
+      }
+      const parsedCandidateId = candidateIdSchema.safeParse(candidateId);
+      if (!parsedCandidateId.success) {
+        return {
+          ok: false as const,
+          status: 400 as const,
+          error: "Submit a valid discovery candidate id.",
+          errors: {
+            candidateId: "Discovery candidate id must be a valid UUID.",
+          },
+        };
+      }
+
+      const result =
+        await dependencies.repository.getCandidateResearchVersions(
+          parsedCandidateId.data,
+          25,
+        );
+      if (!result) {
+        return {
+          ok: false as const,
+          status: 404 as const,
+          error: "Discovery candidate was not found.",
+        };
+      }
+      const versionDto = (
+        version: NonNullable<typeof result.latest>,
+      ) => ({
+        id: version.id,
+        discoveryRunId: version.discoveryRunId,
+        summary: version.summary,
+        findings: version.findings,
+        sourceUrls: version.sourceUrls,
+        analysisVersion: version.analysisVersion,
+        createdAt: version.createdAt.toISOString(),
+      });
+      return {
+        ok: true as const,
+        research: {
+          candidateId: result.candidateId,
+          latest: result.latest ? versionDto(result.latest) : null,
+          history: result.history.map(versionDto),
+        },
+      };
     },
 
     async getAdminSummary(

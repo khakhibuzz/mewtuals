@@ -4,6 +4,8 @@ import type { DiscoveryRepository } from "../db/repositories/discovery-repositor
 import {
   createDiscoveryService,
   discoveryOutputSchema,
+  discoveryV1OutputSchema,
+  discoveryV2OutputSchema,
 } from "../app/server/discovery-service";
 import {
   hashDiscoveryToken,
@@ -22,6 +24,7 @@ function createRepositoryDouble(): DiscoveryRepository {
     failRun: vi.fn(),
     abandonRun: vi.fn(),
     updateCandidateStatus: vi.fn(),
+    getCandidateResearchVersions: vi.fn(),
     getAdminSummary: vi.fn(),
   };
 }
@@ -58,17 +61,33 @@ function creatorCandidate(index: number) {
   };
 }
 
+function physicalAiCandidate(index: number) {
+  return {
+    ...companyCandidate(index),
+    category: "components and actuation",
+    research: {
+      summary:
+        "An Indian robotics participant connecting dependable components to complete robot behaviour.",
+      findings:
+        "1. Domain and category\n" +
+        "Evidence-backed physical-AI systems finding [S1].\n".repeat(30),
+      sourceUrls: [`https://evidence-${index}.example.com/company`],
+      analysisVersion: "physical-ai-v1" as const,
+    },
+  };
+}
+
 describe("discovery service", () => {
   it("derives a strict worker output contract and communicates custom bounds", () => {
     expect(discoveryOutputSchema).toMatchObject({
       additionalProperties: false,
-      description: expect.stringContaining("524288 bytes"),
+      description: expect.stringContaining("1048576 bytes"),
       required: [
         "runId",
         "leaseToken",
+        "sourceErrors",
         "promptVersion",
         "candidates",
-        "sourceErrors",
       ],
       properties: {
         candidates: {
@@ -85,6 +104,7 @@ describe("discovery service", () => {
               "sourceName",
               "sourceUrl",
               "discoveryScore",
+              "research",
             ],
             properties: {
               canonicalUrl: {
@@ -102,6 +122,14 @@ describe("discovery service", () => {
                   /depth 3.*20 total keys.*64 characters.*8192 bytes/i,
                 ),
               },
+              research: {
+                required: [
+                  "summary",
+                  "findings",
+                  "sourceUrls",
+                  "analysisVersion",
+                ],
+              },
             },
           },
         },
@@ -111,6 +139,7 @@ describe("discovery service", () => {
         },
       },
     });
+    expect(discoveryV1OutputSchema).not.toEqual(discoveryV2OutputSchema);
   });
 
   it("authenticates exact worker bearer tokens without storing the raw token", () => {
@@ -137,6 +166,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -157,6 +187,7 @@ describe("discovery service", () => {
       adminEmails: ["admin@example.com"],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -196,6 +227,7 @@ describe("discovery service", () => {
       adminEmails: ["admin@example.com"],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -213,7 +245,8 @@ describe("discovery service", () => {
     });
 
     expect(repository.queueRun).toHaveBeenCalledWith({
-      externalRunKey: "discovery:manual:opaque-token",
+      externalRunKey: "discovery:manual:general_discovery:opaque-token",
+      campaignKey: "general_discovery",
       trigger: "manual",
       now,
       geography: "India",
@@ -245,6 +278,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -265,9 +299,10 @@ describe("discovery service", () => {
       leaseExpiresAt: new Date("2026-07-21T22:00:00.000Z"),
       triggers: ["manual"],
       fallbackExternalRunKey:
-        "discovery:scheduled:2026-07-22:india:both:20:50",
+        "discovery:scheduled:general_discovery:2026-07-22:india:both:20:50",
       queueIfMissing: {
-        externalRunKey: "discovery:scheduled:2026-07-22:india:both:20:50",
+        externalRunKey: "discovery:scheduled:general_discovery:2026-07-22:india:both:20:50",
+        campaignKey: "general_discovery",
         trigger: "scheduled",
         now,
         geography: "India",
@@ -310,6 +345,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["current-config-geography"],
         companyCategories: ["technology"],
         creatorCategories: ["lifestyle"],
@@ -329,10 +365,10 @@ describe("discovery service", () => {
       expect.objectContaining({
         triggers: ["manual"],
         fallbackExternalRunKey:
-          "discovery:scheduled:2026-07-22:current-config-geography:both:20:50",
+          "discovery:scheduled:general_discovery:2026-07-22:current-config-geography:both:20:50",
         queueIfMissing: expect.objectContaining({
           externalRunKey:
-            "discovery:scheduled:2026-07-22:current-config-geography:both:20:50",
+            "discovery:scheduled:general_discovery:2026-07-22:current-config-geography:both:20:50",
           trigger: "scheduled",
         }),
       }),
@@ -341,6 +377,7 @@ describe("discovery service", () => {
       claimed: true,
       runId: manual.id,
       config: {
+        campaignKey: "general_discovery",
         geographies: ["Bengaluru"],
         enabledSources: ["persisted_source"],
         totalCandidates: 7,
@@ -371,6 +408,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -390,9 +428,9 @@ describe("discovery service", () => {
       expect.objectContaining({
         triggers: ["manual"],
         fallbackExternalRunKey:
-          "discovery:scheduled:2026-07-22:india:both:20:50",
+          "discovery:scheduled:general_discovery:2026-07-22:india:both:20:50",
         queueIfMissing: expect.objectContaining({
-          externalRunKey: "discovery:scheduled:2026-07-22:india:both:20:50",
+          externalRunKey: "discovery:scheduled:general_discovery:2026-07-22:india:both:20:50",
           trigger: "scheduled",
         }),
       }),
@@ -404,7 +442,7 @@ describe("discovery service", () => {
     const repository = createRepositoryDouble();
     const daily = {
       id: "00000000-0000-4000-8000-000000000023",
-      externalRunKey: "discovery:scheduled:2026-07-22:india:both:20:50",
+      externalRunKey: "discovery:scheduled:general_discovery:2026-07-22:india:both:20:50",
       geography: "India",
       sourcesUsed: ["codex_web"],
       requestedCount: 20,
@@ -418,6 +456,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -463,6 +502,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -479,9 +519,9 @@ describe("discovery service", () => {
     expect(repository.queueRun).not.toHaveBeenCalled();
     expect(repository.claimRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        externalRunKey: "discovery:trial:trial-key",
+        externalRunKey: "discovery:trial:general_discovery:trial-key",
         queueIfMissing: expect.objectContaining({
-          externalRunKey: "discovery:trial:trial-key",
+          externalRunKey: "discovery:trial:general_discovery:trial-key",
           trigger: "trial",
         }),
       }),
@@ -504,6 +544,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -567,6 +608,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -632,6 +674,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -673,6 +716,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -716,6 +760,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -756,6 +801,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -797,6 +843,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -828,6 +875,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -871,6 +919,7 @@ describe("discovery service", () => {
       adminEmails: ["admin@example.com"],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -906,6 +955,7 @@ describe("discovery service", () => {
       adminEmails: ["admin@example.com"],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -949,6 +999,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -983,6 +1034,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1015,6 +1067,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1034,10 +1087,10 @@ describe("discovery service", () => {
       expect.objectContaining({
         triggers: ["manual"],
         fallbackExternalRunKey:
-          "discovery:scheduled:2026-07-22:india:both:20:50",
+          "discovery:scheduled:general_discovery:2026-07-22:india:both:20:50",
         queueIfMissing: expect.objectContaining({
           externalRunKey:
-            "discovery:scheduled:2026-07-22:india:both:20:50",
+            "discovery:scheduled:general_discovery:2026-07-22:india:both:20:50",
           trigger: "scheduled",
         }),
       }),
@@ -1053,6 +1106,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1070,9 +1124,9 @@ describe("discovery service", () => {
     expect(repository.claimRun).toHaveBeenCalledTimes(1);
     expect(repository.claimRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        externalRunKey: "discovery:trial:unused-trial-token",
+        externalRunKey: "discovery:trial:general_discovery:unused-trial-token",
         queueIfMissing: expect.objectContaining({
-          externalRunKey: "discovery:trial:unused-trial-token",
+          externalRunKey: "discovery:trial:general_discovery:unused-trial-token",
           trigger: "trial",
         }),
       }),
@@ -1093,6 +1147,7 @@ describe("discovery service", () => {
         adminEmails: [],
         workerSecret: "worker-secret",
         config: {
+          campaignKey: "general_discovery",
           geographies: ["India"],
           companyCategories: ["technology"],
           creatorCategories: ["technology"],
@@ -1136,6 +1191,7 @@ describe("discovery service", () => {
       adminEmails: ["admin@example.com"],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1166,6 +1222,7 @@ describe("discovery service", () => {
       adminEmails: ["admin@example.com"],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1197,6 +1254,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1236,6 +1294,7 @@ describe("discovery service", () => {
       adminEmails: [],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1278,6 +1337,7 @@ describe("discovery service", () => {
       adminEmails: ["admin@example.com"],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1313,6 +1373,7 @@ describe("discovery service", () => {
       adminEmails: ["admin@example.com"],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1345,6 +1406,7 @@ describe("discovery service", () => {
       adminEmails: ["admin@example.com"],
       workerSecret: "worker-secret",
       config: {
+        campaignKey: "general_discovery",
         geographies: ["India"],
         companyCategories: ["technology"],
         creatorCategories: ["technology"],
@@ -1371,6 +1433,270 @@ describe("discovery service", () => {
     });
     expect(repository.updateCandidateStatus).toHaveBeenCalledWith(
       expect.objectContaining({ candidateId, status: "shortlisted" }),
+    );
+  });
+
+  it("queues and claims the default physical-AI campaign with its V2 contract", async () => {
+    const repository = createRepositoryDouble();
+    vi.mocked(repository.claimRun).mockResolvedValue({
+      id: "00000000-0000-4000-8000-000000000050",
+      campaignKey: "robotics_hardware_india",
+      trigger: "scheduled",
+      geography: "India",
+      candidateType: "both",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 75,
+    } as never);
+    const service = createDiscoveryService({
+      repository,
+      adminEmails: ["admin@example.com"],
+      workerSecret: "worker-secret",
+      config: {
+        campaignKey: "robotics_hardware_india",
+        geographies: ["India"],
+        companyCategories: ["robot makers and integrators"],
+        creatorCategories: ["robotics engineering"],
+        totalCandidates: 20,
+        companyPercentage: 75,
+        enabledSources: ["codex_web"],
+      },
+      now: () => new Date("2026-07-28T03:00:00.000Z"),
+      token: () => "physical-ai-lease",
+    });
+
+    const claim = await service.claimRun({ trigger: "scheduled" });
+
+    expect(repository.claimRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fallbackExternalRunKey:
+          "discovery:scheduled:robotics_hardware_india:2026-07-28:india:both:20:75",
+        queueIfMissing: expect.objectContaining({
+          campaignKey: "robotics_hardware_india",
+          requestedCount: 20,
+          companyPercentage: 75,
+        }),
+      }),
+    );
+    expect(claim).toMatchObject({
+      claimed: true,
+      promptVersion: "codex-web-v2",
+      config: {
+        campaignKey: "robotics_hardware_india",
+        allocation: { companies: 15, creators: 5 },
+      },
+      outputSchema: discoveryV2OutputSchema,
+    });
+
+    vi.mocked(repository.queueRun).mockResolvedValue({
+      id: "00000000-0000-4000-8000-000000000051",
+      campaignKey: "robotics_hardware_india",
+    } as never);
+    await service.queueManualRun({ userId: "admin", email: "admin@example.com" });
+    expect(repository.queueRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        campaignKey: "robotics_hardware_india",
+        externalRunKey: expect.stringContaining(
+          "discovery:manual:robotics_hardware_india:",
+        ),
+      }),
+    );
+  });
+
+  it("claims the explicit 50-company robotics seed and rejects invalid preset selectors", async () => {
+    const repository = createRepositoryDouble();
+    vi.mocked(repository.claimRun).mockResolvedValue({
+      id: "00000000-0000-4000-8000-000000000052",
+      campaignKey: "robotics_hardware_india",
+      trigger: "trial",
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 50,
+      companyPercentage: 100,
+    } as never);
+    const tokens = ["seed-key", "seed-lease"];
+    const service = createDiscoveryService({
+      repository,
+      adminEmails: [],
+      workerSecret: "worker-secret",
+      config: {
+        campaignKey: "robotics_hardware_india",
+        geographies: ["India"],
+        companyCategories: ["robot makers and integrators"],
+        creatorCategories: ["robotics engineering"],
+        totalCandidates: 20,
+        companyPercentage: 75,
+        enabledSources: ["codex_web"],
+      },
+      token: () => tokens.shift()!,
+    });
+
+    expect(
+      await service.claimRun({ trigger: "trial", preset: "robotics-seed" }),
+    ).toMatchObject({
+      claimed: true,
+      promptVersion: "codex-web-v2",
+      config: { allocation: { companies: 50, creators: 0 } },
+    });
+    expect(repository.claimRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        externalRunKey:
+          "discovery:trial:robotics_hardware_india:robotics-seed:seed-key",
+        queueIfMissing: expect.objectContaining({
+          campaignKey: "robotics_hardware_india",
+          candidateType: "company",
+          requestedCount: 50,
+          companyPercentage: 100,
+        }),
+      }),
+    );
+
+    vi.mocked(repository.claimRun).mockClear();
+    await expect(
+      service.claimRun({
+        trigger: "scheduled",
+        preset: "robotics-seed",
+      }),
+    ).resolves.toMatchObject({ ok: false, status: 400 });
+    await expect(
+      service.claimRun({ trigger: "trial", preset: "unknown" } as never),
+    ).resolves.toMatchObject({ ok: false, status: 400 });
+    expect(repository.claimRun).not.toHaveBeenCalled();
+  });
+
+  it("uses the persisted campaign for prompt compatibility and safe duplicate conflicts", async () => {
+    const repository = createRepositoryDouble();
+    const runId = "00000000-0000-4000-8000-000000000053";
+    vi.mocked(repository.getRun).mockResolvedValue({
+      id: runId,
+      campaignKey: "robotics_hardware_india",
+      candidateType: "company",
+      requestedCount: 50,
+      companyPercentage: 100,
+    } as never);
+    const service = createDiscoveryService({
+      repository,
+      adminEmails: [],
+      workerSecret: "worker-secret",
+      config: {
+        campaignKey: "robotics_hardware_india",
+        geographies: ["India"],
+        companyCategories: ["robot makers and integrators"],
+        creatorCategories: ["robotics engineering"],
+        totalCandidates: 20,
+        companyPercentage: 75,
+        enabledSources: ["codex_web"],
+      },
+    });
+
+    await expect(
+      service.completeRun(runId, {
+        runId,
+        leaseToken: "lease-token",
+        promptVersion: "codex-web-v1",
+        candidates: [],
+        sourceErrors: [],
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      status: 400,
+      error: "Discovery batch prompt version does not match the claimed run.",
+    });
+    expect(repository.completeRun).not.toHaveBeenCalled();
+
+    vi.mocked(repository.completeRun).mockResolvedValue({
+      outcome: "conflict",
+      reason: "duplicate_candidate_in_batch",
+      details: { candidateIndexes: [0, 1] },
+      run: { id: runId, status: "running" },
+    } as never);
+    const result = await service.completeRun(runId, {
+      runId,
+      leaseToken: "lease-token",
+      promptVersion: "codex-web-v2",
+      candidates: [physicalAiCandidate(0), physicalAiCandidate(1)],
+      sourceErrors: [],
+    });
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      error: "Discovery run cannot accept this submission.",
+      reason: "duplicate_candidate_in_batch",
+      details: { candidateIndexes: [0, 1] },
+    });
+    expect(JSON.stringify(result)).not.toContain("Company 0");
+  });
+
+  it("returns authorized research DTOs and distinguishes invalid, missing, and empty history", async () => {
+    const repository = createRepositoryDouble();
+    const candidateId = "00000000-0000-4000-8000-000000000054";
+    const service = createDiscoveryService({
+      repository,
+      adminEmails: ["admin@example.com"],
+      workerSecret: "worker-secret",
+      config: {
+        campaignKey: "robotics_hardware_india",
+        geographies: ["India"],
+        companyCategories: ["robot makers and integrators"],
+        creatorCategories: ["robotics engineering"],
+        totalCandidates: 20,
+        companyPercentage: 75,
+        enabledSources: ["codex_web"],
+      },
+    });
+    const admin = { userId: "admin", email: "admin@example.com" };
+    const member = { userId: "member", email: "member@example.com" };
+
+    await expect(service.getCandidateResearch(member, candidateId)).resolves.toMatchObject({
+      ok: false,
+      status: 403,
+    });
+    await expect(service.getCandidateResearch(admin, "invalid")).resolves.toMatchObject({
+      ok: false,
+      status: 400,
+    });
+    expect(repository.getCandidateResearchVersions).not.toHaveBeenCalled();
+
+    vi.mocked(repository.getCandidateResearchVersions).mockResolvedValueOnce(null);
+    await expect(service.getCandidateResearch(admin, candidateId)).resolves.toMatchObject({
+      ok: false,
+      status: 404,
+    });
+    vi.mocked(repository.getCandidateResearchVersions).mockResolvedValueOnce({
+      candidateId,
+      latest: null,
+      history: [],
+    });
+    await expect(service.getCandidateResearch(admin, candidateId)).resolves.toEqual({
+      ok: true,
+      research: { candidateId, latest: null, history: [] },
+    });
+
+    const latest = {
+      id: "00000000-0000-4000-8000-000000000055",
+      candidateId,
+      discoveryRunId: "00000000-0000-4000-8000-000000000056",
+      summary: physicalAiCandidate(0).research.summary,
+      findings: physicalAiCandidate(0).research.findings,
+      sourceUrls: physicalAiCandidate(0).research.sourceUrls,
+      analysisVersion: "physical-ai-v1",
+      createdAt: new Date("2026-07-28T06:00:00.000Z"),
+    };
+    vi.mocked(repository.getCandidateResearchVersions).mockResolvedValueOnce({
+      candidateId,
+      latest,
+      history: [],
+    });
+    await expect(service.getCandidateResearch(admin, candidateId)).resolves.toMatchObject({
+      ok: true,
+      research: {
+        latest: { createdAt: "2026-07-28T06:00:00.000Z" },
+      },
+    });
+    expect(repository.getCandidateResearchVersions).toHaveBeenLastCalledWith(
+      candidateId,
+      25,
     );
   });
 });

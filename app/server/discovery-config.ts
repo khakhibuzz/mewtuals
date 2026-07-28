@@ -26,7 +26,7 @@ export const PHYSICAL_AI_CAMPAIGN_KEY = "robotics_hardware_india" as const;
 const discoveryEnvironments = new Set(["development", "test", "production"]);
 
 export type DiscoveryConfig = {
-  campaignKey: typeof PHYSICAL_AI_CAMPAIGN_KEY;
+  campaignKey: string;
   geographies: readonly string[];
   companyCategories: readonly string[];
   creatorCategories: readonly string[];
