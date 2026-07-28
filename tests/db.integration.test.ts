@@ -21,6 +21,7 @@ import { createVerificationRepository } from "../db/repositories/verification-re
 import { opportunitySeedData } from "../db/seed-data";
 import * as databaseSchema from "../db/schema";
 import {
+  candidateResearchVersions,
   magicLinks,
   discoveryCandidateIdentifiers,
   discoveryCandidates,
@@ -155,6 +156,18 @@ async function cleanDiscoveryRows() {
   await db.delete(discoveryCandidateIdentifiers);
   await db.delete(discoveryCandidates);
   await db.delete(discoveryRuns);
+}
+
+function physicalAiResearch(suffix = "default") {
+  return {
+    summary:
+      `An Indian robotics participant whose systems role is documented for partnership research ${suffix}.`,
+    findings:
+      "1. Domain and category\n" +
+      `Evidence-backed physical-AI ecosystem finding ${suffix}.\n`.repeat(30),
+    sourceUrls: [`https://evidence-${suffix}.example.com/company`],
+    analysisVersion: "physical-ai-v1" as const,
+  };
 }
 
 async function cleanTestRows() {
@@ -2028,6 +2041,320 @@ describe("PostgreSQL authentication repository", () => {
     expect(await db.select().from(discoveryCandidateSources)).toHaveLength(1);
   });
 
+  it("persists versioned physical-AI research, preserves review status, and replays exactly once", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const firstQueued = await discoveryRepository.queueRun({
+      externalRunKey: `physical-ai-first-${testRun}`,
+      campaignKey: "robotics_hardware_india",
+      trigger: "trial",
+      now: new Date("2026-07-22T06:20:00.000Z"),
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 100,
+    });
+    const firstRun = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T06:21:00.000Z"),
+      leaseTokenHash: "physical-ai-first-lease",
+      leaseExpiresAt: new Date("2026-07-22T08:00:00.000Z"),
+      externalRunKey: firstQueued.externalRunKey,
+    });
+    expect(firstRun).not.toBeNull();
+    const candidate = {
+      type: "company" as const,
+      name: "Physical AI Motion",
+      canonicalUrl: "https://physical-ai-motion.example.com",
+      websiteUrl: "https://physical-ai-motion.example.com",
+      primarySocialUrl: null,
+      linkedinUrl: "https://linkedin.com/company/physical-ai-motion",
+      discoveredDescription: "An Indian motion-control company for robotics.",
+      category: "components and actuation",
+      subcategory: "motion control",
+      geography: "India",
+      sourceName: "codex_web",
+      sourceUrl: "https://evidence-first.example.com/company",
+      discoveryScore: 88,
+      rawMetadata: {},
+      research: physicalAiResearch("first"),
+    };
+    const firstSubmission = {
+      runId: firstRun!.id,
+      leaseTokenHash: "physical-ai-first-lease",
+      submissionHash: "physical-ai-first-submission",
+      now: new Date("2026-07-22T06:22:00.000Z"),
+      candidates: [candidate],
+      sourceErrors: [],
+    };
+
+    expect(await discoveryRepository.completeRun(firstSubmission)).toMatchObject({
+      outcome: "completed",
+      run: { status: "succeeded", newCount: 1 },
+    });
+    const [storedCandidate] = await db.select().from(discoveryCandidates);
+    expect(storedCandidate).toBeDefined();
+    await discoveryRepository.updateCandidateStatus({
+      candidateId: storedCandidate!.id,
+      status: "shortlisted",
+      expectedUpdatedAt: storedCandidate!.updatedAt,
+      now: new Date("2026-07-22T06:23:00.000Z"),
+    });
+
+    const secondQueued = await discoveryRepository.queueRun({
+      externalRunKey: `physical-ai-second-${testRun}`,
+      campaignKey: "robotics_hardware_india",
+      trigger: "trial",
+      now: new Date("2026-07-22T06:24:00.000Z"),
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 100,
+    });
+    const secondRun = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T06:25:00.000Z"),
+      leaseTokenHash: "physical-ai-second-lease",
+      leaseExpiresAt: new Date("2026-07-22T08:00:00.000Z"),
+      externalRunKey: secondQueued.externalRunKey,
+    });
+    expect(secondRun).not.toBeNull();
+    const secondSubmission = {
+      runId: secondRun!.id,
+      leaseTokenHash: "physical-ai-second-lease",
+      submissionHash: "physical-ai-second-submission",
+      now: new Date("2026-07-22T06:26:00.000Z"),
+      candidates: [
+        {
+          ...candidate,
+          discoveredDescription: "Updated evidence for the motion-control company.",
+          sourceUrl: "https://evidence-second.example.com/company",
+          research: physicalAiResearch("second"),
+        },
+      ],
+      sourceErrors: [],
+    };
+    expect(await discoveryRepository.completeRun(secondSubmission)).toMatchObject({
+      outcome: "completed",
+      run: { status: "succeeded", newCount: 0, duplicateCount: 1 },
+    });
+    expect(
+      await discoveryRepository.completeRun({
+        ...secondSubmission,
+        now: new Date("2026-07-22T06:27:00.000Z"),
+      }),
+    ).toMatchObject({ outcome: "replayed" });
+
+    expect(await db.select().from(candidateResearchVersions)).toHaveLength(2);
+    expect(
+      await db
+        .select({ status: discoveryCandidates.status })
+        .from(discoveryCandidates),
+    ).toEqual([{ status: "shortlisted" }]);
+    expect(
+      await discoveryRepository.getCandidateResearchVersions(
+        storedCandidate!.id,
+        25,
+      ),
+    ).toMatchObject({
+      candidateId: storedCandidate!.id,
+      latest: { summary: physicalAiResearch("second").summary },
+      history: [{ summary: physicalAiResearch("first").summary }],
+    });
+    await expect(
+      discoveryRepository.getCandidateResearchVersions(randomUUID(), 25),
+    ).resolves.toBeNull();
+  });
+
+  it("persists a representative 50-company research batch in one transaction", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const queued = await discoveryRepository.queueRun({
+      externalRunKey: `physical-ai-fifty-${testRun}`,
+      campaignKey: "robotics_hardware_india",
+      trigger: "trial",
+      now: new Date("2026-07-22T06:28:00.000Z"),
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 50,
+      companyPercentage: 100,
+    });
+    const run = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T06:29:00.000Z"),
+      leaseTokenHash: "physical-ai-fifty-lease",
+      leaseExpiresAt: new Date("2026-07-22T08:00:00.000Z"),
+      externalRunKey: queued.externalRunKey,
+    });
+
+    const result = await discoveryRepository.completeRun({
+      runId: run!.id,
+      leaseTokenHash: "physical-ai-fifty-lease",
+      submissionHash: "physical-ai-fifty-submission",
+      now: new Date("2026-07-22T06:30:00.000Z"),
+      candidates: Array.from({ length: 50 }, (_, index) => ({
+        type: "company" as const,
+        name: `Physical AI Batch Company ${index}`,
+        canonicalUrl: `https://physical-ai-batch-${index}.example.com`,
+        websiteUrl: `https://physical-ai-batch-${index}.example.com`,
+        primarySocialUrl: null,
+        linkedinUrl: null,
+        discoveredDescription: "An Indian robotics batch persistence fixture.",
+        category: "robot makers and integrators",
+        subcategory: null,
+        geography: "India",
+        sourceName: "codex_web",
+        sourceUrl: `https://evidence.example.com/company-${index}`,
+        discoveryScore: 80,
+        rawMetadata: {},
+        research: physicalAiResearch(`batch-${index}`),
+      })),
+      sourceErrors: [],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "completed",
+      run: {
+        status: "succeeded",
+        foundCount: 50,
+        newCount: 50,
+        duplicateCount: 0,
+      },
+    });
+    expect(await db.select().from(discoveryCandidates)).toHaveLength(50);
+    expect(await db.select().from(discoveryCandidateIdentifiers)).toHaveLength(
+      50,
+    );
+    expect(await db.select().from(discoveryCandidateSources)).toHaveLength(50);
+    expect(await db.select().from(candidateResearchVersions)).toHaveLength(50);
+  });
+
+  it("rejects two payload entries resolving to one stored candidate before any write", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const fixtureRun = await discoveryRepository.queueRun({
+      externalRunKey: `physical-ai-duplicate-fixture-${testRun}`,
+      trigger: "trial",
+      now: new Date("2026-07-22T06:30:00.000Z"),
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 100,
+    });
+    const claimedFixture = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T06:31:00.000Z"),
+      leaseTokenHash: "duplicate-fixture-lease",
+      leaseExpiresAt: new Date("2026-07-22T08:00:00.000Z"),
+      externalRunKey: fixtureRun.externalRunKey,
+    });
+    await discoveryRepository.completeRun({
+      runId: claimedFixture!.id,
+      leaseTokenHash: "duplicate-fixture-lease",
+      submissionHash: "duplicate-fixture-submission",
+      now: new Date("2026-07-22T06:32:00.000Z"),
+      candidates: [
+        {
+          type: "company",
+          name: "Alias Owner",
+          canonicalUrl: "https://alias-owner.example.com",
+          websiteUrl: "https://alias-owner.example.com",
+          primarySocialUrl: null,
+          linkedinUrl: "https://linkedin.com/company/alias-owner",
+          discoveredDescription: "Stored candidate with two stable aliases.",
+          category: "components and actuation",
+          subcategory: null,
+          geography: "India",
+          sourceName: "codex_web",
+          sourceUrl: "https://evidence.example.com/alias-owner",
+          discoveryScore: 80,
+          rawMetadata: {},
+        },
+      ],
+      sourceErrors: [],
+    });
+    const [aliasOwner] = await db.select().from(discoveryCandidates);
+    expect(
+      await discoveryRepository.getCandidateResearchVersions(aliasOwner!.id, 25),
+    ).toEqual({
+      candidateId: aliasOwner!.id,
+      latest: null,
+      history: [],
+    });
+    const target = await discoveryRepository.queueRun({
+      externalRunKey: `physical-ai-duplicate-target-${testRun}`,
+      campaignKey: "robotics_hardware_india",
+      trigger: "trial",
+      now: new Date("2026-07-22T06:33:00.000Z"),
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 2,
+      companyPercentage: 100,
+    });
+    const targetRun = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T06:34:00.000Z"),
+      leaseTokenHash: "duplicate-target-lease",
+      leaseExpiresAt: new Date("2026-07-22T08:00:00.000Z"),
+      externalRunKey: target.externalRunKey,
+    });
+    const common = {
+      type: "company" as const,
+      primarySocialUrl: null,
+      discoveredDescription: "A duplicate payload alias that must not be written.",
+      category: "components and actuation",
+      subcategory: null,
+      geography: "India",
+      sourceName: "codex_web",
+      discoveryScore: 90,
+      rawMetadata: {},
+      research: physicalAiResearch("duplicate"),
+    };
+    const before = {
+      candidates: await db.select().from(discoveryCandidates),
+      sources: await db.select().from(discoveryCandidateSources),
+      research: await db.select().from(candidateResearchVersions),
+    };
+
+    const result = await discoveryRepository.completeRun({
+      runId: targetRun!.id,
+      leaseTokenHash: "duplicate-target-lease",
+      submissionHash: "duplicate-target-submission",
+      now: new Date("2026-07-22T06:35:00.000Z"),
+      candidates: [
+        {
+          ...common,
+          name: "Website Alias",
+          canonicalUrl: "https://alias-owner.example.com",
+          websiteUrl: "https://alias-owner.example.com",
+          linkedinUrl: null,
+          sourceUrl: "https://evidence.example.com/website-alias",
+        },
+        {
+          ...common,
+          name: "LinkedIn Alias",
+          canonicalUrl: "https://linkedin.com/company/alias-owner",
+          websiteUrl: null,
+          linkedinUrl: "https://linkedin.com/company/alias-owner",
+          sourceUrl: "https://evidence.example.com/linkedin-alias",
+        },
+      ],
+      sourceErrors: [],
+    });
+
+    expect(result).toMatchObject({
+      outcome: "conflict",
+      reason: "duplicate_candidate_in_batch",
+      details: { candidateIndexes: [0, 1] },
+      run: { status: "running" },
+    });
+    expect(await db.select().from(discoveryCandidates)).toEqual(before.candidates);
+    expect(await db.select().from(discoveryCandidateSources)).toEqual(before.sources);
+    expect(await db.select().from(candidateResearchVersions)).toEqual(
+      before.research,
+    );
+  });
+
   it("fails a leased discovery run and safely replays the same failure", async () => {
     await cleanDiscoveryRows();
     const discoveryRepository = createDiscoveryRepository(db);
@@ -2588,6 +2915,7 @@ describe("PostgreSQL authentication repository", () => {
             name: "Valid First Candidate",
             canonicalUrl: "https://valid-first.example.com",
             sourceUrl: "https://source.example.com/valid-first",
+            research: physicalAiResearch("rollback"),
           },
           {
             ...common,
@@ -2601,6 +2929,7 @@ describe("PostgreSQL authentication repository", () => {
       }),
     ).rejects.toThrow("public host");
     expect(await db.select().from(discoveryCandidates)).toHaveLength(0);
+    expect(await db.select().from(candidateResearchVersions)).toHaveLength(0);
     expect(
       await db.select().from(discoveryRuns).where(eq(discoveryRuns.id, run!.id)),
     ).toMatchObject([{ status: "running", submissionHash: null }]);
@@ -2722,7 +3051,50 @@ describe("PostgreSQL authentication repository", () => {
     expect(summary.sourceErrors[0]?.message).toHaveLength(1_000);
   });
 
-  it("marks an empty completed discovery batch failed", async () => {
+  it("marks an honest empty discovery batch succeeded", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const queued = await discoveryRepository.queueRun({
+      externalRunKey: `discovery-empty-success-${testRun}`,
+      campaignKey: "robotics_hardware_india",
+      trigger: "trial",
+      now: new Date("2026-07-22T14:50:00.000Z"),
+      geography: "India",
+      candidateType: "both",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 75,
+    });
+    const run = await discoveryRepository.claimRun({
+      now: new Date("2026-07-22T14:51:00.000Z"),
+      leaseTokenHash: "empty-success-lease",
+      leaseExpiresAt: new Date("2026-07-22T17:00:00.000Z"),
+      externalRunKey: queued.externalRunKey,
+    });
+
+    expect(
+      await discoveryRepository.completeRun({
+        runId: run!.id,
+        leaseTokenHash: "empty-success-lease",
+        submissionHash: "empty-success-submission",
+        now: new Date("2026-07-22T14:52:00.000Z"),
+        candidates: [],
+        sourceErrors: [],
+      }),
+    ).toMatchObject({
+      outcome: "completed",
+      run: {
+        status: "succeeded",
+        foundCount: 0,
+        errorSummary: {
+          sourceErrors: [],
+          identityConflicts: [],
+        },
+      },
+    });
+  });
+
+  it("marks a source-failed empty discovery batch failed", async () => {
     await cleanDiscoveryRows();
     const discoveryRepository = createDiscoveryRepository(db);
     await discoveryRepository.queueRun({
