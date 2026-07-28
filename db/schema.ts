@@ -358,6 +358,7 @@ export const discoveryRuns = pgTable(
     externalRunKey: text("external_run_key")
       .notNull()
       .unique("discovery_runs_external_run_key_unique"),
+    campaignKey: text("campaign_key").default("general_discovery").notNull(),
     trigger: discoveryRunTriggerEnum("trigger").notNull(),
     status: discoveryRunStatusEnum("status").default("queued").notNull(),
     startedAt: timestamp("started_at", { withTimezone: true }),
@@ -475,6 +476,57 @@ export const discoveryCandidates = pgTable(
     check(
       "discovery_candidates_name_check",
       sql`length(btrim(${table.name})) > 0 AND length(btrim(${table.normalizedName})) > 0`,
+    ),
+  ],
+);
+
+export const candidateResearchVersions = pgTable(
+  "candidate_research_versions",
+  {
+    id: id(),
+    candidateId: uuid("candidate_id").notNull(),
+    discoveryRunId: uuid("discovery_run_id").notNull(),
+    summary: text("summary").notNull(),
+    findings: text("findings").notNull(),
+    sourceUrls: jsonb("source_urls").$type<string[]>().notNull(),
+    analysisVersion: text("analysis_version").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    unique("candidate_research_versions_candidate_run_unique").on(
+      table.candidateId,
+      table.discoveryRunId,
+    ),
+    foreignKey({
+      name: "candidate_research_versions_candidate_fk",
+      columns: [table.candidateId],
+      foreignColumns: [discoveryCandidates.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "candidate_research_versions_run_fk",
+      columns: [table.discoveryRunId],
+      foreignColumns: [discoveryRuns.id],
+    }),
+    index("candidate_research_versions_candidate_created_idx").on(
+      table.candidateId,
+      table.createdAt,
+    ),
+    index("candidate_research_versions_run_idx").on(table.discoveryRunId),
+    check(
+      "candidate_research_versions_summary_check",
+      sql`length(${table.summary}) between 80 and 1200`,
+    ),
+    check(
+      "candidate_research_versions_findings_check",
+      sql`length(${table.findings}) between 600 and 12000`,
+    ),
+    check(
+      "candidate_research_versions_sources_check",
+      sql`jsonb_typeof(${table.sourceUrls}) = 'array' and jsonb_array_length(${table.sourceUrls}) between 1 and 12`,
+    ),
+    check(
+      "candidate_research_versions_analysis_check",
+      sql`${table.analysisVersion} = 'physical-ai-v1'`,
     ),
   ],
 );

@@ -112,7 +112,7 @@ async function createUpgradeMigrationFolder() {
     const journal = JSON.parse(await readFile(journalPath, "utf8"));
     const filteredJournal = {
       ...journal,
-      entries: journal.entries.filter(({ idx }) => idx <= 3),
+      entries: journal.entries.filter(({ idx }) => idx <= 4),
     };
     await writeFile(
       join(metaFolder, "_journal.json"),
@@ -203,7 +203,29 @@ async function insertUpgradeFixtures(sql) {
       notes,
       reviewed_at as "reviewedAt"
   `;
-  return { user, profile, review };
+  const [discoveryRun] = await sql`
+    insert into discovery_runs (
+      external_run_key,
+      trigger,
+      status,
+      completed_at,
+      geography,
+      candidate_type,
+      requested_count,
+      company_percentage
+    ) values (
+      'upgrade-v1-existing-run',
+      'scheduled',
+      'succeeded',
+      '2026-07-21T10:00:00.000Z',
+      'India',
+      'both',
+      20,
+      50
+    )
+    returning id, external_run_key as "externalRunKey", status
+  `;
+  return { user, profile, review, discoveryRun };
 }
 
 function assert(condition, message) {
@@ -229,6 +251,7 @@ function assertExactDefinitions(actualRows, expectedDefinitions, label) {
 
 async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   const expectedTables = [
+    "candidate_research_versions",
     "discovery_candidate_identifiers",
     "discovery_candidate_sources",
     "discovery_candidates",
@@ -315,6 +338,16 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   assert(
     JSON.stringify(columnsByTable) ===
       JSON.stringify({
+        candidate_research_versions: [
+          "id",
+          "candidate_id",
+          "discovery_run_id",
+          "summary",
+          "findings",
+          "source_urls",
+          "analysis_version",
+          "created_at",
+        ],
         discovery_candidate_identifiers: [
           "id",
           "candidate_id",
@@ -381,6 +414,7 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
           "duplicate_count",
           "error_summary",
           "requested_by_email",
+          "campaign_key",
         ],
       }),
     `Expected exact discovery columns, found ${JSON.stringify(columnsByTable)}.`,
@@ -399,6 +433,7 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   assert(
     JSON.stringify(nullableColumns) ===
       JSON.stringify({
+        candidate_research_versions: [],
         discovery_candidate_identifiers: [],
         discovery_candidate_sources: [],
         discovery_candidates: [
@@ -429,6 +464,8 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   assert(
     JSON.stringify(columnDefaults) ===
       JSON.stringify({
+        "candidate_research_versions.id": "gen_random_uuid()",
+        "candidate_research_versions.created_at": "now()",
         "discovery_candidate_identifiers.id": "gen_random_uuid()",
         "discovery_candidate_identifiers.created_at": "now()",
         "discovery_candidate_sources.id": "gen_random_uuid()",
@@ -453,11 +490,17 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
         "discovery_runs.new_count": "0",
         "discovery_runs.duplicate_count": "0",
         "discovery_runs.error_summary": "'{}'::jsonb",
+        "discovery_runs.campaign_key": "'general_discovery'::text",
       }),
     `Expected exact discovery defaults, found ${JSON.stringify(columnDefaults)}.`,
   );
 
   const requiredConstraints = [
+    "candidate_research_versions_analysis_check",
+    "candidate_research_versions_candidate_run_unique",
+    "candidate_research_versions_findings_check",
+    "candidate_research_versions_sources_check",
+    "candidate_research_versions_summary_check",
     "discovery_candidate_identifiers_type_value_unique",
     "discovery_candidate_sources_evidence_unique",
     "discovery_candidates_id_type_unique",
@@ -478,6 +521,10 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
     `Expected discovery constraints, found ${JSON.stringify(constraints)}.`,
   );
   const checkNames = [
+    "candidate_research_versions_analysis_check",
+    "candidate_research_versions_findings_check",
+    "candidate_research_versions_sources_check",
+    "candidate_research_versions_summary_check",
     "discovery_candidate_identifiers_value_check",
     "discovery_candidates_name_check",
     "discovery_candidates_score_check",
@@ -497,6 +544,14 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   assertExactDefinitions(
     checkDefinitions,
     {
+      candidate_research_versions_analysis_check:
+        "CHECK (analysis_version = 'physical-ai-v1'::text)",
+      candidate_research_versions_findings_check:
+        "CHECK (length(findings) >= 600 AND length(findings) <= 12000)",
+      candidate_research_versions_sources_check:
+        "CHECK (jsonb_typeof(source_urls) = 'array'::text AND jsonb_array_length(source_urls) >= 1 AND jsonb_array_length(source_urls) <= 12)",
+      candidate_research_versions_summary_check:
+        "CHECK (length(summary) >= 80 AND length(summary) <= 1200)",
       discovery_candidate_identifiers_value_check:
         "CHECK (length(btrim(normalized_value)) > 0)",
       discovery_candidates_name_check:
@@ -516,6 +571,8 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   );
 
   const foreignKeyNames = [
+    "candidate_research_versions_candidate_fk",
+    "candidate_research_versions_run_fk",
     "discovery_candidates_recent_run_fk",
     "discovery_identifiers_candidate_type_fk",
     "discovery_sources_candidate_fk",
@@ -532,6 +589,10 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   assertExactDefinitions(
     foreignKeyDefinitions,
     {
+      candidate_research_versions_candidate_fk:
+        "FOREIGN KEY (candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
+      candidate_research_versions_run_fk:
+        "FOREIGN KEY (discovery_run_id) REFERENCES discovery_runs(id)",
       discovery_candidates_recent_run_fk:
         "FOREIGN KEY (most_recent_run_id) REFERENCES discovery_runs(id)",
       discovery_identifiers_candidate_type_fk:
@@ -545,6 +606,7 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   );
 
   const uniqueNames = [
+    "candidate_research_versions_candidate_run_unique",
     "discovery_candidate_identifiers_type_value_unique",
     "discovery_candidate_sources_evidence_unique",
     "discovery_candidates_id_type_unique",
@@ -562,6 +624,8 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   assertExactDefinitions(
     uniqueDefinitions,
     {
+      candidate_research_versions_candidate_run_unique:
+        "UNIQUE (candidate_id, discovery_run_id)",
       discovery_candidate_identifiers_type_value_unique:
         "UNIQUE (candidate_type, normalized_value)",
       discovery_candidate_sources_evidence_unique:
@@ -607,6 +671,8 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
     `Expected exact source-first index, found ${sourceFirstIndex?.indexDefinition ?? "none"}.`,
   );
   const filterIndexNames = [
+    "candidate_research_versions_candidate_created_idx",
+    "candidate_research_versions_run_idx",
     "discovery_candidate_identifiers_candidate_idx",
     "discovery_candidate_sources_candidate_idx",
     "discovery_candidate_sources_run_idx",
@@ -631,6 +697,10 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   assertExactDefinitions(
     filterIndexes,
     {
+      candidate_research_versions_candidate_created_idx:
+        "CREATE INDEX candidate_research_versions_candidate_created_idx ON public.candidate_research_versions USING btree (candidate_id, created_at)",
+      candidate_research_versions_run_idx:
+        "CREATE INDEX candidate_research_versions_run_idx ON public.candidate_research_versions USING btree (discovery_run_id)",
       discovery_candidate_identifiers_candidate_idx:
         "CREATE INDEX discovery_candidate_identifiers_candidate_idx ON public.discovery_candidate_identifiers USING btree (candidate_id)",
       discovery_candidate_sources_candidate_idx:
@@ -664,10 +734,10 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
   const journal = JSON.parse(
     await readFile(join(migrationsFolder, "meta", "_journal.json"), "utf8"),
   );
-  const migrationEntries = journal.entries.filter(({ idx }) => idx === 4);
+  const migrationEntries = journal.entries.filter(({ idx }) => idx === 5);
   assert(
-    migrationEntries.length === 1 && migrationEntries[0].tag.startsWith("0004_"),
-    `Expected exactly one 0004 migration journal entry, found ${JSON.stringify(migrationEntries)}.`,
+    migrationEntries.length === 1 && migrationEntries[0].tag.startsWith("0005_"),
+    `Expected exactly one 0005 migration journal entry, found ${JSON.stringify(migrationEntries)}.`,
   );
   const migration = migrationEntries[0];
   const [applied] = await sql`
@@ -677,8 +747,8 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
     from drizzle.__drizzle_migrations
   `;
   assert(
-    applied.totalCount === 5 && applied.migrationCount === 1,
-    `Expected five applied migrations and 0004 exactly once, found ${JSON.stringify(applied)}.`,
+    applied.totalCount === 6 && applied.migrationCount === 1,
+    `Expected six applied migrations and 0005 exactly once, found ${JSON.stringify(applied)}.`,
   );
 
   if (expectedFixtures) {
@@ -713,6 +783,15 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
       from verification_reviews
       where id = ${expectedFixtures.review.id}
     `;
+    const [discoveryRun] = await sql`
+      select
+        id,
+        external_run_key as "externalRunKey",
+        status,
+        campaign_key as "campaignKey"
+      from discovery_runs
+      where id = ${expectedFixtures.discoveryRun.id}
+    `;
     assert(JSON.stringify(user) === JSON.stringify(expectedFixtures.user), "User fixture changed.");
     assert(
       JSON.stringify(profile) === JSON.stringify(expectedFixtures.profile),
@@ -721,6 +800,14 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
     assert(
       JSON.stringify(review) === JSON.stringify(expectedFixtures.review),
       "Verification fixture changed.",
+    );
+    assert(
+      JSON.stringify(discoveryRun) ===
+        JSON.stringify({
+          ...expectedFixtures.discoveryRun,
+          campaignKey: "general_discovery",
+        }),
+      "Existing V1 discovery run was not backfilled to general_discovery.",
     );
   }
 }

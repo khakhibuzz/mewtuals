@@ -1,4 +1,5 @@
 import type {
+  candidateResearchVersions,
   discoveryCandidateIdentifiers,
   discoveryCandidates,
   discoveryCandidateSources,
@@ -47,3 +48,7 @@ export type DiscoveryCandidateSource =
   typeof discoveryCandidateSources.$inferSelect;
 export type NewDiscoveryCandidateSource =
   typeof discoveryCandidateSources.$inferInsert;
+export type CandidateResearchVersion =
+  typeof candidateResearchVersions.$inferSelect;
+export type NewCandidateResearchVersion =
+  typeof candidateResearchVersions.$inferInsert;

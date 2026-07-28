@@ -5,6 +5,7 @@ import { openToInterests } from "../app/domain/signal";
 
 import {
   availabilityEnum,
+  candidateResearchVersions,
   creatorSubtypeEnum,
   discoveryCandidates,
   discoveryCandidateStatusEnum,
@@ -177,6 +178,7 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(configFor(discoveryRuns).name).toBe("discovery_runs");
     expect(columnNames(discoveryRuns)).toEqual(
       expect.arrayContaining([
+        "campaign_key",
         "external_run_key",
         "trigger",
         "status",
@@ -203,6 +205,42 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(hasUniqueIndex(discoveryRuns, "discovery_runs_one_running_idx")).toBe(
       true,
     );
+    expect(discoveryRuns.campaignKey.notNull).toBe(true);
+    expect(discoveryRuns.campaignKey.hasDefault).toBe(true);
+  });
+
+  it("stores append-only candidate research versions with bounded indexes", () => {
+    expect(configFor(candidateResearchVersions).name).toBe(
+      "candidate_research_versions",
+    );
+    expect(columnNames(candidateResearchVersions)).toEqual([
+      "id",
+      "candidate_id",
+      "discovery_run_id",
+      "summary",
+      "findings",
+      "source_urls",
+      "analysis_version",
+      "created_at",
+    ]);
+    expect(uniqueConstraintNames(candidateResearchVersions)).toContain(
+      "candidate_research_versions_candidate_run_unique",
+    );
+    expect(indexNames(candidateResearchVersions)).toEqual(
+      expect.arrayContaining([
+        "candidate_research_versions_candidate_created_idx",
+        "candidate_research_versions_run_idx",
+      ]),
+    );
+    expect(foreignKeyNames(candidateResearchVersions)).toEqual([
+      "candidate_research_versions_candidate_fk",
+      "candidate_research_versions_run_fk",
+    ]);
+    expect(
+      configFor(candidateResearchVersions).foreignKeys.some(
+        (foreignKey) => foreignKey.onDelete === "cascade",
+      ),
+    ).toBe(true);
   });
 
   it("models discovery candidates with immutable identity and review indexes", () => {
