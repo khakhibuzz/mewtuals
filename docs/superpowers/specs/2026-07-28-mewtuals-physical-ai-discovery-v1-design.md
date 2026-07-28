@@ -85,7 +85,7 @@ One new append-only table is added:
 - `candidate_id`: foreign key to `discovery_candidates`
 - `discovery_run_id`: foreign key to `discovery_runs`
 - `summary`: concise dashboard-ready systems and ecosystem context
-- `findings`: bounded Markdown research narrative
+- `findings`: bounded structured plain-text research narrative
 - `source_urls`: JSONB array containing the public URLs supporting this version
 - `analysis_version`: research-contract version, initially `physical-ai-v1`
 - `created_at`: immutable creation timestamp
@@ -129,20 +129,25 @@ The added candidate shape is deliberately small:
 {
   "research": {
     "summary": "Concise systems and ecosystem context for the dashboard",
-    "findings": "Bounded Markdown using the required outline",
+    "findings": "Bounded structured text using the required outline",
     "sourceUrls": ["https://public.example/source"],
     "analysisVersion": "physical-ai-v1"
   }
 }
 ```
 
-Validation requires non-empty bounded `summary` and `findings`, at least one
-valid public HTTP(S) source URL, a recognized analysis version, and a complete
-research object for each V2 candidate. Candidate count, per-type allocation,
-individual text lengths, source count, source URL length, raw metadata, source
-errors, and total request bytes remain bounded. The total batch limit is raised
-only enough to carry one 50-company seed with concise findings; the target
-limit is 1 MiB.
+Validation requires a complete research object for each V2 candidate with:
+
+- `summary`: 80 to 1,200 characters;
+- `findings`: 600 to 12,000 characters;
+- `sourceUrls`: 1 to 12 unique public HTTP(S) URLs, each no longer than 2,048
+  characters; and
+- `analysisVersion`: the literal `physical-ai-v1`.
+
+Candidate count, per-type allocation, raw metadata, source errors, and total
+request bytes also remain bounded. The total batch limit is 1 MiB, enough for
+one 50-company seed with concise findings without creating an unbounded worker
+request.
 
 The worker must not include private data, authenticated page contents, secrets,
 full copied pages, unsupported names, or personal contact details. Public
@@ -151,8 +156,14 @@ relevant and directly supported by a listed public source.
 
 ## Required Findings Outline
 
-`findings` is one Markdown field with a stable writing outline. The outline
+`findings` is one structured plain-text field with a stable writing outline. The outline
 creates research consistency without creating database structure.
+
+The Codex prompt and administrator review enforce the semantic outline. The
+server validates only the research object's presence, types, and numeric bounds;
+it does not parse prose headings or try to convert the narrative into a hidden
+taxonomy. Source URLs are ordered so findings may refer to them as `[S1]`,
+`[S2]`, and so on, but V1 does not add a field-level citation parser.
 
 ### 1. Domain and category
 
@@ -251,8 +262,17 @@ the worker's authority.
 
 The one-time `robotics-seed` trial preset uses the same claim, validation,
 submission, transaction, and dashboard path but requests 50 companies and zero
-creators. It is an explicit operator action, not a second pipeline and not part
-of the recurring schedule.
+creators. The operator selects it explicitly with:
+
+```bash
+npm run discovery:claim -- --trigger trial --preset robotics-seed
+```
+
+The CLI sends the bounded preset selector in the authenticated claim body. The
+server accepts `robotics-seed` only with the `trial` trigger, maps it to campaign
+`robotics_hardware_india` and allocation 50/0, and rejects unknown presets or a
+preset on a scheduled claim. It is an explicit operator action, not a second
+pipeline and not part of the recurring schedule.
 
 Market saturation is expected. Therefore:
 
@@ -290,6 +310,15 @@ the same lease and submission hash returns the recorded result without new
 writes. A different body for a completed run remains rejected. The unique
 candidate/run research constraint provides an additional database invariant.
 
+A submitted batch may contain only one entry for a resolved candidate. The
+domain validator rejects duplicate normalized candidate identities that are
+visible within the payload. If separate submitted identities resolve through
+stored identifiers to the same candidate, the repository aborts before any
+writes with a bounded `duplicate_candidate_in_batch` error. The run remains
+active so the worker can consolidate the evidence and research into one entry,
+revalidate, and submit the corrected body. V1 does not silently choose or merge
+two competing research narratives.
+
 The 50-company seed must not repeat slow identifier and evidence lookups once
 per candidate when the same information can be loaded or written in bounded
 batches. Repository optimization remains local to PostgreSQL persistence and
@@ -316,10 +345,13 @@ returns the latest version and bounded version history in reverse chronological
 order. Selecting a historical version replaces the displayed summary,
 findings, sources, analysis version, and date inside the same drawer.
 
-The endpoint reuses existing administrator authorization and exposes neither
-worker leases nor private configuration. Findings render as safe text/Markdown;
-submitted HTML is never executed. The existing responsive drawer, focus,
-44-pixel touch target, overflow, and mobile behavior remain intact.
+The endpoint returns the latest version plus at most 24 older versions, for a
+maximum of 25 versions per response. It reuses existing administrator
+authorization and exposes neither worker leases nor private configuration.
+Findings render as text with preserved headings, lists, and line breaks;
+submitted text is never interpreted as HTML or executable Markdown. This avoids
+a new rendering dependency. The existing responsive drawer, focus, 44-pixel
+touch target, overflow, and mobile behavior remain intact.
 
 V1 does not add a relationship graph, taxonomy explorer, contact CRM, scoring
 cards, new analytics theme, or a dense matrix of robotics fields.
@@ -342,15 +374,19 @@ worker:
    and
 9. cleans temporary claim and batch files only after a terminal result.
 
-Codex performs the discovery and analysis. `scripts/discovery-worker.ts`
+The prompt requires evidence-backed factual statements to refer to the ordered
+source list where practical. Codex performs the discovery and analysis.
+`scripts/discovery-worker.ts`
 continues to transport, validate, submit, fail, and cleanly report results; it
 does not become the research intelligence.
 
 ## Initial Seed Run
 
 After migration and deployment, the operator claims the named `robotics-seed`
-trial preset. The worker attempts one source-supported batch of 50 Indian
-robotics, hardware, or physical-AI companies.
+trial preset with
+`npm run discovery:claim -- --trigger trial --preset robotics-seed`. The worker
+attempts one source-supported batch of 50 Indian robotics, hardware, or
+physical-AI companies.
 
 Every accepted company must have:
 
@@ -403,6 +439,11 @@ retain exact-replay compatibility. New physical-AI runs use V2. Deployment
 applies the committed migration before enabling the updated worker contract or
 running the seed.
 
+Generated scheduled external run keys include the campaign key as well as the
+local date and allocation. Trial keys also include the selected preset plus
+their existing uniqueness component. Therefore new robotics runs cannot collide
+with queued or historical general-discovery keys.
+
 ## Testing
 
 ### Domain and service tests
@@ -413,6 +454,8 @@ running the seed.
 - 50/0 seed and 15/5 scheduled allocations
 - honest empty success, partial source failure, and failed research outcomes
 - exact replay and changed-body rejection
+- duplicate payload identity rejection and database-resolved same-candidate
+  rejection without writes
 - preservation of administrator candidate status
 - latest-first research history mapping
 
@@ -431,7 +474,7 @@ running the seed.
 - administrator authorization for research reads
 - no client import of server/database code
 - drawer summary, findings, sources, empty state, and history selection
-- safe Markdown/text rendering
+- safe structured-text rendering
 - keyboard, focus, 44-pixel controls, narrow viewport, and overflow behavior
 - unchanged rendering for candidates without research
 
