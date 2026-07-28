@@ -14,10 +14,10 @@ DATABASE_URL=<managed PostgreSQL URL>
 ADMIN_EMAILS=<comma-separated administrator emails>
 DISCOVERY_WORKER_SECRET=<at least 32 random characters>
 DISCOVERY_GEOGRAPHIES=India
-DISCOVERY_COMPANY_CATEGORIES=startups,consumer brands,AI,technology,creator economy,wellness,fashion,hardware,productivity,fintech
-DISCOVERY_CREATOR_CATEGORIES=technology,startups/business,AI,consumer products,lifestyle,wellness,fashion,finance,podcasts/interviews
+DISCOVERY_COMPANY_CATEGORIES=robot makers and integrators,components and actuation,sensing and perception,electronics and compute,embedded software and AI,manufacturing and testing,distribution and deployment,research and ecosystem support
+DISCOVERY_CREATOR_CATEGORIES=robotics engineering,hardware building,physical AI research,manufacturing and industrial technology,robotics education and ecosystem
 DISCOVERY_TOTAL_CANDIDATES=20
-DISCOVERY_COMPANY_PERCENTAGE=50
+DISCOVERY_COMPANY_PERCENTAGE=75
 DISCOVERY_ENABLED_SOURCES=codex_web
 ```
 
@@ -33,6 +33,13 @@ The shell environment wins over `.env.local`. Never commit either the worker
 secret or a claim artifact. Rotate the server and local secret together if it
 may have been exposed.
 
+The normal allocation ceiling is 20: 15 companies and 5 creators. It is a
+ceiling, not a quota. When the credible India pool is saturated, the worker
+returns fewer candidates or an honest zero instead of lowering the evidence
+bar. `DISCOVERY_TOTAL_CANDIDATES` and `DISCOVERY_COMPANY_PERCENTAGE` change the
+allocation without application code. Changing the automation cadence from
+daily to weekly is likewise only a scheduler setting.
+
 ## Migration and deployment order
 
 1. Create a managed-database recovery point or confirm the provider backup.
@@ -41,7 +48,7 @@ may have been exposed.
 3. Deploy the application with the discovery environment variables.
 4. Confirm an unauthenticated worker claim returns `401`; do not print the
    configured bearer value while checking it.
-5. Run the explicit first trial below.
+5. Run the explicit initial seed below.
 6. Verify its candidates and source evidence in `/admin/discovery` before
    enabling the daily task.
 
@@ -57,6 +64,7 @@ non-2xx response.
 ```bash
 npm run discovery:claim
 npm run discovery:claim -- --trigger trial
+npm run discovery:claim -- --trigger trial --preset robotics-seed
 npm run discovery:validate -- --file <batch.json>
 npm run discovery:submit -- --run-id <id> --lease-token <token> --file <batch.json>
 npm run discovery:fail -- --run-id <id> --lease-token <token> --message <message>
@@ -120,6 +128,52 @@ The claimed configuration is authoritative. Do not exceed its total or
 per-type allocation, and do not silently replace its geography, categories,
 sources, or prompt version.
 
+## Claimed output contracts
+
+Branch on both `promptVersion` and `outputSchema` in the safe claim result. Do
+not assume that every queued run uses the newest contract.
+
+- A `codex-web-v2` claim is the Physical AI contract. Every candidate must have
+  a complete `research` object with `summary`, `findings`, `sourceUrls`, and
+  `analysisVersion: "physical-ai-v1"`. Keep `summary` concise enough for the
+  administrator drawer. Keep `sourceUrls` ordered so findings can cite them as
+  `[S1]`, `[S2]`, and so on where practical.
+- A queued `codex-web-v1` claim must use the unchanged strict V1 candidate
+  shape. It must not include a `research` field. This compatibility branch lets
+  previously queued work complete safely.
+- An unknown prompt version or output schema is not permission to improvise.
+  Stop and report a bounded safe failure.
+
+For `codex-web-v2`, write the structured plain-text `findings` field with these
+seven sections. Do not split them into additional database fields:
+
+1. Domain and category
+2. Product or capability
+3. Robot or physical-AI systems context
+4. Relationship to the wider ecosystem
+5. Mutual-help opportunities
+6. India strategic context
+7. Evidence, assessment, and unknowns
+
+The systems section connects the participant downward to relevant materials,
+manufacturing processes, components, electronics, compute, sensing, power, and
+software, and upward to robot capability or behaviour. State inputs purchased,
+the transformation or capability added, and outputs sold only when evidence or
+a clearly labelled assessment supports them.
+
+The wider-ecosystem section explains the participant's higher-level role,
+including upstream supplier types, downstream buyer types, dependencies,
+bottlenecks, complements, substitutes, and areas where a partnership could
+create disproportionate ecosystem leverage. The mutual-help section says both
+how the participant could help others and what help it could plausibly receive;
+it does not create a match, outreach, or autonomous action.
+
+The India section covers manufacturing location, import dependence,
+approximate value added, technical difficulty, replaceability, and strategic
+importance where public evidence permits. Mark every material statement as an
+`Evidence-backed fact`, `Assessment`, or `Unknown`. Never invent a complete
+supply chain, customer list, manufacturing location, or import profile.
+
 ## Daily Codex task
 
 Configure one standalone Codex scheduled task for **08:30 Asia/Kolkata every
@@ -137,16 +191,30 @@ Run the Mewtuals Discovery Agent from this repository.
    `claimed` is false, report "No discovery work was available" and stop
    successfully. If claimed, retain the returned `claimFile` path without
    printing or displaying that file's contents; it contains a secret lease.
-2. Follow the returned configuration, prompt version, allocation, and output
-   schema exactly. Search permitted public web sources for companies and
-   creators in the returned configured geographies with plausible partnership,
-   distribution, media, co-branding, or collaboration potential. Rotate across
-   the configured category families.
+2. Branch on the safe claim result's `promptVersion` and `outputSchema`. For
+   `codex-web-v2`, research Indian robotics, hardware, and Physical AI companies
+   and creators in the returned categories. Every candidate must include
+   `research.summary`, `research.findings`, ordered `research.sourceUrls`, and
+   `research.analysisVersion` equal to `physical-ai-v1`. Findings must use the
+   these seven numbered sections: 1. Domain and category; 2. Product or
+   capability; 3. Robot or physical-AI systems context; 4. Relationship to the
+   wider ecosystem; 5. Mutual-help opportunities; 6. India strategic context;
+   7. Evidence, assessment, and unknowns. Connect work downward to underlying
+   materials and processes and upward to robot behaviour. Cover relevant
+   inputs, transformation, outputs, supplier and buyer types, manufacturing
+   location, import dependence, approximate value added, technical difficulty,
+   replaceability, and strategic importance for India. Explain the higher-level
+   ecosystem role and how the participant could help others or receive help.
+   Use visible Evidence-backed fact / Assessment / Unknown labels. For a queued
+   `codex-web-v1` run, emit the unchanged strict V1 candidate shape and do not
+   add `research`. For anything else, stop with a bounded safe failure. Follow
+   the claimed allocation exactly in either branch.
 3. Verify every source URL and stable candidate identity URL. Use public
    evidence only. Do not use authenticated scraping, private/contact data, or
    unsupported claims. Articles and search pages may be evidence but may not be
    canonical identities. Return fewer candidates when evidence is weak; never
-   pad the batch or invent enrichment.
+   pad the batch or invent enrichment. An underfilled or zero-candidate batch is
+   valid when it honestly reflects the supported public evidence.
 4. Create all working files in a new private temporary directory outside the
    repository. First write a candidate payload containing only `candidates`
    and `sourceErrors`. Then, without printing the lease, combine the private
@@ -190,24 +258,28 @@ await chmod(batchPath, 0o600);
 ' <claim-file> <candidate-payload.json> <batch.json>
 ```
 
-## First trial acceptance
+## Initial 50-company seed acceptance
 
-After migration and deployment, claim a trial instead of waiting for the daily
-schedule:
+After migration and deployment, use the explicit one-time seed preset instead
+of changing the recurring 15-company/5-creator configuration:
 
 ```bash
-npm run discovery:claim -- --trigger trial
+npm run discovery:claim -- --trigger trial --preset robotics-seed
 ```
 
-Use the same evidence, validation, private-file, submit, and cleanup steps as
-the daily task. The trial is accepted only when:
+This preset claims the same `robotics_hardware_india` campaign with a 50-company
+ceiling and no creators. Use the same evidence, V2 research, validation,
+private-file, submit, exact-file replay, and cleanup steps as the recurring
+task. The seed is accepted only when:
 
-- its durable run is `succeeded` or honestly `partial`;
-- at least one new company and one new creator are persisted;
+- its durable run reaches a truthful terminal status;
+- every submitted participant is an evidence-supported company, with honest
+  underfill allowed when fewer than 50 credible companies remain;
 - found, new, and duplicate counts agree with the stored candidates;
-- `/admin/discovery` displays the candidates and all evidence links; and
-- an administrator can filter the result, inspect details, and change one
-  candidate status without a conflict.
+- `/admin/discovery` displays the candidates, evidence links, systems-context
+  summaries, findings, and any past research versions; and
+- an administrator can filter the result and inspect its drawer without a
+  conflict.
 
 ## Retry, replay, and recovery
 

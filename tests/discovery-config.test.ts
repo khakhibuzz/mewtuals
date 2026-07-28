@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,6 +10,48 @@ import {
 } from "../app/server/discovery-config";
 
 describe("discovery configuration", () => {
+  it("keeps tracked runtime examples and worker operations aligned with Physical AI V2", () => {
+    const envExamples = [".env.example", ".dev.vars.example"].map((path) =>
+      readFileSync(resolve(path), "utf8"),
+    );
+    for (const example of envExamples) {
+      expect(example).toContain("DISCOVERY_GEOGRAPHIES=India");
+      expect(example).toContain("DISCOVERY_TOTAL_CANDIDATES=20");
+      expect(example).toContain("DISCOVERY_COMPANY_PERCENTAGE=75");
+      expect(example).toContain("robot makers and integrators");
+      expect(example).toContain("robotics engineering");
+    }
+
+    const operations = readFileSync(
+      resolve("docs/discovery-agent-operations.md"),
+      "utf8",
+    );
+    for (const requiredText of [
+      "npm run discovery:claim -- --trigger trial --preset robotics-seed",
+      "codex-web-v2",
+      "codex-web-v1",
+      "summary",
+      "findings",
+      "sourceUrls",
+      "analysisVersion",
+      "1. Domain and category",
+      "2. Product or capability",
+      "3. Robot or physical-AI systems context",
+      "4. Relationship to the wider ecosystem",
+      "5. Mutual-help opportunities",
+      "6. India strategic context",
+      "7. Evidence, assessment, and unknowns",
+      "Evidence-backed fact",
+      "Assessment",
+      "Unknown",
+      "exact same batch",
+      "claimed` is false",
+      "daily to weekly",
+    ]) {
+      expect(operations).toContain(requiredText);
+    }
+  });
+
   it("uses the approved India and category defaults", () => {
     expect(readDiscoveryConfig({ NODE_ENV: "test" })).toMatchObject({
       campaignKey: "robotics_hardware_india",
