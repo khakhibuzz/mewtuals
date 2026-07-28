@@ -660,6 +660,37 @@ describe("Global Radar contracts", () => {
     });
   });
 
+  it("rejects document markup in metadata values anywhere recursively", () => {
+    expect({
+      arrayValue: boundedRecordSchema.safeParse({
+        providerPayload: ["plain", "<body>full page</body>"],
+      }).success,
+      nestedValue: boundedRecordSchema.safeParse({
+        providerPayload: {
+          document: "<?xml version='1.0'?><page>full page</page>",
+        },
+      }).success,
+      plainJsonValues: boundedRecordSchema.safeParse({
+        providerPayload: "Supplier registration is open.",
+        confidence: 90,
+        current: true,
+        unavailable: null,
+      }).success,
+      topLevelValue: evidenceSchema.safeParse(
+        evidenceItem({
+          rawMetadata: {
+            providerPayload: "<!doctype html><html>full page</html>",
+          },
+        }),
+      ).success,
+    }).toEqual({
+      arrayValue: false,
+      nestedValue: false,
+      plainJsonValues: true,
+      topLevelValue: false,
+    });
+  });
+
   it("applies shared public-host safety to every batch URL field", () => {
     expect({
       evidence: evidenceSchema.safeParse(

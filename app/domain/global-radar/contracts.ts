@@ -192,6 +192,7 @@ type RecordInspectionTask =
 type RecordInspectionIssue =
   | "bytes"
   | "depth"
+  | "document_markup"
   | "forbidden_key"
   | "invalid"
   | "key_length"
@@ -220,11 +221,11 @@ function inspectBoundedRecord(
       if (workUnits > MAX_BOUNDED_RECORD_BYTES) return "bytes";
 
       const { value, depth } = task;
-      if (
-        value === null ||
-        typeof value === "string" ||
-        typeof value === "boolean"
-      ) {
+      if (typeof value === "string") {
+        if (documentMarkupPattern.test(value)) return "document_markup";
+        continue;
+      }
+      if (value === null || typeof value === "boolean") {
         continue;
       }
       if (typeof value === "number") {
@@ -285,6 +286,7 @@ function inspectBoundedRecord(
 const boundedRecordMessages = {
   bytes: "Record must be at most 8192 serialized bytes.",
   depth: "Record must have JSON depth at most 3.",
+  document_markup: DOCUMENT_MARKUP_MESSAGE,
   forbidden_key: FORBIDDEN_RECORD_KEY_MESSAGE,
   invalid: "Record must contain only JSON-compatible values.",
   key_length: "Record keys must be at most 64 characters.",
