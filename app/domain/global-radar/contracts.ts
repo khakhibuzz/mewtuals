@@ -1,0 +1,474 @@
+import { z } from "zod";
+
+import { normalizePublicHttpUrl } from "../public-url";
+import {
+  GLOBAL_RADAR_TAXONOMY_VERSION,
+  globalRadarQueryIntents,
+  globalRadarSourceFamilies,
+  globalRadarThemes,
+} from "../taxonomies/global-radar-v1";
+
+const MAX_BOUNDED_RECORD_BYTES = 8_192;
+const MAX_BOUNDED_RECORD_KEYS = 20;
+const MAX_BOUNDED_RECORD_KEY_LENGTH = 64;
+const MAX_BOUNDED_RECORD_DEPTH = 3;
+const MAX_BOUNDED_STRING_ARRAY_ITEMS = 50;
+const MAX_BUSINESS_EMAIL_LENGTH = 254;
+const MAX_COUNTRY_LENGTH = 100;
+const MAX_LANGUAGE_LENGTH = 35;
+const MAX_ENTITY_NAME_LENGTH = 200;
+const MAX_EVIDENCE_CLAIM_LENGTH = 1_000;
+const MAX_EVIDENCE_EXCERPT_LENGTH = 500;
+const MAX_EVIDENCE_SUMMARY_LENGTH = 2_000;
+const MAX_SOURCE_NAME_LENGTH = 200;
+const MAX_SUPPORTED_FIELD_PATHS = 50;
+const MAX_SIGNAL_SUMMARY_LENGTH = 2_000;
+const MAX_SIGNAL_TITLE_LENGTH = 300;
+const MAX_BATCH_EVIDENCE_ITEMS = 100;
+const MAX_BATCH_REQUIREMENTS = 100;
+export const MAX_GLOBAL_RADAR_BATCH_BYTES = 2 * 1_024 * 1_024;
+const MAX_BATCH_EXECUTED_QUERIES = 120;
+const MAX_BATCH_ENTITIES = 50;
+const MAX_BATCH_SIGNALS = 20;
+const MAX_BATCH_SOURCE_ERRORS = 50;
+const MAX_QUERY_LENGTH = 1_000;
+const MAX_QUERY_RESULTS_EXAMINED = 10_000;
+const MAX_REQUIREMENT_SUMMARY_LENGTH = 1_000;
+const MAX_SHORT_STRING_LENGTH = 200;
+const MAX_SOURCE_ERROR_LENGTH = 1_000;
+const MAX_SUPPORTED_FIELD_PATH_LENGTH = 200;
+
+export const GLOBAL_RADAR_SCHEMA_VERSION = "global-radar-batch-v1" as const;
+export const GLOBAL_RADAR_PROMPT_VERSION = "codex-public-web-v1" as const;
+
+function createLookup<const Values extends readonly string[]>(
+  values: Values,
+): Readonly<Record<Values[number], true>> {
+  return Object.freeze(
+    Object.fromEntries(values.map((value) => [value, true])),
+  ) as Readonly<Record<Values[number], true>>;
+}
+
+export const signalClasses = [
+  "direct_demand",
+  "demand_precursor",
+  "ecosystem_momentum",
+] as const;
+
+export const indiaRelevanceTypes = [
+  "explicit_India",
+  "existing_India_presence",
+  "India_expansion",
+  "globally_open",
+  "inferred_India_compatible",
+  "no_current_India_fit",
+] as const;
+
+export const signalStatuses = [
+  "newly_discovered",
+  "needs_review",
+  "monitoring",
+  "qualified",
+  "dismissed",
+  "expired",
+  "promoted",
+] as const;
+
+export const requirementKinds = [
+  "physical_data",
+  "robotics_hardware",
+  "manufacturing",
+  "deployment",
+  "market_access",
+  "research",
+  "operational_service",
+] as const;
+
+export const radarRunStatuses = [
+  "queued",
+  "running",
+  "succeeded",
+  "partial",
+  "failed",
+] as const;
+
+export const radarRunTriggers = ["scheduled", "manual", "trial"] as const;
+
+export const radarScanModes = [
+  "daily",
+  "thematic",
+  "watchlist_refresh",
+  "manual",
+] as const;
+
+export const promotionEligibilityPaths = [
+  "qualified_india_direct_demand",
+  "repeated_india_compatible_signals",
+  "documented_indian_relationship",
+  "exceptional_strategic_relevance",
+] as const;
+
+export const professionalResponsePathTypes = [
+  "supplier_or_partner_registration",
+  "procurement_or_rfp_portal",
+  "distributor_application",
+  "official_enquiry_or_india_contact",
+  "research_form",
+  "official_business_email",
+] as const;
+
+export const signalClassLookup = createLookup(signalClasses);
+export const indiaRelevanceTypeLookup = createLookup(indiaRelevanceTypes);
+export const signalStatusLookup = createLookup(signalStatuses);
+export const requirementKindLookup = createLookup(requirementKinds);
+export const radarRunStatusLookup = createLookup(radarRunStatuses);
+export const radarRunTriggerLookup = createLookup(radarRunTriggers);
+export const radarScanModeLookup = createLookup(radarScanModes);
+export const promotionEligibilityPathLookup = createLookup(
+  promotionEligibilityPaths,
+);
+export const professionalResponsePathTypeLookup = createLookup(
+  professionalResponsePathTypes,
+);
+
+export const publicHttpUrlSchema = z.string().transform((value, context) => {
+  try {
+    return normalizePublicHttpUrl(value, "Global Radar URL");
+  } catch (error) {
+    context.addIssue({
+      code: "custom",
+      message:
+        error instanceof Error ? error.message : "Global Radar URL is invalid.",
+    });
+    return z.NEVER;
+  }
+});
+
+export const boundedShortStringSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_SHORT_STRING_LENGTH);
+
+export const nullableBoundedStringArraySchema = z
+  .array(boundedShortStringSchema)
+  .max(MAX_BOUNDED_STRING_ARRAY_ITEMS)
+  .nullable();
+
+export function serializedJsonByteLength(value: unknown): number {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+type RecordInspectionTask =
+  | { action: "visit"; value: unknown; depth: number }
+  | { action: "leave"; value: object };
+
+type RecordInspectionIssue =
+  | "bytes"
+  | "depth"
+  | "invalid"
+  | "key_length"
+  | "keys";
+
+function inspectBoundedRecord(
+  record: Record<string, unknown>,
+): RecordInspectionIssue | null {
+  const activeObjects = new Set<object>();
+  const tasks: RecordInspectionTask[] = [
+    { action: "visit", value: record, depth: 1 },
+  ];
+  let keyCount = 0;
+  let workUnits = 0;
+
+  try {
+    while (tasks.length > 0) {
+      const task = tasks.pop();
+      if (!task) break;
+      if (task.action === "leave") {
+        activeObjects.delete(task.value);
+        continue;
+      }
+
+      workUnits += 1;
+      if (workUnits > MAX_BOUNDED_RECORD_BYTES) return "bytes";
+
+      const { value, depth } = task;
+      if (
+        value === null ||
+        typeof value === "string" ||
+        typeof value === "boolean"
+      ) {
+        continue;
+      }
+      if (typeof value === "number") {
+        if (!Number.isFinite(value)) return "invalid";
+        continue;
+      }
+      if (typeof value !== "object" || activeObjects.has(value)) {
+        return "invalid";
+      }
+      if (depth > MAX_BOUNDED_RECORD_DEPTH) return "depth";
+
+      const array = Array.isArray(value);
+      const prototype = Object.getPrototypeOf(value);
+      if (!array && prototype !== Object.prototype && prototype !== null) {
+        return "invalid";
+      }
+
+      activeObjects.add(value);
+      tasks.push({ action: "leave", value });
+
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      if (Object.hasOwn(descriptors, "toJSON")) return "invalid";
+      const entries = Object.entries(descriptors).filter(
+        ([key, descriptor]) =>
+          descriptor.enumerable && (!array || key !== "length"),
+      );
+      if (!array) {
+        keyCount += entries.length;
+        if (keyCount > MAX_BOUNDED_RECORD_KEYS) return "keys";
+      }
+
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const [key, descriptor] = entries[index];
+        if (!array && key.length > MAX_BOUNDED_RECORD_KEY_LENGTH) {
+          return "key_length";
+        }
+        if (!("value" in descriptor)) return "invalid";
+        tasks.push({
+          action: "visit",
+          value: descriptor.value,
+          depth: depth + 1,
+        });
+      }
+    }
+  } catch {
+    return "invalid";
+  }
+
+  return serializedJsonByteLength(record) > MAX_BOUNDED_RECORD_BYTES
+    ? "bytes"
+    : null;
+}
+
+const boundedRecordMessages = {
+  bytes: "Record must be at most 8192 serialized bytes.",
+  depth: "Record must have JSON depth at most 3.",
+  invalid: "Record must contain only JSON-compatible values.",
+  key_length: "Record keys must be at most 64 characters.",
+  keys: "Record must contain at most 20 keys.",
+} as const;
+
+export const boundedRecordSchema = z
+  .record(z.string(), z.unknown())
+  .superRefine((record, context) => {
+    const issue = inspectBoundedRecord(record);
+    if (issue) {
+      context.addIssue({
+        code: "custom",
+        message: boundedRecordMessages[issue],
+      });
+    }
+  });
+
+export const scoreComponentSchema = z.number().int().min(0).max(100);
+export const confidenceSchema = scoreComponentSchema;
+export const isoTimestampSchema = z.string().datetime({ offset: true });
+
+export const businessEmailSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .email()
+  .max(MAX_BUSINESS_EMAIL_LENGTH);
+
+export const professionalResponsePathSchema = z
+  .strictObject({
+    type: z.enum(professionalResponsePathTypes),
+    url: publicHttpUrlSchema.nullable(),
+    businessEmail: businessEmailSchema.nullable(),
+    evidenceUrl: publicHttpUrlSchema,
+  })
+  .superRefine((path, context) => {
+    const emailPath = path.type === "official_business_email";
+    if (emailPath && (!path.businessEmail || path.url !== null)) {
+      context.addIssue({
+        code: "custom",
+        message: "Official business email paths require only a business email.",
+      });
+    }
+    if (!emailPath && (!path.url || path.businessEmail !== null)) {
+      context.addIssue({
+        code: "custom",
+        message: "Professional response paths require only a public URL.",
+      });
+    }
+  });
+
+export const fingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+function boundedRequiredString(maximumLength: number) {
+  return z.string().trim().min(1).max(maximumLength);
+}
+
+export const executedQuerySchema = z.strictObject({
+  fingerprint: fingerprintSchema,
+  query: boundedRequiredString(MAX_QUERY_LENGTH),
+  language: boundedRequiredString(MAX_LANGUAGE_LENGTH),
+  sourceCountry: boundedRequiredString(MAX_COUNTRY_LENGTH),
+  theme: z.enum(globalRadarThemes),
+  signalIntent: z.enum(globalRadarQueryIntents),
+  sourceAdapter: z.literal("codex_public_web"),
+  executedAt: isoTimestampSchema,
+  resultsExamined: z.number().int().min(0).max(MAX_QUERY_RESULTS_EXAMINED),
+  error: boundedRequiredString(MAX_SOURCE_ERROR_LENGTH).nullable(),
+});
+
+export const linkedinOrganizationUrlSchema = publicHttpUrlSchema.refine(
+  (value) => {
+    const url = new URL(value);
+    return (
+      url.hostname === "linkedin.com" &&
+      /^\/(company|school|showcase)\/[^/]+\/?$/i.test(url.pathname)
+    );
+  },
+  { message: "LinkedIn organization URL must identify a public organization." },
+);
+
+export const observedEntitySchema = z.strictObject({
+  name: boundedRequiredString(MAX_ENTITY_NAME_LENGTH),
+  websiteUrl: publicHttpUrlSchema.nullable(),
+  linkedinOrganizationUrl: linkedinOrganizationUrlSchema.nullable(),
+  sourceCountry: boundedRequiredString(MAX_COUNTRY_LENGTH),
+  rawMetadata: boundedRecordSchema,
+});
+
+export const evidenceSchema = z.strictObject({
+  sourceUrl: publicHttpUrlSchema,
+  sourceName: boundedRequiredString(MAX_SOURCE_NAME_LENGTH),
+  sourceFamily: z.enum(globalRadarSourceFamilies),
+  sourceLanguage: boundedRequiredString(MAX_LANGUAGE_LENGTH),
+  sourceCountry: boundedRequiredString(MAX_COUNTRY_LENGTH),
+  claim: boundedRequiredString(MAX_EVIDENCE_CLAIM_LENGTH),
+  excerpt: boundedRequiredString(MAX_EVIDENCE_EXCERPT_LENGTH).nullable(),
+  englishSummary: boundedRequiredString(MAX_EVIDENCE_SUMMARY_LENGTH),
+  publishedAt: isoTimestampSchema.nullable(),
+  observedAt: isoTimestampSchema,
+  evidenceConfidence: confidenceSchema,
+  translationConfidence: confidenceSchema.nullable(),
+  isPrimarySource: z.boolean(),
+  supportedFieldPaths: z
+    .array(boundedRequiredString(MAX_SUPPORTED_FIELD_PATH_LENGTH))
+    .min(1)
+    .max(MAX_SUPPORTED_FIELD_PATHS),
+  rawMetadata: boundedRecordSchema,
+});
+
+export const requirementSchema = z.strictObject({
+  kind: z.enum(requirementKinds),
+  summary: boundedRequiredString(MAX_REQUIREMENT_SUMMARY_LENGTH),
+  confidence: confidenceSchema,
+  rawMetadata: boundedRecordSchema,
+});
+
+export const signalDraftSchema = z.strictObject({
+  signalClass: z.enum(signalClasses),
+  title: boundedRequiredString(MAX_SIGNAL_TITLE_LENGTH),
+  factualSummary: boundedRequiredString(MAX_SIGNAL_SUMMARY_LENGTH),
+  interpretationSummary: boundedRequiredString(MAX_SIGNAL_SUMMARY_LENGTH),
+  sourceCountry: boundedRequiredString(MAX_COUNTRY_LENGTH),
+  observedAt: isoTimestampSchema,
+  evidence: z.array(evidenceSchema).min(1).max(MAX_BATCH_EVIDENCE_ITEMS),
+  requirements: z
+    .array(requirementSchema)
+    .min(1)
+    .max(MAX_BATCH_REQUIREMENTS),
+  rawMetadata: boundedRecordSchema,
+});
+
+export const sourceErrorSchema = z.strictObject({
+  sourceName: boundedRequiredString(MAX_SOURCE_NAME_LENGTH),
+  message: boundedRequiredString(MAX_SOURCE_ERROR_LENGTH),
+  queryFingerprint: fingerprintSchema.nullable(),
+});
+
+const globalRadarBatchObjectSchema = z.strictObject({
+  schemaVersion: z.literal(GLOBAL_RADAR_SCHEMA_VERSION),
+  promptVersion: z.literal(GLOBAL_RADAR_PROMPT_VERSION),
+  taxonomyVersion: z.literal(GLOBAL_RADAR_TAXONOMY_VERSION),
+  runId: z.string().uuid(),
+  planFingerprint: fingerprintSchema,
+  executedQueries: z
+    .array(executedQuerySchema)
+    .max(MAX_BATCH_EXECUTED_QUERIES),
+  entities: z.array(observedEntitySchema).max(MAX_BATCH_ENTITIES),
+  signals: z.array(signalDraftSchema).max(MAX_BATCH_SIGNALS),
+  sourceErrors: z.array(sourceErrorSchema).max(MAX_BATCH_SOURCE_ERRORS),
+});
+
+export const globalRadarBatchSchema = globalRadarBatchObjectSchema.superRefine(
+  (batch, context) => {
+    const evidenceCount = batch.signals.reduce(
+      (total, signal) => total + signal.evidence.length,
+      0,
+    );
+    if (evidenceCount > MAX_BATCH_EVIDENCE_ITEMS) {
+      context.addIssue({
+        code: "custom",
+        message: "Global Radar batch must contain at most 100 evidence items.",
+        path: ["signals"],
+      });
+    }
+    const requirementCount = batch.signals.reduce(
+      (total, signal) => total + signal.requirements.length,
+      0,
+    );
+    if (requirementCount > MAX_BATCH_REQUIREMENTS) {
+      context.addIssue({
+        code: "custom",
+        message: "Global Radar batch must contain at most 100 requirements.",
+        path: ["signals"],
+      });
+    }
+    if (serializedJsonByteLength(batch) > MAX_GLOBAL_RADAR_BATCH_BYTES) {
+      context.addIssue({
+        code: "custom",
+        message: "Global Radar batch must be at most 2097152 bytes.",
+      });
+    }
+    if (batch.signals.length === 0 && batch.sourceErrors.length > 0) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Global Radar batch with source errors must contain a valid signal.",
+        path: ["signals"],
+      });
+    }
+  },
+);
+
+export type SignalClass = (typeof signalClasses)[number];
+export type IndiaRelevanceType = (typeof indiaRelevanceTypes)[number];
+export type SignalStatus = (typeof signalStatuses)[number];
+export type RequirementKind = (typeof requirementKinds)[number];
+export type RadarRunStatus = (typeof radarRunStatuses)[number];
+export type RadarRunTrigger = (typeof radarRunTriggers)[number];
+export type RadarScanMode = (typeof radarScanModes)[number];
+export type PromotionEligibilityPath =
+  (typeof promotionEligibilityPaths)[number];
+export type ProfessionalResponsePathType =
+  (typeof professionalResponsePathTypes)[number];
+export type ProfessionalResponsePath = z.infer<
+  typeof professionalResponsePathSchema
+>;
+export type ExecutedQuery = z.infer<typeof executedQuerySchema>;
+export type ObservedEntity = z.infer<typeof observedEntitySchema>;
+export type Evidence = z.infer<typeof evidenceSchema>;
+export type RequirementDraft = z.infer<typeof requirementSchema>;
+export type SignalDraft = z.infer<typeof signalDraftSchema>;
+export type SourceError = z.infer<typeof sourceErrorSchema>;
+export type GlobalRadarBatch = z.infer<typeof globalRadarBatchSchema>;
