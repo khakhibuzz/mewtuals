@@ -86,6 +86,27 @@ function validBatch() {
   };
 }
 
+function validPhysicalAiBatch() {
+  const batch = validBatch();
+  return {
+    ...batch,
+    promptVersion: "codex-web-v2" as const,
+    candidates: batch.candidates.map((candidate) => ({
+      ...candidate,
+      category: "components and actuation",
+      research: {
+        summary:
+          "An Indian robotics participant connecting dependable components to complete robot behaviour.",
+        findings:
+          "1. Domain and category\n" +
+          "Evidence-backed physical-AI systems finding [S1].\n".repeat(30),
+        sourceUrls: ["https://evidence.example.com/company"],
+        analysisVersion: "physical-ai-v1" as const,
+      },
+    })),
+  };
+}
+
 function writeBatch(batch: unknown): string {
   const file = join(createTemporaryDirectory(), "batch.json");
   writeFileSync(file, JSON.stringify(batch), "utf8");
@@ -323,8 +344,12 @@ describe("discovery worker CLI", () => {
 
   it("rejects more than fifty candidates", async () => {
     const batch = validBatch();
-    batch.candidates = Array.from({ length: 51 }, () => ({
+    batch.candidates = Array.from({ length: 51 }, (_, index) => ({
       ...batch.candidates[0],
+      name: `India Public Company ${index}`,
+      canonicalUrl: `https://india-public-company-${index}.example.com`,
+      websiteUrl: `https://india-public-company-${index}.example.com`,
+      sourceUrl: `https://source.example.com/india-public-company-${index}`,
     }));
 
     const result = await runWorker([
@@ -372,10 +397,10 @@ describe("discovery worker CLI", () => {
     });
   });
 
-  it("rejects a serialized batch file larger than 512 KiB", async () => {
+  it("rejects a serialized batch file larger than 1 MiB", async () => {
     const batch = validBatch();
     batch.candidates[0].canonicalUrl =
-      `https://india-public-company.example.com/${"x".repeat(524_288)}`;
+      `https://india-public-company.example.com/${"x".repeat(1_048_576)}`;
 
     const result = await runWorker([
       "validate",
@@ -386,13 +411,13 @@ describe("discovery worker CLI", () => {
     expect(result.exitCode).toBe(1);
     expect(JSON.parse(result.stderr)).toEqual({
       ok: false,
-      error: "The discovery batch file must be at most 524288 bytes.",
+      error: "The discovery batch file must be at most 1048576 bytes.",
     });
   });
 
-  it("rejects a batch file over 512 KiB even when excess bytes are whitespace", async () => {
+  it("rejects a batch file over 1 MiB even when excess bytes are whitespace", async () => {
     const batch = validBatch();
-    const paddedContents = `${JSON.stringify(batch)}${" ".repeat(524_288)}`;
+    const paddedContents = `${JSON.stringify(batch)}${" ".repeat(1_048_576)}`;
 
     const result = await runWorker([
       "validate",
@@ -403,7 +428,7 @@ describe("discovery worker CLI", () => {
     expect(result.exitCode).toBe(1);
     expect(JSON.parse(result.stderr)).toEqual({
       ok: false,
-      error: "The discovery batch file must be at most 524288 bytes.",
+      error: "The discovery batch file must be at most 1048576 bytes.",
     });
   });
 
@@ -528,6 +553,95 @@ describe("discovery worker CLI", () => {
     expect(`${result.stdout}${result.stderr}`).not.toContain(
       "trial-worker-secret",
     );
+  });
+
+  it("requests the explicit robotics seed preset", async () => {
+    const requests: CapturedRequest[] = [];
+    const apiBaseUrl = await startApiServer((request, response, body) => {
+      requests.push({
+        method: request.method,
+        url: request.url,
+        authorization: request.headers.authorization,
+        contentType: request.headers["content-type"],
+        body,
+      });
+      jsonResponse(response, 200, { ok: true, claimed: false });
+    });
+
+    const result = await runWorker(
+      ["claim", "--trigger", "trial", "--preset", "robotics-seed"],
+      {
+        DISCOVERY_API_BASE_URL: apiBaseUrl,
+        DISCOVERY_WORKER_SECRET: "seed-worker-secret",
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(requests).toMatchObject([
+      {
+        body: '{"trigger":"trial","preset":"robotics-seed"}',
+      },
+    ]);
+  });
+
+  it.each([
+    [
+      ["claim", "--preset", "robotics-seed"],
+      "Worker option --preset is only supported with --trigger trial.",
+    ],
+    [
+      ["claim", "--trigger", "trial", "--preset", "unknown"],
+      "Worker option --preset must be robotics-seed.",
+    ],
+  ])("rejects invalid preset arguments before network access", async (arguments_, error) => {
+    const result = await runWorker(arguments_, {
+      DISCOVERY_API_BASE_URL: "",
+      DISCOVERY_WORKER_SECRET: "unused-worker-secret",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toEqual({ ok: false, error });
+  });
+
+  it("stores a V2 claim in a mode-0600 private file", async () => {
+    const leaseToken = "v2-lease-token-never-print";
+    const apiBaseUrl = await startApiServer((_request, response) => {
+      jsonResponse(response, 200, {
+        ok: true,
+        claimed: true,
+        runId: validBatch().runId,
+        leaseToken,
+        promptVersion: "codex-web-v2",
+        config: {
+          campaignKey: "robotics_hardware_india",
+          allocation: { companies: 50, creators: 0 },
+        },
+        outputSchema: { type: "object" },
+      });
+    });
+
+    const result = await runWorker(
+      ["claim", "--trigger", "trial", "--preset", "robotics-seed"],
+      {
+        DISCOVERY_API_BASE_URL: apiBaseUrl,
+        DISCOVERY_WORKER_SECRET: "v2-worker-secret",
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    const output = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(output).toMatchObject({
+      claimed: true,
+      promptVersion: "codex-web-v2",
+    });
+    const claimFile = String(output.claimFile);
+    temporaryDirectories.push(dirname(claimFile));
+    expect(statSync(claimFile).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(claimFile, "utf8"))).toMatchObject({
+      promptVersion: "codex-web-v2",
+      leaseToken,
+    });
+    expect(`${result.stdout}${result.stderr}`).not.toContain(leaseToken);
   });
 
   it("submits the validated batch without changing its JSON bytes", async () => {
@@ -655,6 +769,50 @@ describe("discovery worker CLI", () => {
       `/api/discovery/worker/runs/${batch.runId}/complete`,
     );
     expect(JSON.parse(requests[0]?.body ?? "null")).toEqual(batch);
+    expect(`${result.stdout}${result.stderr}`).not.toContain(batch.leaseToken);
+  });
+
+  it("submits a V2 batch with credentials from a V2 private claim file", async () => {
+    const batch = validPhysicalAiBatch();
+    const claimFile = join(createTemporaryDirectory(), "claim.json");
+    writeFileSync(
+      claimFile,
+      JSON.stringify({
+        ok: true,
+        claimed: true,
+        runId: batch.runId,
+        leaseToken: batch.leaseToken,
+        promptVersion: batch.promptVersion,
+      }),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    const apiBaseUrl = await startApiServer((_request, response) => {
+      jsonResponse(response, 200, {
+        ok: true,
+        outcome: "completed",
+        run: { id: batch.runId, status: "succeeded" },
+      });
+    });
+
+    const result = await runWorker(
+      [
+        "submit",
+        "--claim-file",
+        claimFile,
+        "--file",
+        writeBatch(batch),
+      ],
+      {
+        DISCOVERY_API_BASE_URL: apiBaseUrl,
+        DISCOVERY_WORKER_SECRET: "v2-claim-file-worker-secret",
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      command: "submit",
+      outcome: "completed",
+    });
     expect(`${result.stdout}${result.stderr}`).not.toContain(batch.leaseToken);
   });
 
@@ -958,9 +1116,53 @@ describe("discovery worker CLI", () => {
     expect(JSON.parse(result.stderr)).toEqual({
       ok: false,
       error: "The discovery API rejected claim with HTTP 503.",
+      httpStatus: 503,
     });
     expect(result.stderr).not.toContain(workerSecret);
     expect(result.stderr).not.toContain(rejectedBodySecret);
+  });
+
+  it("reports only the bounded duplicate indexes from a rejected submit", async () => {
+    const batch = validBatch();
+    const rejectedSecret = "rejected-candidate-never-print";
+    const apiBaseUrl = await startApiServer((_request, response) => {
+      jsonResponse(response, 409, {
+        ok: false,
+        error: "Discovery run cannot accept this submission.",
+        reason: "duplicate_candidate_in_batch",
+        details: { candidateIndexes: [0, 1], candidateName: rejectedSecret },
+        candidate: { name: rejectedSecret },
+        leaseToken: rejectedSecret,
+      });
+    });
+
+    const result = await runWorker(
+      [
+        "submit",
+        "--run-id",
+        batch.runId,
+        "--lease-token",
+        batch.leaseToken,
+        "--file",
+        writeBatch(batch),
+      ],
+      {
+        DISCOVERY_API_BASE_URL: apiBaseUrl,
+        DISCOVERY_WORKER_SECRET: "duplicate-worker-secret",
+      },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toEqual({
+      ok: false,
+      error: "The discovery API rejected submit with HTTP 409.",
+      httpStatus: 409,
+      apiError: "Discovery run cannot accept this submission.",
+      reason: "duplicate_candidate_in_batch",
+      details: { candidateIndexes: [0, 1] },
+    });
+    expect(result.stderr).not.toContain(rejectedSecret);
+    expect(result.stderr).not.toContain(batch.leaseToken);
   });
 
   it("fails before the network when the API base URL is missing", async () => {

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { DiscoveryRepository } from "../db/repositories/discovery-repository";
 import {
   createAdminDiscoveryCandidateHandler,
+  createAdminDiscoveryCandidateResearchHandler,
   createAdminDiscoveryRunsGetHandler,
   createAdminDiscoveryRunsPostHandler,
   createWorkerAbandonHandler,
@@ -22,6 +23,7 @@ function createRouteRepository(): DiscoveryRepository {
     failRun: vi.fn(),
     abandonRun: vi.fn(),
     updateCandidateStatus: vi.fn(),
+    getCandidateResearchVersions: vi.fn(),
     getAdminSummary: vi.fn(),
   };
 }
@@ -32,6 +34,7 @@ function createRouteService(repository: DiscoveryRepository) {
     adminEmails: ["admin@example.com"],
     workerSecret: "worker-secret",
     config: {
+      campaignKey: "general_discovery",
       geographies: ["India"],
       companyCategories: ["technology"],
       creatorCategories: ["technology"],
@@ -153,7 +156,7 @@ describe("discovery route adapters", () => {
     expect(claim).not.toHaveBeenCalled();
   });
 
-  it("rejects a worker Content-Length over 512 KiB before reading", async () => {
+  it("rejects a worker Content-Length over 1 MiB before reading", async () => {
     const claim = vi.fn();
     const handler = createWorkerClaimHandler({
       authenticateWorker: () => true,
@@ -166,7 +169,7 @@ describe("discovery route adapters", () => {
         headers: {
           Authorization: "Bearer worker-secret",
           "Content-Type": "application/json",
-          "Content-Length": String(512 * 1_024 + 1),
+          "Content-Length": String(1_024 * 1_024 + 1),
         },
         body: "{}",
       }),
@@ -176,13 +179,13 @@ describe("discovery route adapters", () => {
     expect(claim).not.toHaveBeenCalled();
   });
 
-  it("stops a streamed worker body after 512 KiB plus one byte", async () => {
+  it("stops a streamed worker body after 1 MiB plus one byte", async () => {
     const claim = vi.fn();
     const handler = createWorkerClaimHandler({
       authenticateWorker: () => true,
       claim,
     });
-    const oversizedBody = `{"padding":"${"x".repeat(512 * 1_024)}"}`;
+    const oversizedBody = `{"padding":"${"x".repeat(1_024 * 1_024)}"}`;
 
     const response = await handler(
       new Request("https://mewtuals.com/api/discovery/worker/claim", {
@@ -266,7 +269,61 @@ describe("discovery route adapters", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(claim).toHaveBeenCalledWith("trial");
+    expect(claim).toHaveBeenCalledWith({ trigger: "trial" });
+  });
+
+  it("passes only the approved robotics seed selector to the service", async () => {
+    const claim = vi.fn(async () => ({ ok: true as const, claimed: false }));
+    const handler = createWorkerClaimHandler({
+      authenticateWorker: () => true,
+      claim,
+    });
+
+    const response = await handler(
+      new Request("https://mewtuals.com/api/discovery/worker/claim", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer worker-secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          trigger: "trial",
+          preset: "robotics-seed",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(claim).toHaveBeenCalledWith({
+      trigger: "trial",
+      preset: "robotics-seed",
+    });
+  });
+
+  it.each([
+    { trigger: "scheduled", preset: "robotics-seed" },
+    { trigger: "trial", preset: "unknown" },
+    { trigger: "trial", preset: "robotics-seed", extra: true },
+  ])("rejects an invalid claim selector %#", async (body) => {
+    const claim = vi.fn();
+    const handler = createWorkerClaimHandler({
+      authenticateWorker: () => true,
+      claim,
+    });
+
+    const response = await handler(
+      new Request("https://mewtuals.com/api/discovery/worker/claim", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer worker-secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(claim).not.toHaveBeenCalled();
   });
 
   it("rejects mismatched route and batch run ids before completion", async () => {
@@ -783,6 +840,89 @@ describe("discovery route adapters", () => {
     );
   });
 
+  it("returns candidate research only through an authenticated administrator GET", async () => {
+    const candidateId = "00000000-0000-4000-8000-000000000060";
+    const research = {
+      candidateId,
+      latest: {
+        summary: "Physical AI systems context",
+        createdAt: "2026-07-28T06:00:00.000Z",
+      },
+      history: [],
+    };
+    const getResearch = vi.fn(async () => ({
+      ok: true as const,
+      research,
+    }));
+    const signedOut = createAdminDiscoveryCandidateResearchHandler({
+      getSession: async () => null,
+      getResearch,
+    });
+    const signedOutResponse = await signedOut(
+      new Request(
+        `https://mewtuals.com/api/admin/discovery/candidates/${candidateId}`,
+      ),
+      { params: Promise.resolve({ candidateId }) },
+    );
+    expect(signedOutResponse.status).toBe(401);
+    expect(getResearch).not.toHaveBeenCalled();
+
+    const handler = createAdminDiscoveryCandidateResearchHandler({
+      getSession: async () => adminSession,
+      getResearch,
+    });
+    const response = await handler(
+      new Request(
+        `https://mewtuals.com/api/admin/discovery/candidates/${candidateId}`,
+      ),
+      { params: Promise.resolve({ candidateId }) },
+    );
+    expect(response.status).toBe(200);
+    expect(getResearch).toHaveBeenCalledWith(
+      { userId: "admin", email: "admin@example.com" },
+      candidateId,
+    );
+    await expect(response.json()).resolves.toEqual({ ok: true, research });
+  });
+
+  it("maps research authorization, invalid id, and missing candidate outcomes", async () => {
+    const repository = createRouteRepository();
+    const service = createRouteService(repository);
+    const candidateId = "00000000-0000-4000-8000-000000000061";
+    const memberHandler = createAdminDiscoveryCandidateResearchHandler({
+      getSession: async () => memberSession,
+      getResearch: (actor, routeCandidateId) =>
+        service.getCandidateResearch(actor, routeCandidateId),
+    });
+    const memberResponse = await memberHandler(
+      new Request(
+        `https://mewtuals.com/api/admin/discovery/candidates/${candidateId}`,
+      ),
+      { params: Promise.resolve({ candidateId }) },
+    );
+    expect(memberResponse.status).toBe(403);
+
+    const adminHandler = createAdminDiscoveryCandidateResearchHandler({
+      getSession: async () => adminSession,
+      getResearch: (actor, routeCandidateId) =>
+        service.getCandidateResearch(actor, routeCandidateId),
+    });
+    const invalidResponse = await adminHandler(
+      new Request("https://mewtuals.com/api/admin/discovery/candidates/invalid"),
+      { params: Promise.resolve({ candidateId: "invalid" }) },
+    );
+    expect(invalidResponse.status).toBe(400);
+
+    vi.mocked(repository.getCandidateResearchVersions).mockResolvedValue(null);
+    const missingResponse = await adminHandler(
+      new Request(
+        `https://mewtuals.com/api/admin/discovery/candidates/${candidateId}`,
+      ),
+      { params: Promise.resolve({ candidateId }) },
+    );
+    expect(missingResponse.status).toBe(404);
+  });
+
   it("maps stale administrator candidate updates to 409 with the latest value", async () => {
     const latest = { id: "00000000-0000-4000-8000-000000000013", status: "rejected" };
     const update = vi.fn(async () => ({
@@ -948,5 +1088,6 @@ describe("discovery route adapters", () => {
     expect(runs.GET).toBeTypeOf("function");
     expect(runs.POST).toBeTypeOf("function");
     expect(candidate.PATCH).toBeTypeOf("function");
+    expect(candidate.GET).toBeTypeOf("function");
   });
 });

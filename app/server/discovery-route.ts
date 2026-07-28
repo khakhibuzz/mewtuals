@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 import { MAX_DISCOVERY_BATCH_BYTES } from "../domain/discovery";
 import type { AuthenticatedSession } from "../../db/repositories/auth-repository";
 import { assertSameOrigin, SameOriginError } from "./request-security";
-import type { DiscoveryAdminActor } from "./discovery-service";
+import type {
+  DiscoveryAdminActor,
+  DiscoveryClaimSelector,
+} from "./discovery-service";
 
 type DiscoveryHttpResult =
   | { ok: true; [key: string]: unknown }
@@ -124,7 +127,7 @@ async function readBoundedWorkerJson(
 
 export function createWorkerClaimHandler(dependencies: {
   authenticateWorker: (authorization: string | null) => boolean;
-  claim: (trigger: "scheduled" | "trial") => Promise<DiscoveryHttpResult>;
+  claim: (selector: DiscoveryClaimSelector) => Promise<DiscoveryHttpResult>;
 }) {
   return async function POST(request: Request) {
     if (!dependencies.authenticateWorker(request.headers.get("authorization"))) {
@@ -137,15 +140,29 @@ export function createWorkerClaimHandler(dependencies: {
       !body.value ||
       typeof body.value !== "object" ||
       Array.isArray(body.value) ||
-      Object.keys(body.value).some((key) => key !== "trigger")
+      Object.keys(body.value).some(
+        (key) => key !== "trigger" && key !== "preset",
+      )
     ) {
       return invalidWorkerRequestFailure();
     }
     const trigger = (body.value as { trigger?: unknown }).trigger ?? "scheduled";
+    const preset = (body.value as { preset?: unknown }).preset;
     if (trigger !== "scheduled" && trigger !== "trial") {
       return invalidWorkerRequestFailure();
     }
-    return discoveryResponse(await dependencies.claim(trigger));
+    if (
+      (preset !== undefined && preset !== "robotics-seed") ||
+      (preset !== undefined && trigger !== "trial")
+    ) {
+      return invalidWorkerRequestFailure();
+    }
+    return discoveryResponse(
+      await dependencies.claim({
+        trigger,
+        ...(preset === "robotics-seed" ? { preset } : {}),
+      }),
+    );
   };
 }
 
@@ -306,6 +323,26 @@ export function createAdminDiscoveryCandidateHandler(dependencies: {
     const { candidateId } = await context.params;
     return discoveryResponse(
       await dependencies.update(actorFrom(session), candidateId, body.value),
+    );
+  };
+}
+
+export function createAdminDiscoveryCandidateResearchHandler(dependencies: {
+  getSession: SessionReader;
+  getResearch: (
+    actor: DiscoveryAdminActor,
+    candidateId: string,
+  ) => Promise<DiscoveryHttpResult>;
+}) {
+  return async function GET(
+    _request: Request,
+    context: { params: Promise<{ candidateId: string }> },
+  ) {
+    const session = await dependencies.getSession();
+    if (!session) return signedOutFailure();
+    const { candidateId } = await context.params;
+    return discoveryResponse(
+      await dependencies.getResearch(actorFrom(session), candidateId),
     );
   };
 }

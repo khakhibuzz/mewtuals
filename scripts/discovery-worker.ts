@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import {
   discoveryBatchSchema,
+  DISCOVERY_V1_PROMPT_VERSION,
+  DISCOVERY_V2_PROMPT_VERSION,
   MAX_DISCOVERY_BATCH_BYTES,
 } from "../app/domain/discovery";
 import {
@@ -173,8 +175,13 @@ async function postWorkerJson(
   }
 
   if (!response.ok) {
+    const safeError = await readSafeApiError(response);
     throw new DiscoveryCliError(
       `The discovery API rejected ${command} with HTTP ${response.status}.`,
+      {
+        httpStatus: response.status,
+        ...safeError,
+      },
     );
   }
 
@@ -194,6 +201,87 @@ async function postWorkerJson(
   return value as Record<string, unknown>;
 }
 
+const MAX_API_ERROR_BYTES = 16 * 1_024;
+const recognizedConflictReasons = new Set([
+  "duplicate_candidate_in_batch",
+  "failure_mismatch",
+  "invalid_state",
+  "lease_expired",
+  "lease_mismatch",
+  "submission_mismatch",
+]);
+const recognizedPublicErrors = new Set([
+  "Discovery run cannot accept this submission.",
+  "Discovery batch prompt version does not match the claimed run.",
+]);
+
+async function readSafeApiError(
+  response: Response,
+): Promise<Record<string, unknown>> {
+  const reader = response.body?.getReader();
+  if (!reader) return {};
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > MAX_API_ERROR_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return {};
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    return {};
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const body = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  if (
+    typeof body.error === "string" &&
+    body.error.length <= 1_000 &&
+    recognizedPublicErrors.has(body.error)
+  ) {
+    output.apiError = body.error;
+  }
+  if (
+    typeof body.reason !== "string" ||
+    !recognizedConflictReasons.has(body.reason)
+  ) {
+    return output;
+  }
+  output.reason = body.reason;
+  if (body.reason !== "duplicate_candidate_in_batch") return output;
+
+  const details = body.details;
+  const candidateIndexes =
+    details && typeof details === "object" && !Array.isArray(details)
+      ? (details as { candidateIndexes?: unknown }).candidateIndexes
+      : undefined;
+  if (
+    Array.isArray(candidateIndexes) &&
+    candidateIndexes.length === 2 &&
+    candidateIndexes.every(
+      (index) => Number.isInteger(index) && index >= 0 && index <= 49,
+    ) &&
+    candidateIndexes[0] !== candidateIndexes[1]
+  ) {
+    output.details = { candidateIndexes };
+  }
+  return output;
+}
+
 async function writePrivateClaimFile(
   response: Record<string, unknown>,
 ): Promise<string> {
@@ -209,17 +297,32 @@ async function writePrivateClaimFile(
 }
 
 async function claim(options: Map<string, string>) {
-  assertAllowedOptions(options, ["--trigger"]);
+  assertAllowedOptions(options, ["--trigger", "--preset"]);
   const trigger = options.get("--trigger")?.trim() || "scheduled";
   if (trigger !== "scheduled" && trigger !== "trial") {
     throw new DiscoveryCliError(
       "Worker option --trigger must be scheduled or trial.",
     );
   }
+  const preset = options.get("--preset")?.trim();
+  if (preset && preset !== "robotics-seed") {
+    throw new DiscoveryCliError(
+      "Worker option --preset must be robotics-seed.",
+    );
+  }
+  if (preset && trigger !== "trial") {
+    throw new DiscoveryCliError(
+      "Worker option --preset is only supported with --trigger trial.",
+    );
+  }
+  const claimBody = {
+    ...(trigger === "trial" ? { trigger } : {}),
+    ...(preset ? { preset } : {}),
+  };
   const response = await postWorkerJson(
     "claim",
     "/api/discovery/worker/claim",
-    JSON.stringify(trigger === "trial" ? { trigger } : {}),
+    JSON.stringify(claimBody),
   );
   if (response.ok !== true || typeof response.claimed !== "boolean") {
     throw new DiscoveryCliError(
@@ -233,7 +336,8 @@ async function claim(options: Map<string, string>) {
     typeof response.runId !== "string" ||
     typeof response.leaseToken !== "string" ||
     response.leaseToken.length === 0 ||
-    response.promptVersion !== "codex-web-v1" ||
+    (response.promptVersion !== DISCOVERY_V1_PROMPT_VERSION &&
+      response.promptVersion !== DISCOVERY_V2_PROMPT_VERSION) ||
     !response.config ||
     typeof response.config !== "object" ||
     !response.outputSchema ||
@@ -287,7 +391,8 @@ async function runCredentials(
     typeof claim.runId !== "string" ||
     typeof claim.leaseToken !== "string" ||
     claim.leaseToken.length === 0 ||
-    claim.promptVersion !== "codex-web-v1"
+    (claim.promptVersion !== DISCOVERY_V1_PROMPT_VERSION &&
+      claim.promptVersion !== DISCOVERY_V2_PROMPT_VERSION)
   ) {
     throw new DiscoveryCliError(
       "The private claim file does not contain valid run credentials.",
