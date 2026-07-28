@@ -7,11 +7,18 @@ import {
   type BrowserContext,
   type Page,
 } from "@playwright/test";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 import { hashToken } from "../../app/server/tokens";
 import { closeDb, getDb } from "../../db/client";
-import { magicLinks, users } from "../../db/schema";
+import {
+  candidateResearchVersions,
+  discoveryCandidates,
+  discoveryCandidateSources,
+  discoveryRuns,
+  magicLinks,
+  users,
+} from "../../db/schema";
 import { loadLocalEnvironment } from "../../scripts/load-local-env.mjs";
 import {
   acceptanceToken,
@@ -40,16 +47,21 @@ requireDedicatedAdminAllowlist(process.env.ADMIN_EMAILS);
 
 const database = getDb();
 let memberEmail: string | undefined;
+let discoveryFixture:
+  | { candidateId: string; runIds: [string, string] }
+  | undefined;
 
 test.use({ viewport: PRIMARY_VIEWPORT });
 
 test.beforeEach(async () => {
   await removeDisposableAccount(ADMIN_EMAIL);
+  await removeDiscoveryFixture();
 });
 
 test.afterEach(async () => {
   if (memberEmail) await removeDisposableAccount(memberEmail);
   await removeDisposableAccount(ADMIN_EMAIL);
+  await removeDiscoveryFixture();
   memberEmail = undefined;
 });
 
@@ -221,6 +233,41 @@ test("mobile member and administrator journey stays responsive and private offli
       .getByRole("button", { name: `Approve ${profileName}` })
       .click();
     await expect(pendingCard).toHaveCount(0);
+
+    await createDiscoveryFixture(runId);
+    await admin.page.goto("/admin/discovery");
+    await waitForProductHydration(admin.page);
+    await expect(
+      admin.page.getByRole("heading", { name: "Discovery operations." }),
+    ).toBeVisible();
+    await auditResponsiveState(admin.page, "administrator discovery dashboard", {
+      desktop: true,
+    });
+    await admin.page
+      .getByRole("button", { name: "View Physical AI Acceptance details on narrow screens" })
+      .click();
+    const discoveryDrawer = admin.page.getByRole("dialog", {
+      name: "Physical AI Acceptance",
+    });
+    await expect(discoveryDrawer.getByText("Systems context")).toBeVisible();
+    await expect(
+      discoveryDrawer.getByText(/connects Indian motion-control suppliers/i),
+    ).toBeVisible();
+    await expect(
+      discoveryDrawer.getByRole("button", { name: "History (1)" }),
+    ).toBeVisible();
+    await discoveryDrawer.getByRole("button", { name: "Show findings" }).click();
+    await expect(
+      discoveryDrawer.getByText(/Ecosystem role: this company sits between/i),
+    ).toBeVisible();
+    await discoveryDrawer.getByRole("button", { name: "History (1)" }).click();
+    await discoveryDrawer
+      .getByRole("button", { name: /View research from/ })
+      .last()
+      .click();
+    await expect(
+      discoveryDrawer.getByText(/Earlier ecosystem assessment/i),
+    ).toBeVisible();
     expect(admin.errors).toEqual([]);
   } finally {
     await admin.context.close();
@@ -556,6 +603,125 @@ function trackBrowserErrors(page: Page): string[] {
 async function removeDisposableAccount(email: string) {
   await database.delete(magicLinks).where(eq(magicLinks.email, email));
   await database.delete(users).where(eq(users.email, email));
+}
+
+async function createDiscoveryFixture(suffix: string) {
+  const olderRunId = randomUUID();
+  const latestRunId = randomUUID();
+  const candidateId = randomUUID();
+  const olderAt = new Date("2026-07-21T06:00:00.000Z");
+  const latestAt = new Date("2026-07-28T06:00:00.000Z");
+  const findings = (lead: string) =>
+    `${lead}\n\n${"Public-evidence systems analysis covering suppliers, manufacturing, technical difficulty, replaceability, strategic importance for India, underlying materials and processes, robot behaviour, buyers, and ecosystem relationships. ".repeat(4)}`;
+
+  await database.insert(discoveryRuns).values([
+    {
+      id: olderRunId,
+      externalRunKey: `e2e:physical-ai:older:${suffix}`,
+      campaignKey: "robotics_hardware_india",
+      trigger: "trial",
+      status: "succeeded",
+      startedAt: olderAt,
+      completedAt: olderAt,
+      createdAt: olderAt,
+      updatedAt: olderAt,
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 100,
+      foundCount: 1,
+      newCount: 1,
+      duplicateCount: 0,
+    },
+    {
+      id: latestRunId,
+      externalRunKey: `e2e:physical-ai:latest:${suffix}`,
+      campaignKey: "robotics_hardware_india",
+      trigger: "trial",
+      status: "succeeded",
+      startedAt: latestAt,
+      completedAt: latestAt,
+      createdAt: latestAt,
+      updatedAt: latestAt,
+      geography: "India",
+      candidateType: "company",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 1,
+      companyPercentage: 100,
+      foundCount: 1,
+      newCount: 0,
+      duplicateCount: 1,
+    },
+  ]);
+  await database.insert(discoveryCandidates).values({
+    id: candidateId,
+    type: "company",
+    name: "Physical AI Acceptance",
+    normalizedName: "physical ai acceptance",
+    canonicalIdentityKey: `physical-ai-acceptance-${suffix}`,
+    canonicalUrl: "https://example.com/physical-ai-acceptance",
+    websiteUrl: "https://example.com/physical-ai-acceptance",
+    discoveredDescription: "An Indian robotics systems participant used for browser acceptance.",
+    category: "robot components and subsystem makers",
+    subcategory: "motion control",
+    geography: "India",
+    firstSourceName: "codex_web",
+    firstSourceUrl: "https://example.com/physical-ai-acceptance",
+    discoveredAt: olderAt,
+    lastSeenAt: latestAt,
+    createdAt: olderAt,
+    updatedAt: latestAt,
+    mostRecentRunId: latestRunId,
+    discoveryScore: 91,
+  });
+  await database.insert(discoveryCandidateSources).values({
+    candidateId,
+    discoveryRunId: latestRunId,
+    sourceName: "Company website",
+    sourceUrl: "https://example.com/physical-ai-acceptance",
+    firstSeenAt: olderAt,
+    lastSeenAt: latestAt,
+    createdAt: olderAt,
+  });
+  await database.insert(candidateResearchVersions).values([
+    {
+      candidateId,
+      discoveryRunId: olderRunId,
+      summary:
+        "Earlier ecosystem assessment of an Indian motion-control participant and its place between component suppliers and robot integrators.",
+      findings: findings(
+        "Earlier ecosystem assessment: the company links imported electronics to domestic robot assembly.",
+      ),
+      sourceUrls: ["https://example.com/physical-ai-acceptance"],
+      analysisVersion: "physical-ai-v1",
+      createdAt: olderAt,
+    },
+    {
+      candidateId,
+      discoveryRunId: latestRunId,
+      summary:
+        "This participant connects Indian motion-control suppliers to robot integrators, adding reliable actuator behaviour within the wider Physical AI ecosystem.",
+      findings: findings(
+        "Ecosystem role: this company sits between electronics and actuator suppliers and complete robot builders.",
+      ),
+      sourceUrls: ["https://example.com/physical-ai-acceptance"],
+      analysisVersion: "physical-ai-v1",
+      createdAt: latestAt,
+    },
+  ]);
+  discoveryFixture = { candidateId, runIds: [olderRunId, latestRunId] };
+}
+
+async function removeDiscoveryFixture() {
+  if (!discoveryFixture) return;
+  await database
+    .delete(discoveryCandidates)
+    .where(eq(discoveryCandidates.id, discoveryFixture.candidateId));
+  await database
+    .delete(discoveryRuns)
+    .where(inArray(discoveryRuns.id, discoveryFixture.runIds));
+  discoveryFixture = undefined;
 }
 
 function requireDedicatedAdminAllowlist(value: string | undefined) {

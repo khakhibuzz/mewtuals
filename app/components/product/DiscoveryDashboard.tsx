@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
+import { DiscoveryResearchContext } from "./DiscoveryResearchContext";
 import styles from "./product.module.css";
 
 export type DiscoveryCandidateStatus =
@@ -780,6 +781,11 @@ export function DiscoveryDashboard({
                 <p className={styles.status}>No additional evidence was recorded.</p>
               )}
             </div>
+            <DiscoveryResearchContext
+              key={selectedCandidate.id}
+              candidateId={selectedCandidate.id}
+              candidateName={selectedCandidate.name}
+            />
             <div className={styles.discoveryDrawerGroup}>
               <h3>Review status</h3>
               {selectedCandidateFeedback ? (

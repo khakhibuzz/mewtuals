@@ -573,6 +573,113 @@
   font-weight: 600;
 }
 
+.discoveryResearch {
+  margin-top: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.discoveryResearchHeading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.discoveryResearchHeading > div:first-child {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.discoveryResearchHeading p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+}
+
+.discoveryResearchActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+.discoveryResearchSummary {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.65;
+}
+
+.discoveryResearchHistory {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.discoveryResearchHistory button {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.7rem 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.discoveryResearchHistory button[aria-current="true"] {
+  font-weight: 650;
+}
+
+.discoveryResearchHistory time {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+}
+
+.discoveryResearchFindings {
+  display: grid;
+  gap: 1rem;
+}
+
+.discoveryResearchFindings pre {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  background: rgb(31 29 25 / 3%);
+  font: inherit;
+  font-size: 0.84rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.discoveryResearchFindings ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.discoveryResearchFindings a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 0.25em;
+}
+
 .discoveryEvidenceList {
   display: grid;
   gap: 0;
@@ -1154,7 +1261,9 @@
   }
 
   .discoveryFilterActions,
-  .discoveryStatusActions {
+  .discoveryStatusActions,
+  .discoveryResearchHeading,
+  .discoveryResearchActions {
     align-items: stretch;
     flex-direction: column;
   }

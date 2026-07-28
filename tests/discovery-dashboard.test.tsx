@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DiscoveryDashboard,
@@ -33,6 +33,51 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+type FetchHandler = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Response | Promise<Response>;
+
+function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  if (init?.method) return init.method;
+  return input instanceof Request ? input.method : "GET";
+}
+
+function requestUrl(input: RequestInfo | URL): string {
+  return input instanceof Request ? input.url : String(input);
+}
+
+function withEmptyResearch(handler: FetchHandler = async () => {
+  throw new Error("Unexpected non-research request");
+}) {
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = requestUrl(input);
+    if (
+      requestMethod(input, init) === "GET" &&
+      url.startsWith("/api/admin/discovery/candidates/")
+    ) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            research: {
+              candidateId: url.split("/").at(-1),
+              latest: null,
+              history: [],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+    return handler(input, init);
+  });
+}
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", withEmptyResearch());
+});
 
 const candidate: DiscoveryDashboardSnapshot["candidates"]["items"][number] = {
   id: "17ca68ae-8840-4fa2-a5e0-951963f028d5",
@@ -453,7 +498,7 @@ describe("discovery dashboard", () => {
   it("keeps queue progress and feedback in Recent runs when a drawer is open", async () => {
     const user = userEvent.setup();
     const pending = deferred<Response>();
-    vi.stubGlobal("fetch", vi.fn(() => pending.promise));
+    vi.stubGlobal("fetch", withEmptyResearch(() => pending.promise));
     render(<DiscoveryDashboard snapshot={populatedSnapshot()} filters={{}} />);
 
     await user.click(screen.getByRole("button", { name: "Run Discovery" }));
@@ -501,7 +546,7 @@ describe("discovery dashboard", () => {
   it("keeps candidate mutation feedback and pending labels scoped while another drawer opens", async () => {
     const user = userEvent.setup();
     const pending = deferred<Response>();
-    const fetchMock = vi.fn(() => pending.promise);
+    const fetchMock = withEmptyResearch(() => pending.promise);
     const secondCandidate = {
       ...candidate,
       id: "7e3e70a6-56cb-4904-b87f-ee30a78e85da",
@@ -559,7 +604,7 @@ describe("discovery dashboard", () => {
     const user = userEvent.setup();
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
+      withEmptyResearch(async () =>
         new Response(JSON.stringify({ error: { private: "upstream detail" } }), {
           status: 400,
           headers: { "Content-Type": "application/json" },
@@ -584,7 +629,7 @@ describe("discovery dashboard", () => {
     "submits %s with the current candidate version",
     async (actionName, status, statusLabel) => {
       const user = userEvent.setup();
-      const fetchMock = vi.fn().mockResolvedValue(
+      const fetchMock = withEmptyResearch(async () =>
         new Response(
           JSON.stringify({
             ok: true,
@@ -625,7 +670,7 @@ describe("discovery dashboard", () => {
 
   it("uses the returned candidate version for the next status mutation", async () => {
     const user = userEvent.setup();
-    const fetchMock = vi
+    const mutationMock = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(
@@ -653,6 +698,7 @@ describe("discovery dashboard", () => {
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       );
+    const fetchMock = withEmptyResearch(mutationMock);
     vi.stubGlobal("fetch", fetchMock);
     render(<DiscoveryDashboard snapshot={populatedSnapshot()} filters={{}} />);
     await user.click(screen.getByRole("button", { name: "View Aster Labs details" }));
@@ -663,7 +709,7 @@ describe("discovery dashboard", () => {
     await screen.findByText("Aster Labs is now rejected.");
 
     const secondBody = JSON.parse(
-      (fetchMock.mock.calls[1]?.[1] as RequestInit).body as string,
+      (mutationMock.mock.calls[1]?.[1] as RequestInit).body as string,
     ) as Record<string, unknown>;
     expect(secondBody.expectedUpdatedAt).toBe("2026-07-22T06:00:00.000Z");
   });
@@ -676,7 +722,7 @@ describe("discovery dashboard", () => {
       status: "rejected" as const,
       updatedAt: "2026-07-22T06:00:00.000Z",
     };
-    const fetchMock = vi
+    const mutationMock = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(
@@ -701,6 +747,7 @@ describe("discovery dashboard", () => {
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       );
+    const fetchMock = withEmptyResearch(mutationMock);
     vi.stubGlobal("fetch", fetchMock);
     render(
       <DiscoveryDashboard
@@ -722,7 +769,7 @@ describe("discovery dashboard", () => {
 
     await user.click(screen.getByRole("button", { name: "Queue Aster Labs for profile" }));
     const retryBody = JSON.parse(
-      (fetchMock.mock.calls[1]?.[1] as RequestInit).body as string,
+      (mutationMock.mock.calls[1]?.[1] as RequestInit).body as string,
     ) as Record<string, unknown>;
     expect(retryBody.expectedUpdatedAt).toBe("2026-07-22T06:00:00.000Z");
   });
