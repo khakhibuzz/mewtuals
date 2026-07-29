@@ -300,12 +300,23 @@ Supported filters:
 - review status;
 - public contact availability;
 - evidence coverage band;
+- evidence freshness: current, stale, or unknown;
 - minimum Discovery confidence;
 - discovery date range;
 - page, page size, sort, and direction.
 
-Defaults are companies, India/Physical AI scope, and all non-rejected review
-states. Rejected records become visible only through an explicit filter. The
+The V1 corpus is permanently bounded to candidates with durable Physical AI
+provenance: at least one `candidate_research_versions` row with
+`analysis_version = 'physical-ai-v1'`. Physical AI Discovery requires that
+versioned research for every accepted V2 candidate, and the row is immutable
+per candidate/run. Membership does not depend on `most_recent_run_id` or the
+mutable `discovery_candidate_sources.discovery_run_id`, so a later general
+Discovery sighting cannot remove or accidentally add a candidate. The corpus
+is the India-focused research sample even when headquarters remains unresolved;
+headquarters filters describe resolved company location, not corpus ownership.
+
+Within that corpus, defaults are companies and all non-rejected review states.
+Rejected records become visible only through an explicit filter. The
 creator/media toggle adds specialised creators and ecosystem enablers without
 making them dominate the default view.
 
@@ -319,6 +330,12 @@ copying the URL, and Reset view all use the same serialization.
 `discovery_score`. Classification, headquarters, signal, and relationship
 confidence remain fact-level evidence qualifiers used by their own aggregates
 and displays; they are not combined into one ambiguous threshold.
+
+`evidenceFreshness=stale` means the newest candidate source or research evidence
+is older than the configured 180-day threshold at the query clock;
+`evidenceFreshness=unknown` means neither dated source nor research evidence is
+available. Deterministic stale-evidence insight actions use this same filter so
+their supporting ledger is reproducible.
 
 ## Evidence Population and Ownership
 
