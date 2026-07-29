@@ -87,14 +87,29 @@ const negatedOpennessPatterns = [
   /\b(?:closed|ineligible|unavailable)\b/iu,
   /不(?:开放|接受|欢迎)|未开放|不可申请|关闭/u,
 ] as const;
-const geographicRestrictionPatterns = [
+const globalScopeOnlyRestrictionPatterns = [
   /\b(?:domestic|local)[-\s]+only\b|\bonly\s+(?:domestic|local)\b/iu,
-  /\b(?:limited|restricted)\s+to\s+(?:Australia|Canada|China|domestic|France|Germany|India|Japan|local|Singapore|the\s+United\s+Kingdom|the\s+United\s+States|UK|US|USA)\b/iu,
-  /\b(?:except|excluding|other\s+than)\s+(?:Australia|Canada|China|France|Germany|India|Japan|Singapore|the\s+United\s+Kingdom|the\s+United\s+States|UK|US|USA)\b/iu,
-  /\b(?:limited|restricted)\s+to\s+(?:the\s+)?[A-Z][\p{L}-]*(?:\s+[A-Z][\p{L}-]*){0,3}\b/u,
-  /\b(?:except|excluding|other\s+than)\s+(?:the\s+)?[A-Z][\p{L}-]*(?:\s+[A-Z][\p{L}-]*){0,3}\b/u,
-  /仅限(?:国内|本国|中国|印度)|(?:限制|限于)(?:国内|本国|中国|印度)|(?:中国|印度)除外/u,
+  /仅限(?:国内|本国)|(?:国内|本国)限定/u,
 ] as const;
+const globalAccessRestrictionContinuationPatterns = [
+  /^(?:but\s+|however\s+)?(?:except|excluding|limited\s+to|other\s+than|restricted\s+to)\b/iu,
+  /^(?:但|但是|不过)?(?:仅限(?:于)?|只限(?:于)?|限于|限制(?:为|于|在|到)|排除|不包括)/u,
+] as const;
+const adverbialOnlyScopeRestrictionPatterns = [
+  /\b(?:except|excluding|from|limited|other\s+than|restricted)\b/iu,
+] as const;
+const globalAccessPolicySubjectPatterns = [
+  /\b(?:applicants?|applications?|companies|company|counterparties|counterparty|eligibility|eligible|organisations?|organizations?|suppliers?|vendors?)\b/iu,
+  /申请|申请人|申请者|资格|公司|企业|供应商|供货商|厂商|合作方/u,
+] as const;
+const allowedEnglishEligibilityScopeTargetPattern =
+  /^(?:only\s+)?(?:accredited|approved|authori[sz]ed|eligible|licensed|prequalified|qualified|registered|verified)\s+(?:applicants?|businesses|companies|company|entities|organisations?|organizations?|suppliers?|vendors?)$/iu;
+const allowedEnglishEligibilityExclusionTargetPattern =
+  /^(?:ineligible|unaccredited|unapproved|unauthori[sz]ed|unlicensed|unqualified|unregistered|unverified)\s+(?:applicants?|businesses|companies|company|entities|organisations?|organizations?|suppliers?|vendors?)$/iu;
+const allowedChineseEligibilityScopeTargetPattern =
+  /^(?:(?:已)?注册|合格|获批|经批准|认可|认证|核准|符合资格)的?(?:公司|企业|供应商|供货商|厂商|申请人|申请者)(?:申请|参与)?$/u;
+const allowedChineseEligibilityExclusionTargetPattern =
+  /^(?:未注册|不合格|未获批|未经批准|不符合资格)的?(?:公司|企业|供应商|供货商|厂商|申请人|申请者)$/u;
 const factSupportPatterns: Readonly<
   Record<IndiaEvidenceFactKind, readonly RegExp[]>
 > = {
@@ -269,6 +284,141 @@ function hasIndiaMarker(value: string): boolean {
   );
 }
 
+function concernsGlobalAccessPolicy(clause: string): boolean {
+  return (
+    matchesAny(clause, globalScopePatterns) ||
+    matchesAny(clause, globalAccessPolicySubjectPatterns)
+  );
+}
+
+function positivelyClaimsGlobalOpenness(clause: string): boolean {
+  return (
+    matchesAny(clause, globalScopePatterns) &&
+    matchesAny(clause, opennessActionPatterns)
+  );
+}
+
+function isGlobalAccessPolicyRestrictionClause(
+  clauses: readonly string[],
+  index: number,
+): boolean {
+  const clause = clauses[index];
+  if (clause === undefined) return false;
+  if (concernsGlobalAccessPolicy(clause)) return true;
+  if (index === 0) return false;
+  const previousClause = clauses[index - 1];
+  return (
+    previousClause !== undefined &&
+    positivelyClaimsGlobalOpenness(previousClause) &&
+    matchesAny(clause, globalAccessRestrictionContinuationPatterns)
+  );
+}
+
+function isAllowedEnglishEligibilityScopeTarget(target: string): boolean {
+  const normalizedTarget = target
+    .trim()
+    .replace(/\s+(?:are\s+eligible|may\s+apply)$/iu, "");
+  return allowedEnglishEligibilityScopeTargetPattern.test(normalizedTarget);
+}
+
+function isAllowedEnglishEligibilityExclusionTarget(target: string): boolean {
+  return allowedEnglishEligibilityExclusionTargetPattern.test(target.trim());
+}
+
+function hasDisallowedGlobalScopeRestriction(clause: string): boolean {
+  if (matchesAny(clause, globalScopeOnlyRestrictionPatterns)) {
+    return true;
+  }
+
+  for (const match of clause.matchAll(/\b(?:limited|restricted)\s+to\b/giu)) {
+    const target = clause
+      .slice((match.index ?? 0) + match[0].length)
+      .trim();
+    if (!isAllowedEnglishEligibilityScopeTarget(target)) return true;
+  }
+
+  for (const match of clause.matchAll(
+    /\b(?:except|excluding|other\s+than)\b/giu,
+  )) {
+    const target = clause
+      .slice((match.index ?? 0) + match[0].length)
+      .trim();
+    if (!isAllowedEnglishEligibilityExclusionTarget(target)) return true;
+  }
+
+  for (const match of clause.matchAll(/\bonly\b/giu)) {
+    const target = clause
+      .slice((match.index ?? 0) + match[0].length)
+      .trim();
+    const directlyModifiesOpennessAction = opennessActionPatterns.some(
+      (pattern) => target.match(pattern)?.index === 0,
+    );
+    const isUnrestrictedOpennessAction =
+      directlyModifiesOpennessAction &&
+      matchesAny(target, globalScopePatterns) &&
+      !matchesAny(target, adverbialOnlyScopeRestrictionPatterns);
+    if (isUnrestrictedOpennessAction) continue;
+    if (!isAllowedEnglishEligibilityScopeTarget(target)) return true;
+  }
+
+  for (const match of clause.matchAll(
+    /(?:仅限(?:于)?|只限(?:于)?|限于|限制(?:为|于|在|到))\s*/gu,
+  )) {
+    const target = clause
+      .slice((match.index ?? 0) + match[0].length)
+      .replace(/\s+/gu, "")
+      .trim();
+    if (!allowedChineseEligibilityScopeTargetPattern.test(target)) return true;
+  }
+
+  for (const match of clause.matchAll(/(?:排除|不包括)\s*/gu)) {
+    const target = clause
+      .slice((match.index ?? 0) + match[0].length)
+      .replace(/\s+/gu, "")
+      .trim();
+    if (!allowedChineseEligibilityExclusionTargetPattern.test(target)) {
+      return true;
+    }
+  }
+
+  for (const match of clause.matchAll(/([^\s，,；;。.!?！？]+)\s*除外/gu)) {
+    const target = (match[1] ?? "").replace(/\s+/gu, "").trim();
+    if (!allowedChineseEligibilityExclusionTargetPattern.test(target)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasNegativeFactDeterminer(
+  clause: string,
+  factKind: IndiaEvidenceFactKind,
+): boolean {
+  for (const match of clause.matchAll(
+    /\bno\s+(?:(?:active|current|currently|established|existing|India|Indian|Indians|new|planned|proposed)\s+){0,3}([\p{L}\p{N}][\p{L}\p{N}-]*(?:\s+[\p{L}\p{N}][\p{L}\p{N}-]*){0,2})/giu,
+  )) {
+    if (matchesAny(match[1] ?? "", factSupportPatterns[factKind])) return true;
+  }
+  return false;
+}
+
+function hasNegativeFactIntent(
+  clause: string,
+  factKind: IndiaEvidenceFactKind,
+): boolean {
+  for (const match of clause.matchAll(
+    /\b(?:no\s+plans?\s+(?:for|to)|(?:did|do|does)\s+not\s+include)\b/giu,
+  )) {
+    const target = clause
+      .slice((match.index ?? 0) + match[0].length)
+      .split(/[,，]|\b(?:although|but|however)\b/iu, 1)[0]
+      ?.trim();
+    if (matchesAny(target ?? "", factSupportPatterns[factKind])) return true;
+  }
+  return false;
+}
+
 function supportsRelevanceType(
   clause: string,
   relevanceType: ExactIndiaRelevanceType,
@@ -293,6 +443,12 @@ function isNegativeExactIndiaClause(
     !matchesAny(clause, factSupportPatterns[factKind])
   ) {
     return false;
+  }
+  if (
+    hasNegativeFactDeterminer(clause, factKind) ||
+    hasNegativeFactIntent(clause, factKind)
+  ) {
+    return true;
   }
   if (
     matchesAny(clause, englishNegatedRelevantActionPatterns) ||
@@ -323,14 +479,23 @@ function positivelySupportsExactIndiaFact(
     (clause) =>
       hasIndiaMarker(clause) &&
       matchesAny(clause, factSupportPatterns[factKind]) &&
-      matchesAny(clause, positiveActionPatterns) &&
       supportsRelevanceType(clause, relevanceType),
   );
 }
 
 function positivelySupportsGlobalOpenness(value: string): boolean {
   const clauses = claimClauses(value);
-  if (clauses.some((clause) => matchesAny(clause, geographicRestrictionPatterns))) {
+  const hasPositiveGlobalOpenness = clauses.some(
+    positivelyClaimsGlobalOpenness,
+  );
+  if (!hasPositiveGlobalOpenness) return false;
+  if (
+    clauses.some(
+      (clause, index) =>
+        isGlobalAccessPolicyRestrictionClause(clauses, index) &&
+        hasDisallowedGlobalScopeRestriction(clause),
+    )
+  ) {
     return false;
   }
   if (
@@ -343,11 +508,7 @@ function positivelySupportsGlobalOpenness(value: string): boolean {
   ) {
     return false;
   }
-  return clauses.some(
-    (clause) =>
-      matchesAny(clause, globalScopePatterns) &&
-      matchesAny(clause, opennessActionPatterns),
-  );
+  return true;
 }
 
 function acceptIndiaAssessment(

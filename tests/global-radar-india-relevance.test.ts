@@ -176,6 +176,31 @@ describe("Global Radar India relevance", () => {
       "manufacturing",
       "We no longer operate manufacturing in India.",
     ],
+    [
+      "India_expansion",
+      "distribution",
+      "No new distribution hub in India",
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "No existing manufacturing facility in India",
+    ],
+    [
+      "explicit_India",
+      "suppliers",
+      "No Indian suppliers are eligible",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "There are no plans for a new distribution hub in India",
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "Current plans do not include a manufacturing facility in India",
+    ],
   ] as const)(
     "rejects negated or abandoned original evidence mislabeled as %s",
     (proposedType, factKind, originalText) => {
@@ -321,6 +346,29 @@ describe("Global Radar India relevance", () => {
     },
   );
 
+  it("accepts an India-expansion noun phrase supported by its typed evidence", () => {
+    const fieldPath = "indiaRelevance.India_expansion.distribution";
+    const originalText = "New distribution hub in India";
+
+    expect(
+      assessIndiaRelevance(
+        assessmentInput({
+          proposedType: "India_expansion",
+          evidence: [
+            evidence(fieldPath, "original", {
+              originalText,
+              englishSummary: originalText,
+            }),
+          ],
+        }),
+      ),
+    ).toMatchObject({
+      assessed: true,
+      relevanceType: "India_expansion",
+      supportedEvidencePaths: [fieldPath],
+    });
+  });
+
   it("rejects contracted negative globally-open evidence", () => {
     const originalText = "Applications aren’t open worldwide.";
     expect(
@@ -342,28 +390,41 @@ describe("Global Radar India relevance", () => {
     });
   });
 
-  it("allows non-geographic eligibility qualifiers beside a positive global-open clause", () => {
-    const originalText =
-      "Applications are open worldwide; only registered companies are eligible.";
-    expect(
-      assessIndiaRelevance(
-        assessmentInput({
-          proposedType: "globally_open",
-          evidence: [
-            evidence(
-              "indiaRelevance.globally_open.requirement_access",
-              "original",
-              { originalText, englishSummary: originalText },
-            ),
-          ],
-        }),
-      ),
-    ).toMatchObject({
-      assessed: true,
-      relevanceType: "globally_open",
-      basis: "globally_open",
-    });
-  });
+  it.each([
+    "Applications are open worldwide; only registered companies are eligible.",
+    "Applications are open worldwide; eligibility is limited to Registered Companies",
+    "Applications are open worldwide; eligibility is restricted to APPROVED VENDORS.",
+    "Applications are open worldwide; eligibility is limited to qualified applicants.",
+    "We only accept applications worldwide.",
+    "Applications are open worldwide; the support desk operates daily except Sunday.",
+    "Applications are open worldwide; technical support is restricted to business hours.",
+    "Applications are open worldwide, excluding unregistered applicants.",
+    "申请面向全球供应商开放，但仅限合格供应商",
+    "申请面向全球供应商开放，但仅限于合格供应商",
+    "申请面向全球供应商开放，但只限已注册企业",
+  ])(
+    "allows a bounded non-geographic eligibility qualifier beside global openness: %s",
+    (originalText) => {
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType: "globally_open",
+            evidence: [
+              evidence(
+                "indiaRelevance.globally_open.requirement_access",
+                "original",
+                { originalText, englishSummary: originalText },
+              ),
+            ],
+          }),
+        ),
+      ).toMatchObject({
+        assessed: true,
+        relevanceType: "globally_open",
+        basis: "globally_open",
+      });
+    },
+  );
 
   it.each([
     ["explicit_India", "suppliers"],
@@ -654,7 +715,16 @@ describe("Global Radar India relevance", () => {
     "The organisation published supplier application information.",
     "Applications are closed and limited to domestic suppliers.",
     "Applications are open worldwide but restricted to Brazil.",
+    "Applications are open worldwide but restricted to brazil",
     "Applications are open worldwide except Brazil.",
+    "Applications are open worldwide; restricted to Brazil.",
+    "Applications are open worldwide; except Brazil.",
+    "Applications are open worldwide; only brazilian companies are eligible.",
+    "We only accept applications from Brazil worldwide.",
+    "Applications are open worldwide but restricted to partner region zeta.",
+    "申请面向全球供应商开放，但仅限日本",
+    "申请面向全球供应商开放，但只限日本",
+    "申请面向全球开放；仅限日本",
   ])(
     "rejects globally-open worker paths without positive original openness: %s",
     (originalText) => {
