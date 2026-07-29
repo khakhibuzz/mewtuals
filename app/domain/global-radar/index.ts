@@ -146,6 +146,74 @@ export type {
 } from "./systems-context";
 
 export {
+  GLOBAL_RADAR_SCORE_VERSION,
+  assessDirectDemandActivity,
+  calculateFreshness,
+  calculateTimeHorizon,
+  deriveEcosystemMomentum,
+  directDemandActivityInputSchema,
+  directDemandActivityResultSchema,
+  directDemandComponentsSchema,
+  directDemandScoreResultSchema,
+  freshnessInputSchema,
+  freshnessResultSchema,
+  momentumComponentsSchema,
+  momentumDerivationInputSchema,
+  momentumDerivationResultSchema,
+  momentumObservationSchema,
+  momentumPolicySchema,
+  momentumScoreResultSchema,
+  precursorComponentsSchema,
+  precursorScoreResultSchema,
+  scoreDemandPrecursor,
+  scoreDirectDemand,
+  scoreEcosystemMomentum,
+  timeHorizonInputSchema,
+  timeHorizonResultSchema,
+} from "./scoring";
+
+export type {
+  DirectDemandActivityResult,
+  DirectDemandComponents,
+  DirectDemandScoreResult,
+  FreshnessResult,
+  MomentumComponents,
+  MomentumDerivationInput,
+  MomentumDerivationResult,
+  MomentumPolicy,
+  MomentumScoreResult,
+  PrecursorComponents,
+  PrecursorScoreResult,
+  RadarClock,
+  TimeHorizonResult,
+} from "./scoring";
+
+export {
+  determineInitialSignalStatus,
+  initialSignalStatusInputSchema,
+  initialSignalStatusResultSchema,
+  preserveRediscoveredSignalStatus,
+  qualificationAssessmentSchema,
+  rediscoveredSignalStatusInputSchema,
+  rediscoveredSignalStatusResultSchema,
+  signalTransitionActionSchema,
+  signalTransitionInputSchema,
+  signalTransitionResultSchema,
+  transitionSignal,
+} from "./transitions";
+
+export type {
+  InitialSignalStatusInput,
+  InitialSignalStatusResult,
+  QualificationAssessment,
+  RediscoveredSignalStatusInput,
+  RediscoveredSignalStatusResult,
+  SignalTransitionAction,
+  SignalTransitionInput,
+  SignalTransitionResult,
+} from "./transitions";
+
+export {
   canonicalizeEvidenceUrl,
   compareEntityIdentities,
   createEntityIdentity,
