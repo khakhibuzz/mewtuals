@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   deriveRelationshipEvidenceKey,
   deriveSignalEvidenceKey,
+  ecosystemImportDocumentSchema,
   parseEcosystemImportDocument,
 } from "../scripts/ecosystem-intelligence-import";
 
@@ -192,6 +193,63 @@ describe("ecosystem intelligence import contract", () => {
     expect(() => parseEcosystemImportDocument(tooManySignals)).toThrow();
   });
 
+  it.each([
+    {
+      path: "candidates.0.canonicalUrl",
+      mutate(document: ReturnType<typeof validDocument>, url: string) {
+        delete (document.candidates[0] as { candidateId?: string }).candidateId;
+        (document.candidates[0] as { canonicalUrl?: string }).canonicalUrl = url;
+      },
+    },
+    {
+      path: "candidates.0.classifications.0.sourceUrls.0",
+      mutate(document: ReturnType<typeof validDocument>, url: string) {
+        document.candidates[0].classifications[0].sourceUrls = [url];
+      },
+    },
+    {
+      path: "candidates.0.headquarters.sourceUrls.0",
+      mutate(document: ReturnType<typeof validDocument>, url: string) {
+        document.candidates[0].headquarters.sourceUrls = [url];
+      },
+    },
+    {
+      path: "candidates.0.signals.0.sourceUrl",
+      mutate(document: ReturnType<typeof validDocument>, url: string) {
+        document.candidates[0].signals[0].sourceUrl = url;
+      },
+    },
+    {
+      path: "candidates.0.relationships.0.targetCanonicalUrl",
+      mutate(document: ReturnType<typeof validDocument>, url: string) {
+        const relationship = document.candidates[0].relationships[0] as {
+          targetPublicName?: string;
+          targetCanonicalUrl?: string;
+        };
+        delete relationship.targetPublicName;
+        relationship.targetCanonicalUrl = url;
+      },
+    },
+    {
+      path: "candidates.0.relationships.0.evidenceUrl",
+      mutate(document: ReturnType<typeof validDocument>, url: string) {
+        document.candidates[0].relationships[0].evidenceUrl = url;
+      },
+    },
+  ])("bounds $path at 2048 characters before normalization", ({ path, mutate }) => {
+    const document = validDocument();
+    mutate(document, `https://evidence.example.com/${"s".repeat(2_049)}`);
+
+    const result = ecosystemImportDocumentSchema.safeParse(document);
+
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error("Expected URL validation to fail.");
+    expect(result.error.issues).toContainEqual(expect.objectContaining({
+      path: path.split(".").map((part) => /^\d+$/.test(part) ? Number(part) : part),
+      message: "url_too_long",
+    }));
+  });
+
   it("rejects duplicate facts in one candidate entry", () => {
     const duplicateClassification = validDocument();
     duplicateClassification.candidates[0].classifications.push({
@@ -282,11 +340,35 @@ describe("ecosystem intelligence validate CLI", () => {
         signals: 0,
         relationships: 0,
       },
-      unresolvedCount: 0,
+      unresolvedCount: 1,
       status: "validated",
     });
     expect(result.stdout).not.toContain("Public Research Lab");
     expect(result.stdout).not.toContain("postgresql://");
+  });
+
+  it("counts unresolved relationship facts in a mixed validate document", async () => {
+    const document = validDocument();
+    (document.candidates[0].relationships as unknown[]).push({
+      targetCandidateId: "00000000-0000-4000-8000-000000000102",
+      relationshipType: "supplies_to",
+      evidenceUrl: "https://evidence.example.com/supply",
+      confidence: 81,
+      observedAt: "2026-07-22T00:00:00.000Z",
+    });
+
+    const result = await runCli([
+      "validate",
+      "--file",
+      writePrivateDocument(document),
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      factCounts: { relationships: 2 },
+      unresolvedCount: 1,
+      status: "validated",
+    });
   });
 
   it("rejects non-private, symlink, and non-regular files", async () => {
@@ -339,5 +421,30 @@ describe("ecosystem intelligence validate CLI", () => {
     expect(result.stderr).not.toContain("127.0.0.1");
     expect(result.stderr).not.toContain("PRIVATE_SOURCE_CONTENT");
     expect(result.stderr).not.toContain("postgresql://");
+  });
+
+  it("rejects an overlong secret-bearing URL without echoing it", async () => {
+    const document = validDocument();
+    const secret = "PRIVATE_URL_TOKEN_DO_NOT_PRINT";
+    document.candidates[0].signals[0].sourceUrl =
+      `https://evidence.example.com/${secret}${"x".repeat(2_100)}`;
+
+    const result = await runCli([
+      "validate",
+      "--file",
+      writePrivateDocument(document),
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      status: "validation_failed",
+      issues: [{
+        path: "candidates.0.signals.0.sourceUrl",
+        code: "url_too_long",
+      }],
+    });
+    expect(result.stderr).not.toContain(secret);
+    expect(result.stderr.length).toBeLessThan(1_000);
   });
 });

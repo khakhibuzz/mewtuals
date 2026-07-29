@@ -27,6 +27,7 @@ const MAX_CANDIDATES = 100;
 const MAX_FACTS_PER_KIND = 50;
 const MAX_SOURCES_PER_FACT = 12;
 const MAX_SAFE_ISSUES = 20;
+const MAX_URL_LENGTH = 2_048;
 
 const classificationKinds = ecosystemTaxonomyKinds.filter(
   (kind) => kind !== "signal_type" && kind !== "relationship_type",
@@ -58,7 +59,7 @@ const isoDateTimeSchema = z
   .transform((value) => new Date(value).toISOString());
 
 function normalizedUrlSchema(canonical: boolean) {
-  return z.string().transform((value, context) => {
+  return z.string().max(MAX_URL_LENGTH, { message: "url_too_long" }).transform((value, context) => {
     try {
       return canonical
         ? normalizeDiscoveryUrl(value)
@@ -349,6 +350,16 @@ function factCounts(document: EcosystemImportDocument): SafeCounts {
   );
 }
 
+function unresolvedRelationshipCount(document: EcosystemImportDocument): number {
+  return document.candidates.reduce(
+    (count, candidate) =>
+      count + candidate.relationships.filter(({ targetPublicName }) =>
+        targetPublicName !== undefined,
+      ).length,
+    0,
+  );
+}
+
 type SafeIssue = { path: string; code: string };
 
 class EcosystemImportCliError extends Error {
@@ -362,6 +373,7 @@ class EcosystemImportCliError extends Error {
 }
 
 function issueCode(issue: z.core.$ZodIssue): string {
+  if (issue.message === "url_too_long") return "url_too_long";
   if (issue.code === "custom" && typeof issue.message === "string") {
     return issue.message.slice(0, 80);
   }
@@ -515,7 +527,7 @@ async function runCommand(arguments_: readonly string[]) {
       candidateCount: document.candidates.length,
       factCounts: counts,
       duplicateCounts: zeroDuplicates,
-      unresolvedCount: 0,
+      unresolvedCount: unresolvedRelationshipCount(document),
       status: "validated" as const,
     };
   }

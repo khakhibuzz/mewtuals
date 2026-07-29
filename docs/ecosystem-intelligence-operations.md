@@ -20,6 +20,7 @@ owned by the current user with no group or other permission bits. It rejects
 symbolic links, directories, oversized files, unknown top-level or fact fields,
 private/non-HTTP URLs, unregistered taxonomy keys, unresolved or ambiguous
 candidate identities, and duplicate facts within one file.
+Every URL-valued field is limited to 2,048 characters before normalization.
 
 Each candidate entry identifies one existing Discovery candidate by exactly
 one of `candidateId` or `canonicalUrl`. A resolved relationship target uses
@@ -48,6 +49,9 @@ Output is intentionally limited to the schema version, file hash, bounded
 candidate/fact counts, duplicate counts, unresolved count, and terminal status.
 Failures contain bounded JSON paths and error codes, never rejected values,
 source contents, SQL, credentials, or the database URL.
+`unresolvedCount` is the number of relationship facts that intentionally use
+an external `targetPublicName`; it is a factual count and therefore remains the
+same when an unchanged file is replayed.
 
 ## Import and retry safely
 

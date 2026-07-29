@@ -35,7 +35,7 @@ export type EcosystemImportResult = {
   insertedCounts: FactCounts;
   updatedCounts: FactCounts;
   duplicateCounts: FactCounts;
-  unresolvedCount: 0;
+  unresolvedCount: number;
 };
 
 export class EcosystemImportRepositoryError extends Error {
@@ -554,7 +554,13 @@ export function createEcosystemIntelligenceImportRepository(
           insertedCounts,
           updatedCounts,
           duplicateCounts,
-          unresolvedCount: 0,
+          unresolvedCount: prepared.reduce(
+            (count, candidate) =>
+              count + candidate.resolvedRelationships.filter(
+                ({ targetCandidateId }) => targetCandidateId === null,
+              ).length,
+            0,
+          ),
         };
       });
     },

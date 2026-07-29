@@ -246,6 +246,13 @@ describe("Ecosystem Intelligence import repository", () => {
               confidence: 88,
               observedAt: "2026-07-22T00:00:00.000Z",
             },
+            {
+              targetPublicName: "External Public Lab",
+              relationshipType: "researches_with",
+              evidenceUrl: "https://evidence.example.com/external-research",
+              confidence: 77,
+              observedAt: "2026-07-23T00:00:00.000Z",
+            },
           ],
         },
       ),
@@ -259,7 +266,7 @@ describe("Ecosystem Intelligence import repository", () => {
         classifications: 1,
         headquarters: 1,
         signals: 1,
-        relationships: 1,
+        relationships: 2,
       },
       updatedCounts: {
         classifications: 0,
@@ -273,15 +280,30 @@ describe("Ecosystem Intelligence import repository", () => {
         signals: 0,
         relationships: 0,
       },
-      unresolvedCount: 0,
+      unresolvedCount: 1,
     });
-    const [relationship] = await database.select().from(candidateRelationships);
+    const relationships = await database.select().from(candidateRelationships);
+    const relationship = relationships.find(({ targetCandidateId }) =>
+      targetCandidateId !== null,
+    );
     expect(relationship).toMatchObject({
       sourceCandidateId: source.candidate.id,
       targetCandidateId: target.candidate.id,
       targetPublicName: null,
       relationshipType: "supplies_to",
     });
+    expect(relationships).toContainEqual(expect.objectContaining({
+      sourceCandidateId: source.candidate.id,
+      targetCandidateId: null,
+      targetPublicName: "External Public Lab",
+      relationshipType: "researches_with",
+    }));
+
+    const replay = await repository.importDocument(input, new Date(
+      "2026-07-29T09:30:00.000Z",
+    ));
+    expect(replay.duplicateCounts.relationships).toBe(2);
+    expect(replay.unresolvedCount).toBe(1);
   });
 
   it("rejects missing, ambiguous, and repeated resolved identities before mutation", async () => {
@@ -528,7 +550,7 @@ describe("Ecosystem Intelligence import repository", () => {
         signals: 0,
         relationships: 0,
       },
-      unresolvedCount: 0,
+      unresolvedCount: 1,
       status: "imported",
     });
     expect(Object.keys(JSON.parse(result.stdout)).sort()).toEqual([
