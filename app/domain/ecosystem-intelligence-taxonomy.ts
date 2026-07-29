@@ -2,6 +2,29 @@ export const ECOSYSTEM_TAXONOMY_VERSION = "ecosystem-intelligence-v1" as const;
 export const PHYSICAL_AI_CAMPAIGN_KEY = "robotics_hardware_india" as const;
 export const PHYSICAL_AI_ANALYSIS_VERSION = "physical-ai-v1" as const;
 
+export const ECOSYSTEM_INTELLIGENCE_THRESHOLDS = {
+  representationCoverageTargetPercent: 40,
+  geographicConcentration: {
+    minimumResolvedCandidates: 5,
+    minimumSharePercent: 60,
+  },
+  missingData: {
+    minimumAffectedCandidates: 3,
+    minimumRatePercent: 20,
+  },
+  publicContacts: {
+    minimumGroupSize: 4,
+    maximumAvailabilityPercentExclusive: 35,
+  },
+  dependencySignals: { minimumSignals: 3 },
+  staleEvidence: {
+    maximumAgeDays: 180,
+    minimumAffectedSharePercent: 25,
+  },
+  momentum: { minimumSignals: 5, minimumOrganisations: 3 },
+  relationships: { minimumEvidencedEdges: 8, minimumCandidates: 5 },
+} as const;
+
 export const ecosystemTaxonomyKinds = [
   "ecosystem_domain",
   "organisation_subtype",
@@ -47,6 +70,7 @@ const ecosystemDomains = terms([
   { key: "embedded_systems", label: "Embedded systems", shortLabel: "Embedded", order: 4, description: "Embedded control, firmware, and edge computing." },
   { key: "advanced_manufacturing", label: "Advanced manufacturing", shortLabel: "Manufacturing", order: 5, description: "Industrial production, testing, and automation." },
   { key: "physical_ai", label: "Physical AI", shortLabel: "Physical AI", order: 6, description: "AI embodied in machines operating in the physical world." },
+  { key: "hardware", label: "Hardware", shortLabel: "Hardware", order: 7, description: "Physical products and the systems used to build them." },
 ] as const);
 
 const organisationSubtypes = terms([
@@ -164,6 +188,7 @@ export type EcosystemTaxonomyTerms = {
 
 export const ECOSYSTEM_TAXONOMY = {
   version: ECOSYSTEM_TAXONOMY_VERSION,
+  thresholds: ECOSYSTEM_INTELLIGENCE_THRESHOLDS,
   kinds: ecosystemTaxonomyKinds,
   physicalAiCategories,
   termsByKind: {

@@ -29,6 +29,20 @@ describe("ecosystem intelligence taxonomy", () => {
     expect(PHYSICAL_AI_CAMPAIGN_KEY).toBe("robotics_hardware_india");
     expect(PHYSICAL_AI_ANALYSIS_VERSION).toBe("physical-ai-v1");
     expect(ECOSYSTEM_TAXONOMY.physicalAiCategories).toHaveLength(8);
+    expect(ECOSYSTEM_TAXONOMY.termsByKind.ecosystem_domain.map((term) => term.key)).toContain("hardware");
+  });
+
+  it("owns all readiness and insight policy thresholds in the taxonomy", () => {
+    expect(ECOSYSTEM_TAXONOMY.thresholds).toMatchObject({
+      representationCoverageTargetPercent: 40,
+      geographicConcentration: { minimumResolvedCandidates: 5, minimumSharePercent: 60 },
+      missingData: { minimumAffectedCandidates: 3, minimumRatePercent: 20 },
+      publicContacts: { minimumGroupSize: 4, maximumAvailabilityPercentExclusive: 35 },
+      dependencySignals: { minimumSignals: 3 },
+      staleEvidence: { maximumAgeDays: 180, minimumAffectedSharePercent: 25 },
+      momentum: { minimumSignals: 5, minimumOrganisations: 3 },
+      relationships: { minimumEvidencedEdges: 8, minimumCandidates: 5 },
+    });
   });
 
   it("uses unique ordered stable keys with complete display metadata", () => {
@@ -128,16 +142,60 @@ describe("ecosystem intelligence filters", () => {
     });
   });
 
+  it("accepts unknown for every taxonomy-backed analytical filter and orders it last", () => {
+    const filters = parseEcosystemFilters({
+      ecosystemDomain: ["unknown", "hardware"],
+      organisationSubtype: "unknown",
+      ecosystemRole: "unknown",
+      businessStage: "unknown",
+      technicalLayer: "unknown",
+      capability: "unknown",
+      componentCategory: "unknown",
+      roboticsVertical: "unknown",
+      activeSignalType: "unknown",
+    });
+    expect(filters.ecosystemDomains).toEqual(["hardware", "unknown"]);
+    expect(filters.organisationSubtypes).toEqual(["unknown"]);
+    expect(filters.ecosystemRoles).toEqual(["unknown"]);
+    expect(filters.businessStages).toEqual(["unknown"]);
+    expect(filters.technicalLayers).toEqual(["unknown"]);
+    expect(filters.capabilities).toEqual(["unknown"]);
+    expect(filters.componentCategories).toEqual(["unknown"]);
+    expect(filters.roboticsVerticals).toEqual(["unknown"]);
+    expect(filters.activeSignalTypes).toEqual(["unknown"]);
+  });
+
+  it("canonicalizes only registered headquarters aliases and unknown", () => {
+    expect(
+      parseEcosystemFilters({ headquartersState: "orissa", headquartersCity: "bangalore" }),
+    ).toMatchObject({ headquartersStates: ["odisha"], headquartersCities: ["bengaluru"] });
+    expect(parseEcosystemFilters({ headquartersState: "unknown", headquartersCity: "unknown" }))
+      .toMatchObject({ headquartersStates: ["unknown"], headquartersCities: ["unknown"] });
+    expect(() => parseEcosystemFilters({ headquartersState: "somewhere" })).toThrow();
+    expect(() => parseEcosystemFilters({ headquartersCity: "somewhere" })).toThrow();
+  });
+
   it("rejects invalid taxonomy keys, unknown fields, invalid confidence, reversed dates, and page sizes above 100", () => {
     for (const value of [
       { ecosystemDomain: "not_a_domain" },
       { unexpected: "filter" },
       { minimumDiscoveryConfidence: "50.5" },
+      { discoveredAfter: "2026-02-31" },
       { discoveredAfter: "2026-07-30", discoveredBefore: "2026-07-29" },
       { pageSize: "101" },
     ]) {
       expect(() => parseEcosystemFilters(value)).toThrow();
     }
+  });
+
+  it("rejects duplicate scalar query parameters while preserving taxonomy multi-values", () => {
+    expect(() => filtersFromSearchParams(new URLSearchParams("page=1&page=2"))).toThrow();
+    expect(() => filtersFromSearchParams(new URLSearchParams("page=&page=2"))).toThrow();
+    expect(() => filtersFromSearchParams(new URLSearchParams("sort=name&sort=discovered_at"))).toThrow();
+    expect(
+      filtersFromSearchParams(new URLSearchParams("ecosystemDomain=robotics&ecosystemDomain=hardware"))
+        .ecosystemDomains,
+    ).toEqual(["robotics", "hardware"]);
   });
 
   it.each(["current", "stale", "unknown"] as const)(
@@ -227,6 +285,12 @@ describe("ecosystem intelligence evidence and readiness", () => {
         new Date("2026-01-02T00:00:00.000Z"),
       ),
     ).toBe(true);
+    expect(
+      isActiveSignal(
+        { type: "product_launch", occurredAt: "2026-02-01" },
+        new Date("2026-01-31T00:00:00.000Z"),
+      ),
+    ).toBe(false);
   });
 
   it("reports relationship readiness only at eight evidenced edges spanning five candidates", () => {
@@ -238,13 +302,49 @@ describe("ecosystem intelligence evidence and readiness", () => {
     });
   });
 
+  it("uses exact ratios rather than rounded display percentages for threshold rules", () => {
+    const insights = buildResearchGapInsights({
+      representation: {
+        numerator: 198,
+        denominator: 500,
+        label: "Technical layers",
+      },
+    });
+    expect(insights.map((insight) => insight.ruleKey)).toContain("representation_below_target");
+
+    const concentration = buildResearchGapInsights({
+      geographicConcentration: { numerator: 37, denominator: 62, label: "Karnataka" },
+    });
+    expect(concentration.map((insight) => insight.ruleKey)).not.toContain("geographic_concentration");
+  });
+
   it("builds thresholded, safe research-gap insights with preserved counts", () => {
     const insights = buildResearchGapInsights({
-      representation: { numerator: 2, denominator: 10, targetPercent: 40, label: "Technical layers" },
-      geographicConcentration: { numerator: 4, denominator: 5, label: "Karnataka" },
-      missingData: { numerator: 3, denominator: 10, label: "Resolved headquarters" },
+      representation: {
+        numerator: 2,
+        denominator: 10,
+        label: "Technical layers",
+        supportingFilters: { technicalLayers: ["mechanical_and_actuation"] },
+      },
+      geographicConcentration: {
+        numerator: 4,
+        denominator: 5,
+        label: "Karnataka",
+        supportingFilters: { headquartersStates: ["karnataka"] },
+      },
+      missingData: {
+        numerator: 3,
+        denominator: 10,
+        label: "Ecosystem roles",
+        supportingFilters: { ecosystemRoles: ["component_supplier"] },
+      },
       publicContacts: { numerator: 1, denominator: 4, label: "Public professional contacts" },
-      dependencySignals: { numerator: 3, denominator: 3, label: "Dependency-related signals" },
+      dependencySignals: {
+        numerator: 3,
+        denominator: 3,
+        label: "Dependency-related signals",
+        supportingFilters: { activeSignalTypes: ["partnership"] },
+      },
       staleEvidence: { numerator: 3, denominator: 10, label: "Current evidence" },
     });
     expect(insights.length).toBe(6);
@@ -254,6 +354,18 @@ describe("ecosystem intelligence evidence and readiness", () => {
       expect(`${insight.title} ${insight.copy}`.toLowerCase()).not.toMatch(
         /shortage|does not exist|opportunity/,
       );
+      expect(`${insight.title} ${insight.copy}`.toLowerCase()).toContain("current mewtuals map");
+      expect(insight.copy).toContain(`${insight.numerator} of ${insight.denominator}`);
+      expect(insight.copy).toContain(`${insight.percentage}%`);
+      expect(insight.copy).toContain(insight.confidence);
+      expect(insight.copy).toContain(insight.ruleKey);
+      expect(insight.supportingFilters.page).toBe(1);
     }
+    expect(insights.find((insight) => insight.ruleKey === "stale_evidence")?.supportingFilters.evidenceFreshness).toBe("stale");
+    expect(insights.find((insight) => insight.ruleKey === "low_public_contact_coverage")?.supportingFilters.publicContactAvailability).toBe("unavailable");
+    expect(insights.find((insight) => insight.ruleKey === "representation_below_target")?.supportingFilters.technicalLayers).toEqual(["mechanical_and_actuation"]);
+    expect(insights.find((insight) => insight.ruleKey === "geographic_concentration")?.supportingFilters.headquartersStates).toEqual(["karnataka"]);
+    expect(insights.find((insight) => insight.ruleKey === "missing_data")?.supportingFilters.ecosystemRoles).toEqual(["component_supplier"]);
+    expect(insights.find((insight) => insight.ruleKey === "dependency_related_signals")?.supportingFilters.activeSignalTypes).toEqual(["partnership"]);
   });
 });

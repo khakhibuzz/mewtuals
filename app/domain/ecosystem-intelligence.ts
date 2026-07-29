@@ -1,8 +1,11 @@
 import { z } from "zod";
 
 import {
+  ECOSYSTEM_INTELLIGENCE_THRESHOLDS,
   ECOSYSTEM_TAXONOMY,
   PHYSICAL_AI_ANALYSIS_VERSION,
+  normalizeIndiaCity,
+  normalizeIndiaState,
   signalFreshnessDays,
   taxonomyOrder,
   type EcosystemTaxonomyKey,
@@ -40,22 +43,25 @@ export type EcosystemSort =
   | "discovery_score"
   | "evidence_coverage";
 export type SortDirection = "asc" | "desc";
+export type TaxonomyFilterValue<Kind extends EcosystemTaxonomyKind> =
+  | EcosystemTaxonomyKey<Kind>
+  | "unknown";
 
 export type EcosystemFilters = {
   participantType: ParticipantType;
   includeEnablers: boolean;
   analysisVersion: typeof PHYSICAL_AI_ANALYSIS_VERSION;
-  ecosystemDomains: readonly EcosystemTaxonomyKey<"ecosystem_domain">[];
-  organisationSubtypes: readonly EcosystemTaxonomyKey<"organisation_subtype">[];
-  ecosystemRoles: readonly EcosystemTaxonomyKey<"ecosystem_role">[];
-  businessStages: readonly EcosystemTaxonomyKey<"business_stage">[];
-  technicalLayers: readonly EcosystemTaxonomyKey<"technical_layer">[];
-  capabilities: readonly EcosystemTaxonomyKey<"capability">[];
-  componentCategories: readonly EcosystemTaxonomyKey<"component_category">[];
-  roboticsVerticals: readonly EcosystemTaxonomyKey<"robotics_vertical">[];
+  ecosystemDomains: readonly TaxonomyFilterValue<"ecosystem_domain">[];
+  organisationSubtypes: readonly TaxonomyFilterValue<"organisation_subtype">[];
+  ecosystemRoles: readonly TaxonomyFilterValue<"ecosystem_role">[];
+  businessStages: readonly TaxonomyFilterValue<"business_stage">[];
+  technicalLayers: readonly TaxonomyFilterValue<"technical_layer">[];
+  capabilities: readonly TaxonomyFilterValue<"capability">[];
+  componentCategories: readonly TaxonomyFilterValue<"component_category">[];
+  roboticsVerticals: readonly TaxonomyFilterValue<"robotics_vertical">[];
   headquartersStates: readonly string[];
   headquartersCities: readonly string[];
-  activeSignalTypes: readonly EcosystemTaxonomyKey<"signal_type">[];
+  activeSignalTypes: readonly TaxonomyFilterValue<"signal_type">[];
   reviewStatuses: readonly ReviewStatus[];
   publicContactAvailability?: "available" | "unavailable" | "unknown";
   evidenceCoverageBand?: "strong" | "partial" | "limited" | "unknown";
@@ -131,29 +137,51 @@ function values(input: FilterInput, name: string): string[] {
   ).map((item) => item.trim()).filter(Boolean);
 }
 
-function stringValue(input: FilterInput, name: string): string | undefined {
-  return values(input, name)[0];
+function scalarValue(input: FilterInput, name: string): string | undefined {
+  if (Array.isArray(input[name]) && input[name].length > 1) {
+    throw new Error(`Duplicate scalar filter parameter: ${name}.`);
+  }
+  const parsed = values(input, name);
+  if (parsed.length > 1) {
+    throw new Error(`Duplicate scalar filter parameter: ${name}.`);
+  }
+  return parsed[0];
 }
 
 function orderedUnique<Kind extends EcosystemTaxonomyKind>(
   kind: Kind,
   value: readonly string[],
-): EcosystemTaxonomyKey<Kind>[] {
+): TaxonomyFilterValue<Kind>[] {
   const known = ECOSYSTEM_TAXONOMY.termsByKind[kind];
   const unique = [...new Set(value)];
   for (const key of unique) {
-    if (!known.some((term) => term.key === key)) {
+    if (key !== "unknown" && !known.some((term) => term.key === key)) {
       throw new Error(`Unknown ${kind} filter key: ${key}.`);
     }
   }
   return unique.sort((left, right) =>
-    (taxonomyOrder(kind, left) ?? Number.MAX_SAFE_INTEGER) -
-    (taxonomyOrder(kind, right) ?? Number.MAX_SAFE_INTEGER),
-  ) as EcosystemTaxonomyKey<Kind>[];
+    (left === "unknown" ? Number.MAX_SAFE_INTEGER : taxonomyOrder(kind, left) ?? Number.MAX_SAFE_INTEGER) -
+    (right === "unknown" ? Number.MAX_SAFE_INTEGER : taxonomyOrder(kind, right) ?? Number.MAX_SAFE_INTEGER),
+  ) as TaxonomyFilterValue<Kind>[];
 }
 
-function orderedStringValues(value: readonly string[]): string[] {
-  return [...new Set(value)].sort((left, right) => left.localeCompare(right));
+function orderedLocations(
+  values: readonly string[],
+  normalize: (value: string) => string | undefined,
+  label: string,
+): string[] {
+  const normalized = values.map((value) => {
+    if (value.trim().toLowerCase() === "unknown") return "unknown";
+    const result = normalize(value);
+    if (!result) throw new Error(`Unknown headquarters ${label} filter key: ${value}.`);
+    return result;
+  });
+  return [...new Set(normalized)].sort((left, right) => {
+    if (left === right) return 0;
+    if (left === "unknown") return 1;
+    if (right === "unknown") return -1;
+    return left.localeCompare(right);
+  });
 }
 
 function orderedReviewStatuses(value: readonly string[]): ReviewStatus[] {
@@ -178,7 +206,11 @@ function orderedReviewStatuses(value: readonly string[]): ReviewStatus[] {
 const dateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
-  .refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`)), {
+  .refine((value) => {
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  }, {
     message: "Date filters must be ISO calendar dates.",
   });
 const integer = (minimum: number, maximum: number) =>
@@ -190,7 +222,7 @@ function enumValue<const Values extends readonly [string, ...string[]]>(
   allowed: Values,
   defaultValue: Values[number],
 ): Values[number] {
-  const value = stringValue(input, name);
+  const value = scalarValue(input, name);
   return value === undefined ? defaultValue : z.enum(allowed).parse(value);
 }
 
@@ -199,17 +231,17 @@ function optionalEnum<const Values extends readonly [string, ...string[]]>(
   name: string,
   allowed: Values,
 ): Values[number] | undefined {
-  const value = stringValue(input, name);
+  const value = scalarValue(input, name);
   return value === undefined ? undefined : z.enum(allowed).parse(value);
 }
 
 function optionalPositiveScore(input: FilterInput): number | undefined {
-  const value = stringValue(input, "minimumDiscoveryConfidence");
+  const value = scalarValue(input, "minimumDiscoveryConfidence");
   return value === undefined ? undefined : integer(0, 100).parse(value);
 }
 
 function optionalDate(input: FilterInput, name: string): string | undefined {
-  const value = stringValue(input, name);
+  const value = scalarValue(input, name);
   return value === undefined ? undefined : dateSchema.parse(value);
 }
 
@@ -222,9 +254,9 @@ export function parseEcosystemFilters(input: FilterInput = {}): EcosystemFilters
   }
 
   const reviewStatuses = values(input, "reviewStatus");
-  const page = stringValue(input, "page");
-  const pageSize = stringValue(input, "pageSize");
-  const includeEnablers = stringValue(input, "includeEnablers");
+  const page = scalarValue(input, "page");
+  const pageSize = scalarValue(input, "pageSize");
+  const includeEnablers = scalarValue(input, "includeEnablers");
 
   return {
     participantType: enumValue(input, "participantType", ["company", "creator"], "company"),
@@ -238,8 +270,8 @@ export function parseEcosystemFilters(input: FilterInput = {}): EcosystemFilters
     capabilities: orderedUnique("capability", values(input, "capability")),
     componentCategories: orderedUnique("component_category", values(input, "componentCategory")),
     roboticsVerticals: orderedUnique("robotics_vertical", values(input, "roboticsVertical")),
-    headquartersStates: orderedStringValues(values(input, "headquartersState").map((value) => value.toLowerCase())),
-    headquartersCities: orderedStringValues(values(input, "headquartersCity").map((value) => value.toLowerCase())),
+    headquartersStates: orderedLocations(values(input, "headquartersState"), normalizeIndiaState, "state"),
+    headquartersCities: orderedLocations(values(input, "headquartersCity"), normalizeIndiaCity, "city"),
     activeSignalTypes: orderedUnique("signal_type", values(input, "activeSignalType")),
     reviewStatuses: reviewStatuses.length === 0
       ? DEFAULT_ECOSYSTEM_FILTERS.reviewStatuses
@@ -421,8 +453,9 @@ export function activeUntilForSignal(signal: PublicSignalInput): Date | undefine
 }
 
 export function isActiveSignal(signal: PublicSignalInput, now: Date): boolean {
+  const occurredAt = date(signal.occurredAt);
   const activeUntil = activeUntilForSignal(signal);
-  return activeUntil !== undefined && activeUntil > now;
+  return occurredAt !== undefined && occurredAt <= now && activeUntil !== undefined && activeUntil > now;
 }
 
 export type RelationshipReadinessInput = {
@@ -432,29 +465,35 @@ export type RelationshipReadinessInput = {
 };
 export type RelationshipReadiness = RelationshipReadinessInput & {
   ready: boolean;
-  requiredEvidencedEdges: 8;
-  requiredCandidates: 5;
+  requiredEvidencedEdges: number;
+  requiredCandidates: number;
   message: string;
 };
 
 export function relationshipReadiness(input: RelationshipReadinessInput): RelationshipReadiness {
-  const ready = input.evidencedEdges >= 8 && input.candidates >= 5;
+  const thresholds = ECOSYSTEM_INTELLIGENCE_THRESHOLDS.relationships;
+  const ready = input.evidencedEdges >= thresholds.minimumEvidencedEdges && input.candidates >= thresholds.minimumCandidates;
   return {
     evidencedEdges: input.evidencedEdges,
     candidates: input.candidates,
     unresolvedTargets: input.unresolvedTargets ?? 0,
     ready,
-    requiredEvidencedEdges: 8,
-    requiredCandidates: 5,
+    requiredEvidencedEdges: thresholds.minimumEvidencedEdges,
+    requiredCandidates: thresholds.minimumCandidates,
     message: ready
       ? "Verified relationship evidence is ready to view."
       : "More verified relationship evidence is needed before showing the graph.",
   };
 }
 
-type GapMeasure = { numerator: number; denominator: number; label: string };
+type GapMeasure = {
+  numerator: number;
+  denominator: number;
+  label: string;
+  supportingFilters?: Partial<EcosystemFilters>;
+};
 export type ResearchGapInsightInput = {
-  representation?: GapMeasure & { targetPercent: number };
+  representation?: GapMeasure;
   geographicConcentration?: GapMeasure;
   missingData?: GapMeasure;
   publicContacts?: GapMeasure;
@@ -469,41 +508,78 @@ export type ResearchGapInsight = {
   denominator: number;
   percentage: number;
   confidence: "map_evidence";
+  supportingFilters: EcosystemFilters;
 };
 
 function percentage(measure: GapMeasure): number {
   return measure.denominator === 0 ? 0 : Math.round((measure.numerator / measure.denominator) * 100);
 }
 
-function insight(ruleKey: string, title: string, copy: string, measure: GapMeasure): ResearchGapInsight {
-  return { ruleKey, title, copy, numerator: measure.numerator, denominator: measure.denominator, percentage: percentage(measure), confidence: "map_evidence" };
+function canonicalSupportingFilters(
+  filters: Partial<EcosystemFilters> | undefined,
+): EcosystemFilters {
+  return filtersFromSearchParams(
+    new URLSearchParams(
+      serializeEcosystemFilters({ ...DEFAULT_ECOSYSTEM_FILTERS, ...filters, page: 1 }),
+    ),
+  );
+}
+
+function insight(
+  ruleKey: string,
+  title: string,
+  copy: string,
+  measure: GapMeasure,
+  supportingFilters: Partial<EcosystemFilters> | undefined,
+): ResearchGapInsight {
+  const coverage = percentage(measure);
+  const confidence = "map_evidence" as const;
+  return {
+    ruleKey,
+    title: `Current Mewtuals map: ${title}`,
+    copy: `Current Mewtuals map: ${copy} Counts: ${measure.numerator} of ${measure.denominator}. Coverage: ${coverage}%. Confidence: ${confidence}. Rule key: ${ruleKey}.`,
+    numerator: measure.numerator,
+    denominator: measure.denominator,
+    percentage: coverage,
+    confidence,
+    supportingFilters: canonicalSupportingFilters(supportingFilters),
+  };
+}
+
+function isAtLeast(measure: GapMeasure, numerator: number, denominator: number): boolean {
+  return measure.denominator > 0 && measure.numerator * denominator >= measure.denominator * numerator;
+}
+
+function isBelow(measure: GapMeasure, numerator: number, denominator: number): boolean {
+  return measure.denominator > 0 && measure.numerator * denominator < measure.denominator * numerator;
 }
 
 export function buildResearchGapInsights(input: ResearchGapInsightInput): readonly ResearchGapInsight[] {
   const insights: ResearchGapInsight[] = [];
+  const thresholds = ECOSYSTEM_INTELLIGENCE_THRESHOLDS;
   const representation = input.representation;
-  if (representation && percentage(representation) < representation.targetPercent) {
-    insights.push(insight("representation_below_target", "Map representation needs research", `The current Mewtuals map records ${representation.numerator} of ${representation.denominator} ${representation.label.toLowerCase()}, below its ${representation.targetPercent}% coverage target.`, representation));
+  if (representation && isBelow(representation, thresholds.representationCoverageTargetPercent, 100)) {
+    insights.push(insight("representation_below_target", "Map representation needs research", `${representation.numerator} of ${representation.denominator} ${representation.label.toLowerCase()} are represented, below the ${thresholds.representationCoverageTargetPercent}% coverage target.`, representation, representation.supportingFilters));
   }
   const geographic = input.geographicConcentration;
-  if (geographic && geographic.denominator >= 5 && percentage(geographic) >= 60) {
-    insights.push(insight("geographic_concentration", "Map coverage is concentrated", `${geographic.label} accounts for ${geographic.numerator} of ${geographic.denominator} resolved locations in the current Mewtuals map.`, geographic));
+  if (geographic && geographic.denominator >= thresholds.geographicConcentration.minimumResolvedCandidates && isAtLeast(geographic, thresholds.geographicConcentration.minimumSharePercent, 100)) {
+    insights.push(insight("geographic_concentration", "Map coverage is concentrated", `${geographic.label} accounts for ${geographic.numerator} of ${geographic.denominator} resolved locations.`, geographic, geographic.supportingFilters));
   }
   const missingData = input.missingData;
-  if (missingData && missingData.numerator >= 3 && percentage(missingData) >= 20) {
-    insights.push(insight("missing_data", "More evidence can improve map quality", `${missingData.numerator} of ${missingData.denominator} records are missing ${missingData.label.toLowerCase()}.`, missingData));
+  if (missingData && missingData.numerator >= thresholds.missingData.minimumAffectedCandidates && isAtLeast(missingData, thresholds.missingData.minimumRatePercent, 100)) {
+    insights.push(insight("missing_data", "More evidence can improve map quality", `${missingData.numerator} of ${missingData.denominator} records are missing ${missingData.label.toLowerCase()}.`, missingData, missingData.supportingFilters));
   }
   const contacts = input.publicContacts;
-  if (contacts && contacts.denominator >= 4 && percentage(contacts) < 35) {
-    insights.push(insight("low_public_contact_coverage", "Public contact coverage is limited", `${contacts.numerator} of ${contacts.denominator} records have ${contacts.label.toLowerCase()}.`, contacts));
+  if (contacts && contacts.denominator >= thresholds.publicContacts.minimumGroupSize && isBelow(contacts, thresholds.publicContacts.maximumAvailabilityPercentExclusive, 100)) {
+    insights.push(insight("low_public_contact_coverage", "Public contact coverage is limited", `${contacts.numerator} of ${contacts.denominator} records have ${contacts.label.toLowerCase()}.`, contacts, { ...contacts.supportingFilters, publicContactAvailability: "unavailable" }));
   }
   const dependencySignals = input.dependencySignals;
-  if (dependencySignals && dependencySignals.numerator >= 3) {
-    insights.push(insight("dependency_related_signals", "Dependency-related signals merit review", `${dependencySignals.numerator} active dependency-related signals are represented across ${dependencySignals.denominator} organisations.`, dependencySignals));
+  if (dependencySignals && dependencySignals.numerator >= thresholds.dependencySignals.minimumSignals) {
+    insights.push(insight("dependency_related_signals", "Dependency-related signals merit review", `${dependencySignals.numerator} active dependency-related signals are represented across ${dependencySignals.denominator} organisations.`, dependencySignals, dependencySignals.supportingFilters));
   }
   const staleEvidence = input.staleEvidence;
-  if (staleEvidence && percentage(staleEvidence) >= 25) {
-    insights.push(insight("stale_evidence", "Evidence freshness needs review", `${staleEvidence.numerator} of ${staleEvidence.denominator} records have evidence older than the current freshness threshold.`, staleEvidence));
+  if (staleEvidence && isAtLeast(staleEvidence, thresholds.staleEvidence.minimumAffectedSharePercent, 100)) {
+    insights.push(insight("stale_evidence", "Evidence freshness needs review", `${staleEvidence.numerator} of ${staleEvidence.denominator} records have evidence older than the ${thresholds.staleEvidence.maximumAgeDays}-day freshness threshold.`, staleEvidence, { ...staleEvidence.supportingFilters, evidenceFreshness: "stale" }));
   }
   return insights;
 }
