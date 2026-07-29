@@ -2,19 +2,24 @@ import { describe, expect, it } from "vitest";
 
 import {
   generateGlobalRadarQueries,
+  globalRadarThemeLeafIdentifiers,
   type SearchQuery,
 } from "../app/domain/global-radar/query-generator";
 import {
   planGlobalRadarRun,
   type PublicGlobalRadarPlanningConfig,
 } from "../app/domain/global-radar/planner";
-import { globalRadarThemes } from "../app/domain/taxonomies/global-radar-v1";
+import {
+  globalRadarLeafIdentifiers,
+  globalRadarThemes,
+} from "../app/domain/taxonomies/global-radar-v1";
 
 const planningConfig: PublicGlobalRadarPlanningConfig = {
   countries: ["US", "China"],
   languages: ["en", "zh-CN"],
   themes: globalRadarThemes,
   enabledSourceAdapters: ["codex_public_web"],
+  sourceFamilies: ["official_company_material"],
   resultLimit: 20,
   scoreVersion: "global-radar-score-v1",
 };
@@ -169,6 +174,53 @@ describe("Global Radar query generator", () => {
     );
   });
 
+  it("derives capability phrases from approved leaf identifiers", () => {
+    const queries = generateGlobalRadarQueries(plan());
+
+    expect(Object.keys(globalRadarThemeLeafIdentifiers)).toEqual(
+      globalRadarThemes,
+    );
+    expect(Object.values(globalRadarThemeLeafIdentifiers).every((identifier) =>
+      globalRadarLeafIdentifiers.includes(identifier),
+    )).toBe(true);
+    expect(queries.every((query) =>
+      query.query.startsWith('"contract manufacturing"'),
+    )).toBe(true);
+    expect(queries.some((query) =>
+      query.query.includes("robotics manufacturing and components"),
+    )).toBe(false);
+  });
+
+  it("expands queries in the plan source-family hierarchy", () => {
+    const queries = generateGlobalRadarQueries(
+      plan({
+        ...planningConfig,
+        countries: ["US"],
+        languages: ["en"],
+        sourceFamilies: ["official_jobs", "official_company_material"],
+      }),
+    );
+
+    expect(queries).toHaveLength(6);
+    expect(queries.slice(0, 3).every((query) =>
+      query.query.includes('"official company material"'),
+    )).toBe(true);
+    expect(queries.slice(3).every((query) =>
+      query.query.includes('"official jobs"'),
+    )).toBe(true);
+    expect(Object.keys(queries[0])).toEqual([
+      "fingerprint",
+      "query",
+      "language",
+      "sourceCountry",
+      "theme",
+      "signalIntent",
+      "sourceAdapter",
+      "recencyDays",
+      "ordinal",
+    ]);
+  });
+
   it("caps deterministic query work at 120", () => {
     const countries = Array.from({ length: 20 }, (_, index) => `Market-${index}`);
     const largePlan = planGlobalRadarRun({
@@ -197,6 +249,7 @@ describe("Global Radar query generator", () => {
   it("returns an explicit empty query plan when no source or work is enabled", () => {
     const variants: PublicGlobalRadarPlanningConfig[] = [
       { ...planningConfig, enabledSourceAdapters: [] },
+      { ...planningConfig, sourceFamilies: [] },
       { ...planningConfig, countries: [] },
       { ...planningConfig, languages: [] },
       { ...planningConfig, themes: [] },
@@ -218,7 +271,7 @@ describe("Global Radar query generator", () => {
           }),
         ),
       ),
-    ).toEqual([[], [], [], []]);
+    ).toEqual([[], [], [], [], []]);
   });
 });
 

@@ -6,15 +6,20 @@ import {
   GLOBAL_RADAR_QUERY_VERSION,
   planGlobalRadarRun,
   type GlobalRadarPlannerInput,
+  type GlobalRadarSourceFamily,
   type PublicGlobalRadarPlanningConfig,
 } from "../app/domain/global-radar/planner";
-import { globalRadarThemes } from "../app/domain/taxonomies/global-radar-v1";
+import {
+  globalRadarSourceFamilies,
+  globalRadarThemes,
+} from "../app/domain/taxonomies/global-radar-v1";
 
 const planningConfig: PublicGlobalRadarPlanningConfig = {
   countries: ["US", "China"],
   languages: ["en", "zh-CN"],
   themes: globalRadarThemes,
   enabledSourceAdapters: ["codex_public_web"],
+  sourceFamilies: globalRadarSourceFamilies,
   resultLimit: 20,
   scoreVersion: "global-radar-score-v1",
 };
@@ -43,11 +48,15 @@ describe("Global Radar planner", () => {
       plan: globalRadarDomain.planGlobalRadarRun,
       planVersion: globalRadarDomain.GLOBAL_RADAR_PLAN_VERSION,
       queryVersion: globalRadarDomain.GLOBAL_RADAR_QUERY_VERSION,
+      themeLeaves: globalRadarDomain.globalRadarThemeLeafIdentifiers,
     }).toEqual({
       generate: expect.any(Function),
       plan: planGlobalRadarRun,
       planVersion: "global-radar-plan-v1",
       queryVersion: "global-radar-query-v1",
+      themeLeaves: expect.objectContaining({
+        robotics_manufacturing: "contract_manufacturing",
+      }),
     });
   });
 
@@ -67,6 +76,7 @@ describe("Global Radar planner", () => {
       languages: ["en", "zh-CN"],
       themes: globalRadarThemes,
       sourceAdapters: ["codex_public_web"],
+      sourceFamilies: globalRadarSourceFamilies,
       dateWindow: {
         startInclusive: "2026-06-29T18:30:00.000Z",
         endExclusive: "2026-07-29T18:30:00.000Z",
@@ -80,6 +90,55 @@ describe("Global Radar planner", () => {
     );
     expect(first.configHash).toMatch(/^[a-f0-9]{64}$/);
     expect(first.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("orders selected source families by the approved hierarchy", () => {
+    const plan = planGlobalRadarRun(
+      plannerInput({
+        config: {
+          ...planningConfig,
+          sourceFamilies: [
+            "official_jobs",
+            "public_procurement_and_rfp_portals",
+            "official_company_material",
+          ],
+        },
+      }),
+    );
+
+    expect(plan.sourceFamilies).toEqual([
+      "official_company_material",
+      "public_procurement_and_rfp_portals",
+      "official_jobs",
+    ]);
+    expect(Object.isFrozen(plan.sourceFamilies)).toBe(true);
+
+    const fewerSources = planGlobalRadarRun(
+      plannerInput({
+        config: {
+          ...planningConfig,
+          sourceFamilies: ["official_company_material"],
+        },
+      }),
+    );
+    expect(fewerSources.configHash).not.toBe(plan.configHash);
+    expect(fewerSources.fingerprint).not.toBe(plan.fingerprint);
+  });
+
+  it("normalizes China plans to paired English and Chinese families", () => {
+    const englishOnly = planGlobalRadarRun(
+      plannerInput({
+        config: { ...planningConfig, languages: ["en", "fr"] },
+      }),
+    );
+    const chineseOnly = planGlobalRadarRun(
+      plannerInput({
+        config: { ...planningConfig, languages: ["zh-CN", "fr"] },
+      }),
+    );
+
+    expect(englishOnly.languages).toEqual(["en", "zh-CN", "fr"]);
+    expect(chineseOnly.languages).toEqual(["en", "zh-CN", "fr"]);
   });
 
   it("builds an ISO-week thematic plan from the approved rotation", () => {
@@ -109,7 +168,9 @@ describe("Global Radar planner", () => {
       }),
     );
 
-    expect(plan.identityKey).toBe(`manual:${requestId}:${plan.configHash}`);
+    expect(plan.identityKey).toBe(
+      `manual:global-radar-plan-v1:${requestId}`,
+    );
     expect(plan.themes).toEqual(["robotics_manufacturing"]);
     expect(() =>
       planGlobalRadarRun(
@@ -119,6 +180,31 @@ describe("Global Radar planner", () => {
         }),
       ),
     ).toThrow(/valid administrator request UUID/);
+  });
+
+  it("keeps manual identity stable across configuration changes", () => {
+    const requestId = "33333333-3333-4333-8333-333333333333";
+    const first = planGlobalRadarRun(
+      plannerInput({
+        scanMode: "manual",
+        administratorRequestId: requestId,
+      }),
+    );
+    const changed = planGlobalRadarRun(
+      plannerInput({
+        scanMode: "manual",
+        administratorRequestId: requestId,
+        config: {
+          ...planningConfig,
+          resultLimit: 1,
+          sourceFamilies: ["official_company_material"],
+        },
+      }),
+    );
+
+    expect(changed.identityKey).toBe(first.identityKey);
+    expect(changed.configHash).not.toBe(first.configHash);
+    expect(changed.fingerprint).not.toBe(first.fingerprint);
   });
 
   it("builds watchlist refreshes from due configured entries", () => {
@@ -172,6 +258,37 @@ describe("Global Radar planner", () => {
     );
   });
 
+  it("uses locale-independent code-point ordering for canonical ties", () => {
+    const plan = planGlobalRadarRun(
+      plannerInput({
+        scanMode: "watchlist_refresh",
+        watchlist: [
+          {
+            category: "äardvark",
+            theme: "robotics_manufacturing",
+            countries: ["US"],
+            languages: ["en"],
+            cadenceDays: 7,
+            priority: 50,
+          },
+          {
+            category: "Zebra",
+            theme: "robotics_manufacturing",
+            countries: ["US"],
+            languages: ["en"],
+            cadenceDays: 7,
+            priority: 50,
+          },
+        ],
+      }),
+    );
+
+    expect(plan.watchlist.map((entry) => entry.category)).toEqual([
+      "Zebra",
+      "äardvark",
+    ]);
+  });
+
   it("prioritizes deterministic country and theme coverage gaps", () => {
     const plan = planGlobalRadarRun(
       plannerInput({
@@ -207,10 +324,14 @@ describe("Global Radar planner", () => {
   it("copies and freezes caller-owned planning inputs", () => {
     const countries = ["US", "China"];
     const languages = ["en", "zh-CN"];
+    const sourceFamilies: GlobalRadarSourceFamily[] = [
+      "official_company_material",
+      "official_jobs",
+    ];
     const watchlistCountries = ["China"];
     const input = plannerInput({
       scanMode: "watchlist_refresh",
-      config: { ...planningConfig, countries, languages },
+      config: { ...planningConfig, countries, languages, sourceFamilies },
       watchlist: [
         {
           category: "foundation_models",
@@ -227,6 +348,7 @@ describe("Global Radar planner", () => {
 
     countries.reverse();
     languages.length = 0;
+    sourceFamilies.reverse();
     watchlistCountries.push("US");
     input.watchlist[0].category = "mutated";
 
@@ -237,6 +359,7 @@ describe("Global Radar planner", () => {
       plan.languages,
       plan.themes,
       plan.sourceAdapters,
+      plan.sourceFamilies,
       plan.dateWindow,
       plan.watchlist,
       plan.watchlist[0],
@@ -254,6 +377,7 @@ describe("Global Radar planner", () => {
       scoreVersion: planningConfig.scoreVersion,
       resultLimit: planningConfig.resultLimit,
       enabledSourceAdapters: planningConfig.enabledSourceAdapters,
+      sourceFamilies: planningConfig.sourceFamilies,
       themes: planningConfig.themes,
       languages: planningConfig.languages,
       countries: planningConfig.countries,
@@ -284,6 +408,16 @@ describe("Global Radar planner", () => {
         }),
       ),
     ).toThrow(/source adapter/);
+    expect(() =>
+      planGlobalRadarRun(
+        plannerInput({
+          config: {
+            ...planningConfig,
+            sourceFamilies: ["private_source_family"],
+          } as unknown as PublicGlobalRadarPlanningConfig,
+        }),
+      ),
+    ).toThrow(/source family/);
     expect(() =>
       planGlobalRadarRun(
         plannerInput({

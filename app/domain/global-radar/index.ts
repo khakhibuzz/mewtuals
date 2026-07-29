@@ -93,6 +93,7 @@ export {
 export type {
   GlobalRadarPlannerInput,
   GlobalRadarSourceAdapter,
+  GlobalRadarSourceFamily,
   GlobalRadarTheme,
   PublicGlobalRadarPlanningConfig,
   RadarCoverageState,
@@ -100,6 +101,9 @@ export type {
   WatchlistPlanningInput,
 } from "./planner";
 
-export { generateGlobalRadarQueries } from "./query-generator";
+export {
+  generateGlobalRadarQueries,
+  globalRadarThemeLeafIdentifiers,
+} from "./query-generator";
 
 export type { SearchQuery } from "./query-generator";

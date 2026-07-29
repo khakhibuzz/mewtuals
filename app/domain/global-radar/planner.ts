@@ -1,6 +1,7 @@
 import type { RadarScanMode } from "./contracts";
 import {
   GLOBAL_RADAR_TAXONOMY_VERSION,
+  globalRadarSourceFamilies,
   globalRadarThemes,
 } from "../taxonomies/global-radar-v1";
 
@@ -8,6 +9,7 @@ export const GLOBAL_RADAR_PLAN_VERSION = "global-radar-plan-v1" as const;
 export const GLOBAL_RADAR_QUERY_VERSION = "global-radar-query-v1" as const;
 
 export type GlobalRadarTheme = (typeof globalRadarThemes)[number];
+export type GlobalRadarSourceFamily = (typeof globalRadarSourceFamilies)[number];
 export type GlobalRadarSourceAdapter = "codex_public_web";
 
 export type PublicGlobalRadarPlanningConfig = {
@@ -15,6 +17,7 @@ export type PublicGlobalRadarPlanningConfig = {
   languages: readonly string[];
   themes: readonly GlobalRadarTheme[];
   enabledSourceAdapters: readonly GlobalRadarSourceAdapter[];
+  sourceFamilies: readonly GlobalRadarSourceFamily[];
   resultLimit: number;
   scoreVersion: string;
 };
@@ -55,6 +58,7 @@ export type RadarPlan = Readonly<{
   languages: readonly string[];
   themes: readonly GlobalRadarTheme[];
   sourceAdapters: readonly GlobalRadarSourceAdapter[];
+  sourceFamilies: readonly GlobalRadarSourceFamily[];
   dateWindow: Readonly<{
     startInclusive: string;
     endExclusive: string;
@@ -75,6 +79,38 @@ const uuidPattern =
 
 function unique<const Value extends string>(values: readonly Value[]): Value[] {
   return [...new Set(values)];
+}
+
+function compareCodePoints(left: string, right: string): number {
+  const leftPoints = Array.from(left, (character) => character.codePointAt(0) ?? 0);
+  const rightPoints = Array.from(right, (character) => character.codePointAt(0) ?? 0);
+  const commonLength = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < commonLength; index += 1) {
+    const difference = leftPoints[index] - rightPoints[index];
+    if (difference !== 0) return difference;
+  }
+  return leftPoints.length - rightPoints.length;
+}
+
+function isChina(country: string): boolean {
+  const normalized = country.toLowerCase();
+  return normalized === "china" || normalized === "cn";
+}
+
+function normalizeChinaLanguages(
+  countries: readonly string[],
+  languages: readonly string[],
+): string[] {
+  const uniqueLanguages = unique(languages);
+  if (uniqueLanguages.length === 0) return [];
+  if (!countries.some(isChina)) return uniqueLanguages;
+  return [
+    "en",
+    "zh-CN",
+    ...uniqueLanguages.filter(
+      (language) => language !== "en" && language !== "zh-CN",
+    ),
+  ];
 }
 
 function canonicalJson(value: unknown): string {
@@ -176,7 +212,10 @@ function canonicalConfig(config: PublicGlobalRadarPlanningConfig) {
     throw new Error("Global Radar score version is required.");
   }
   const countries = unique(config.countries.map((country) => country.trim()));
-  const languages = unique(config.languages.map((language) => language.trim()));
+  const languages = normalizeChinaLanguages(
+    countries,
+    config.languages.map((language) => language.trim()),
+  );
   if (countries.some((country) => !country)) {
     throw new Error("Global Radar countries must be non-empty strings.");
   }
@@ -197,11 +236,23 @@ function canonicalConfig(config: PublicGlobalRadarPlanningConfig) {
   ) {
     throw new Error("Global Radar configuration contains an unknown source adapter.");
   }
+  if (
+    config.sourceFamilies.some(
+      (sourceFamily) =>
+        !(globalRadarSourceFamilies as readonly string[]).includes(sourceFamily),
+    )
+  ) {
+    throw new Error("Global Radar configuration contains an unknown source family.");
+  }
+  const selectedSourceFamilies = new Set(config.sourceFamilies);
   return {
     countries,
     languages,
     themes: unique(config.themes),
     enabledSourceAdapters: unique(config.enabledSourceAdapters),
+    sourceFamilies: globalRadarSourceFamilies.filter((sourceFamily) =>
+      selectedSourceFamilies.has(sourceFamily),
+    ),
     resultLimit: config.resultLimit,
     scoreVersion,
   };
@@ -237,9 +288,12 @@ function dueWatchlistEntries(
         countries: unique(entry.countries).filter((country) =>
           config.countries.includes(country),
         ),
-        languages: unique(entry.languages).filter((language) =>
-          config.languages.includes(language),
-        ),
+        languages: normalizeChinaLanguages(
+          entry.countries,
+          unique(entry.languages).filter((language) =>
+            config.languages.includes(language),
+          ),
+        ).filter((language) => config.languages.includes(language)),
         cadenceDays: entry.cadenceDays,
         priority: entry.priority,
       };
@@ -272,7 +326,7 @@ function dueWatchlistEntries(
           input.coverageState.watchlistLastCoveredAt[right.category],
           "watchlist",
         ) ?? Number.NEGATIVE_INFINITY;
-      return leftCoverage - rightCoverage || left.category.localeCompare(right.category);
+      return leftCoverage - rightCoverage || compareCodePoints(left.category, right.category);
     });
 }
 
@@ -303,6 +357,7 @@ function freezePlan(plan: Omit<RadarPlan, "fingerprint">): RadarPlan {
     languages: Object.freeze([...plan.languages]),
     themes: Object.freeze([...plan.themes]),
     sourceAdapters: Object.freeze([...plan.sourceAdapters]),
+    sourceFamilies: Object.freeze([...plan.sourceFamilies]),
     dateWindow: Object.freeze({ ...plan.dateWindow }),
     watchlist: Object.freeze(
       plan.watchlist.map((entry) =>
@@ -357,7 +412,7 @@ export function planGlobalRadarRun(input: GlobalRadarPlannerInput): RadarPlan {
   }
   const watchlistHash = stableGlobalRadarFingerprint(plannedWatchlist);
   const identityKey = manualRequestId
-    ? `manual:${manualRequestId.toLowerCase()}:${configHash}`
+    ? `manual:${GLOBAL_RADAR_PLAN_VERSION}:${manualRequestId.toLowerCase()}`
     : thematic
       ? `thematic:${thematic.weekKey}:${thematic.theme ?? "no-enabled-theme"}:${configHash}`
       : input.scanMode === "watchlist_refresh"
@@ -414,6 +469,7 @@ export function planGlobalRadarRun(input: GlobalRadarPlannerInput): RadarPlan {
     languages: plannedLanguages,
     themes: coverageOrderedThemes,
     sourceAdapters: config.enabledSourceAdapters,
+    sourceFamilies: config.sourceFamilies,
     dateWindow: {
       startInclusive: kolkataMidnight(input.now, -(recencyDays - 1)),
       endExclusive: kolkataMidnight(input.now, 1),
