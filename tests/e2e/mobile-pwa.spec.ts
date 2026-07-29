@@ -120,18 +120,18 @@ test("mobile member and administrator journey stays responsive and private offli
   ).toHaveAttribute("href", "/#how-it-works");
   await auditResponsiveState(page, "application page", { desktop: true });
 
-  await page.goto("/join");
+  await page.goto("/network/join");
   await waitForProductHydration(page);
   await expect(
     page.getByRole("heading", { name: "Find the right partnership moment." }),
   ).toBeVisible();
-  await auditResponsiveState(page, "join");
+  await auditResponsiveState(page, "member join");
   await page.getByLabel("Email address").fill(memberEmail);
   await page.getByRole("button", { name: "Join Mewtuals" }).click();
   await expect(
     page.getByRole("link", { name: "Open local sign-in link" }),
   ).toBeVisible();
-  await auditResponsiveState(page, "join magic-link result");
+  await auditResponsiveState(page, "member join magic-link result");
 
   await page.goto("/login");
   await waitForProductHydration(page);
@@ -344,7 +344,7 @@ async function expectNoHorizontalOverflow(page: Page) {
 
 async function expectTouchControls(page: Page) {
   const controls = page.locator(
-    'a, button, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), select, textarea',
+    'a, button, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([aria-hidden="true"]), select, textarea',
   );
   for (const control of await controls.all()) {
     if (!(await control.isVisible())) continue;
@@ -449,8 +449,39 @@ async function provePublicOnlyOfflineBoundary(
   await expect(page).toHaveURL(/\/join$/);
   await waitForProductHydration(page);
   await expect(
-    page.getByRole("heading", { name: "Find the right partnership moment." }),
+    page.getByRole("heading", { name: "Find who you should collaborate with next." }),
   ).toBeVisible();
+  await auditResponsiveState(page, "opportunity brief form");
+  const submittedBriefProfile = `https://brief-${websiteHost}`;
+  await page.route(
+    "**/api/opportunity-briefs",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          submission: {
+            participantType: "company",
+            profileUrl: submittedBriefProfile,
+            email: memberEmail,
+            phoneNumber: null,
+            openToText: null,
+            source: null,
+            utm: {},
+          },
+        }),
+      });
+    },
+    { times: 1 },
+  );
+  await page.getByLabel("Public profile URL").fill(submittedBriefProfile);
+  await page.getByLabel("Email address (optional)").fill(memberEmail ?? "");
+  await page.getByRole("button", { name: "Get my opportunity brief" }).click();
+  await expect(
+    page.getByRole("heading", { name: "You’re on our research list." }),
+  ).toBeFocused();
+  await auditResponsiveState(page, "opportunity brief confirmation");
   await page.getByRole("link", { name: "Log in" }).click();
   await expect(page).toHaveURL(/\/login$/);
   await waitForProductHydration(page);
@@ -497,6 +528,7 @@ async function provePublicOnlyOfflineBoundary(
         "/apply",
         "/join",
         "/login",
+        "/network/join",
         "/onboarding/",
       ].some((prefix) => pathname === prefix || pathname.startsWith(prefix)),
     ),
@@ -554,6 +586,17 @@ async function provePublicOnlyOfflineBoundary(
   ).toHaveCount(0);
   await expect(page.getByLabel("Company URL")).toHaveCount(0);
   await auditResponsiveState(page, "offline application fallback");
+
+  await page.goto(`${PWA_BASE_URL}/join?source=bengaluru-meetup`);
+  await expect(
+    page.getByRole("heading", {
+      name: "Get online to see your partnerships.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Public profile URL")).toHaveCount(0);
+  await expect(page.getByText(memberEmail ?? "")).toHaveCount(0);
+  await expect(page.getByText(submittedBriefProfile)).toHaveCount(0);
+  await auditResponsiveState(page, "offline opportunity brief fallback");
 
   // The built Vinext server proves the public PWA boundary above. Authenticated
   // local Postgres RSC routes are exercised on the development server below.

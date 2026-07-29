@@ -1,162 +1,9 @@
 {
-  "id": "3511cf0a-cac8-4716-81ea-d6b35000a799",
+  "id": "02ffe76a-9d03-48ac-8632-193dc8109a76",
   "prevId": "0aecb91c-09c8-46ab-ad14-b7d52448dfc1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.candidate_research_versions": {
-      "name": "candidate_research_versions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "candidate_id": {
-          "name": "candidate_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "discovery_run_id": {
-          "name": "discovery_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "summary": {
-          "name": "summary",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "findings": {
-          "name": "findings",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_urls": {
-          "name": "source_urls",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "analysis_version": {
-          "name": "analysis_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "candidate_research_versions_candidate_created_idx": {
-          "name": "candidate_research_versions_candidate_created_idx",
-          "columns": [
-            {
-              "expression": "candidate_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "candidate_research_versions_run_idx": {
-          "name": "candidate_research_versions_run_idx",
-          "columns": [
-            {
-              "expression": "discovery_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "candidate_research_versions_candidate_fk": {
-          "name": "candidate_research_versions_candidate_fk",
-          "tableFrom": "candidate_research_versions",
-          "tableTo": "discovery_candidates",
-          "columnsFrom": [
-            "candidate_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "candidate_research_versions_run_fk": {
-          "name": "candidate_research_versions_run_fk",
-          "tableFrom": "candidate_research_versions",
-          "tableTo": "discovery_runs",
-          "columnsFrom": [
-            "discovery_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "candidate_research_versions_candidate_run_unique": {
-          "name": "candidate_research_versions_candidate_run_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "candidate_id",
-            "discovery_run_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "candidate_research_versions_summary_check": {
-          "name": "candidate_research_versions_summary_check",
-          "value": "length(\"candidate_research_versions\".\"summary\") between 80 and 1200"
-        },
-        "candidate_research_versions_findings_check": {
-          "name": "candidate_research_versions_findings_check",
-          "value": "length(\"candidate_research_versions\".\"findings\") between 600 and 12000"
-        },
-        "candidate_research_versions_sources_check": {
-          "name": "candidate_research_versions_sources_check",
-          "value": "jsonb_typeof(\"candidate_research_versions\".\"source_urls\") = 'array' and jsonb_array_length(\"candidate_research_versions\".\"source_urls\") between 1 and 12"
-        },
-        "candidate_research_versions_analysis_check": {
-          "name": "candidate_research_versions_analysis_check",
-          "value": "\"candidate_research_versions\".\"analysis_version\" = 'physical-ai-v1'"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.discovery_candidate_identifiers": {
       "name": "discovery_candidate_identifiers",
       "schema": "",
@@ -739,13 +586,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "campaign_key": {
-          "name": "campaign_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'general_discovery'"
         },
         "trigger": {
           "name": "trigger",
@@ -1509,6 +1349,409 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.opportunity_brief_requests": {
+      "name": "opportunity_brief_requests",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "participant_type": {
+          "name": "participant_type",
+          "type": "discovery_candidate_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "profile_url": {
+          "name": "profile_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "normalized_profile_url": {
+          "name": "normalized_profile_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "normalized_email": {
+          "name": "normalized_email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "phone_number": {
+          "name": "phone_number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "normalized_phone_number": {
+          "name": "normalized_phone_number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "open_to_text": {
+          "name": "open_to_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "utm": {
+          "name": "utm",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "source_history": {
+          "name": "source_history",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "linked_candidate_id": {
+          "name": "linked_candidate_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "opportunity_brief_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'submitted'"
+        },
+        "admin_notes": {
+          "name": "admin_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acknowledgement_status": {
+          "name": "acknowledgement_status",
+          "type": "opportunity_brief_acknowledgement_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'not_requested'"
+        },
+        "acknowledgement_email": {
+          "name": "acknowledgement_email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acknowledgement_delivery_token": {
+          "name": "acknowledgement_delivery_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acknowledgement_error": {
+          "name": "acknowledgement_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acknowledgement_sent_at": {
+          "name": "acknowledgement_sent_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "submission_count": {
+          "name": "submission_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "last_submitted_at": {
+          "name": "last_submitted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "opportunity_brief_requests_status_last_submitted_at_idx": {
+          "name": "opportunity_brief_requests_status_last_submitted_at_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "last_submitted_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "opportunity_brief_requests_created_at_idx": {
+          "name": "opportunity_brief_requests_created_at_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "opportunity_brief_requests_participant_type_idx": {
+          "name": "opportunity_brief_requests_participant_type_idx",
+          "columns": [
+            {
+              "expression": "participant_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "opportunity_brief_requests_source_idx": {
+          "name": "opportunity_brief_requests_source_idx",
+          "columns": [
+            {
+              "expression": "source",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "opportunity_brief_requests_linked_candidate_idx": {
+          "name": "opportunity_brief_requests_linked_candidate_idx",
+          "columns": [
+            {
+              "expression": "linked_candidate_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "opportunity_brief_requests_normalized_email_idx": {
+          "name": "opportunity_brief_requests_normalized_email_idx",
+          "columns": [
+            {
+              "expression": "normalized_email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "opportunity_brief_requests_normalized_phone_number_idx": {
+          "name": "opportunity_brief_requests_normalized_phone_number_idx",
+          "columns": [
+            {
+              "expression": "normalized_phone_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "opportunity_brief_requests_linked_candidate_fk": {
+          "name": "opportunity_brief_requests_linked_candidate_fk",
+          "tableFrom": "opportunity_brief_requests",
+          "tableTo": "discovery_candidates",
+          "columnsFrom": [
+            "linked_candidate_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "opportunity_brief_requests_participant_profile_unique": {
+          "name": "opportunity_brief_requests_participant_profile_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "participant_type",
+            "normalized_profile_url"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "opportunity_brief_requests_contact_check": {
+          "name": "opportunity_brief_requests_contact_check",
+          "value": "\"opportunity_brief_requests\".\"normalized_email\" IS NOT NULL OR \"opportunity_brief_requests\".\"normalized_phone_number\" IS NOT NULL"
+        },
+        "opportunity_brief_requests_submission_count_check": {
+          "name": "opportunity_brief_requests_submission_count_check",
+          "value": "\"opportunity_brief_requests\".\"submission_count\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.opportunity_brief_submission_attempts": {
+      "name": "opportunity_brief_submission_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "requester_hash": {
+          "name": "requester_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "opportunity_brief_submission_attempts_requester_created_at_idx": {
+          "name": "opportunity_brief_submission_attempts_requester_created_at_idx",
+          "columns": [
+            {
+              "expression": "requester_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "opportunity_brief_submission_attempts_request_id_idx": {
+          "name": "opportunity_brief_submission_attempts_request_id_idx",
+          "columns": [
+            {
+              "expression": "request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "opportunity_brief_submission_attempts_request_fk": {
+          "name": "opportunity_brief_submission_attempts_request_fk",
+          "tableFrom": "opportunity_brief_submission_attempts",
+          "tableTo": "opportunity_brief_requests",
+          "columnsFrom": [
+            "request_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.profile_opportunities": {
       "name": "profile_opportunities",
       "schema": "",
@@ -2266,6 +2509,29 @@
         "contacting",
         "connected",
         "closed"
+      ]
+    },
+    "public.opportunity_brief_acknowledgement_status": {
+      "name": "opportunity_brief_acknowledgement_status",
+      "schema": "public",
+      "values": [
+        "not_requested",
+        "pending",
+        "sent",
+        "failed"
+      ]
+    },
+    "public.opportunity_brief_status": {
+      "name": "opportunity_brief_status",
+      "schema": "public",
+      "values": [
+        "submitted",
+        "researching",
+        "brief_ready",
+        "contacted",
+        "invited_to_join",
+        "converted",
+        "rejected"
       ]
     },
     "public.organisation_subtype": {

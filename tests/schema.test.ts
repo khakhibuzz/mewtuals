@@ -1,7 +1,15 @@
 import { getTableConfig } from "drizzle-orm/pg-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
+import type { OpportunityBriefSourceMetadata } from "../app/domain/opportunity-brief";
 import { openToInterests } from "../app/domain/signal";
+import type {
+  NewOpportunityBriefRequest,
+  NewOpportunityBriefSubmissionAttempt,
+  OpportunityBriefRequest,
+  OpportunityBriefSubmissionAttempt,
+} from "../db/types";
+import * as schema from "../db/schema";
 
 import {
   availabilityEnum,
@@ -51,6 +59,9 @@ const uniqueConstraintNames = (table: Parameters<typeof getTableConfig>[0]) =>
 const foreignKeyNames = (table: Parameters<typeof getTableConfig>[0]) =>
   configFor(table).foreignKeys.map((foreignKey) => foreignKey.getName());
 
+const checkNames = (table: Parameters<typeof getTableConfig>[0]) =>
+  configFor(table).checks.map((constraint) => constraint.name);
+
 const hasUniqueIndex = (
   table: Parameters<typeof getTableConfig>[0],
   name: string,
@@ -60,6 +71,130 @@ const hasUniqueIndex = (
   );
 
 describe("Mewtuals PostgreSQL schema", () => {
+  it("exposes the constrained opportunity brief vocabulary", () => {
+    expect(schema.opportunityBriefStatusEnum?.enumValues).toEqual([
+      "submitted",
+      "researching",
+      "brief_ready",
+      "contacted",
+      "invited_to_join",
+      "converted",
+      "rejected",
+    ]);
+    expect(
+      schema.opportunityBriefAcknowledgementStatusEnum?.enumValues,
+    ).toEqual(["not_requested", "pending", "sent", "failed"]);
+  });
+
+  it("models opportunity brief requests with durable identity and admin indexes", () => {
+    const requests = schema.opportunityBriefRequests;
+
+    expect(requests).toBeDefined();
+    expect(configFor(requests).name).toBe("opportunity_brief_requests");
+    expect(columnNames(requests)).toEqual(
+      expect.arrayContaining([
+        "participant_type",
+        "profile_url",
+        "normalized_profile_url",
+        "email",
+        "normalized_email",
+        "phone_number",
+        "normalized_phone_number",
+        "open_to_text",
+        "source",
+        "utm",
+        "source_history",
+        "linked_candidate_id",
+        "status",
+        "admin_notes",
+        "acknowledgement_status",
+        "acknowledgement_email",
+        "acknowledgement_delivery_token",
+        "acknowledgement_error",
+        "acknowledgement_sent_at",
+        "submission_count",
+        "last_submitted_at",
+        "created_at",
+        "updated_at",
+      ]),
+    );
+    expect(requests.acknowledgementDeliveryToken.notNull).toBe(false);
+    expect(requests.acknowledgementDeliveryToken.hasDefault).toBe(false);
+    expect(uniqueConstraintNames(requests)).toContain(
+      "opportunity_brief_requests_participant_profile_unique",
+    );
+    expect(checkNames(requests)).toContain(
+      "opportunity_brief_requests_submission_count_check",
+    );
+    expect(checkNames(requests)).not.toContain(
+      "opportunity_brief_requests_contact_check",
+    );
+    expect(foreignKeyNames(requests)).toEqual([
+      "opportunity_brief_requests_linked_candidate_fk",
+    ]);
+    const [candidateForeignKey] = configFor(requests).foreignKeys;
+    expect(candidateForeignKey?.onDelete).toBe("set null");
+    expect(
+      candidateForeignKey?.reference().foreignTable,
+    ).toBe(discoveryCandidates);
+    expect(indexNames(requests)).toEqual(
+      expect.arrayContaining([
+        "opportunity_brief_requests_status_last_submitted_at_idx",
+        "opportunity_brief_requests_created_at_idx",
+        "opportunity_brief_requests_participant_type_idx",
+        "opportunity_brief_requests_source_idx",
+        "opportunity_brief_requests_linked_candidate_idx",
+        "opportunity_brief_requests_normalized_email_idx",
+        "opportunity_brief_requests_normalized_phone_number_idx",
+      ]),
+    );
+  });
+
+  it("stores only hashed requester identity for submission attempts", () => {
+    const attempts = schema.opportunityBriefSubmissionAttempts;
+
+    expect(attempts).toBeDefined();
+    expect(configFor(attempts).name).toBe(
+      "opportunity_brief_submission_attempts",
+    );
+    expect(columnNames(attempts)).toEqual([
+      "id",
+      "requester_hash",
+      "request_id",
+      "created_at",
+    ]);
+    expect(indexNames(attempts)).toEqual(
+      expect.arrayContaining([
+        "opportunity_brief_submission_attempts_requester_created_at_idx",
+        "opportunity_brief_submission_attempts_request_id_idx",
+      ]),
+    );
+    const [requestForeignKey] = configFor(attempts).foreignKeys;
+    expect(requestForeignKey?.onDelete).toBe("cascade");
+    expect(requestForeignKey?.reference().foreignTable).toBe(
+      schema.opportunityBriefRequests,
+    );
+  });
+
+  it("exports inferred opportunity brief persistence types", () => {
+    expectTypeOf<OpportunityBriefRequest["id"]>().toBeString();
+    expectTypeOf<NewOpportunityBriefRequest>().toHaveProperty(
+      "normalizedProfileUrl",
+    );
+    expectTypeOf<
+      OpportunityBriefSubmissionAttempt["requesterHash"]
+    >().toBeString();
+    expectTypeOf<NewOpportunityBriefSubmissionAttempt>().toHaveProperty(
+      "requestId",
+    );
+    expectTypeOf<OpportunityBriefRequest["utm"]>().toEqualTypeOf<
+      OpportunityBriefSourceMetadata["utm"]
+    >();
+    expectTypeOf<OpportunityBriefRequest["sourceHistory"]>().toEqualTypeOf<
+      OpportunityBriefSourceMetadata["history"]
+    >();
+  });
+
   it("defines every product table with UUID primary keys and timestamps", () => {
     const tables = [
       users,

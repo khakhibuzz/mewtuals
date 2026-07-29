@@ -14,8 +14,11 @@ Product v1 supports four directions:
 
 The public landing page remains available without an account. The standalone
 application form is directly shareable at `/apply` but intentionally absent
-from the landing-page navigation. The member flow starts at `/join`; returning
-members use `/login`.
+from the landing-page navigation. `/join` is the public, no-account Opportunity
+Brief request; `/share` sends event visitors there with
+`source=bengaluru-meetup`. Invited members enter through `/network/join`, and
+returning members use `/login`. Allowlisted operators manage public requests at
+`/admin/opportunity-briefs`.
 
 ## Local setup
 
@@ -79,7 +82,7 @@ an in-page prompt.
 Offline support is deliberately public-only. The landing page and its approved
 static assets remain usable after the service worker finishes installing. Every
 member, onboarding, administrator, and transactional route—including
-`/apply`—remains network-only and falls back to
+`/apply`, `/join`, and `/network/join`—remains network-only and falls back to
 `Get online to see your partnerships.` No API response, profile, partnership,
 or account data is stored for offline use.
 
@@ -117,25 +120,30 @@ npm run prepare:sites -- website-v3
 npm run prepare:sites -- <full-sha>
 ```
 
-The command validates, builds, and packages that exact committed source into an
-ignored request artifact. It never publishes or includes uncommitted files.
+The command runs a locked install, lint, unit tests, build, and package-integrity
+checks for that exact committed source, then creates an ignored request
+artifact. It does not run the database, migration, acceptance, or end-to-end
+gates listed above; run the complete release gate before preparing and
+deploying. It never publishes or includes uncommitted files.
 Ask Codex `Deploy Mewtuals` or `Deploy Mewtuals at <commit-ish>` to perform the
 separate authenticated Sites release. Codex must reuse the existing Sites
 project, verify the archive digest and Sites source head, obtain authorization
 before a public deploy when the active request does not already provide it, and
 verify both `https://mewtuals.com` and `https://www.mewtuals.com` afterward.
 
-`test:acceptance` runs the complete durable member and discovery journeys
-against PostgreSQL: magic-link confirmation, onboarding, pending verification,
-local approval, signals, curated picks, idempotent advancement, persistence,
-logout/re-login, protected access, token-at-rest assertions, worker claiming,
-evidence submission, compare-and-set completion, and replay safety.
+`test:acceptance` runs the complete durable member, Discovery, and Opportunity
+Brief journeys against the guarded `mewtuals_test` PostgreSQL database. The
+Opportunity Brief gate covers tagged intake, normalized-profile deduplication,
+source history, acknowledgement state, source-supported exact candidate links,
+administrator mutations with optimistic tokens, and separation from member and
+onboarding records.
 
 `test:e2e` expects Mewtuals to already be running at
 `http://localhost:4000`. It drives the rendered member and administrator forms,
-checks responsive layouts and protected redirects, and fails on browser or
-offline-boundary errors. It also builds and starts a separate production-mode
-server at `http://localhost:4002` for service-worker checks. Add
+including the public `/join` request and `/admin/opportunity-briefs` queue,
+checks responsive layouts, native-dialog focus, protected redirects, and fails
+on browser or offline-boundary errors. It also builds and starts a separate
+production-mode server at `http://localhost:4002` for service-worker checks. Add
 `mewtuals-mobile-e2e@example.test` only to the ignored local `ADMIN_EMAILS`
 allowlist before running the gate. Set `PLAYWRIGHT_CHANNEL=chromium` after
 installing Playwright's Chromium binary if Google Chrome is unavailable.
@@ -165,7 +173,7 @@ production-ready:
 - a managed PostgreSQL `DATABASE_URL`
 - a stable, high-entropy `SESSION_SECRET`
 - `RESEND_API_KEY` and a verified `EMAIL_FROM`
-- `ADMIN_EMAILS` for the verification queue
+- `ADMIN_EMAILS` for verification, Discovery, and Opportunity Brief operations
 - migrations and the opportunity seed applied to the production database
 
 Google OAuth is intentionally deferred in product v1. `GOOGLE_CLIENT_ID` and

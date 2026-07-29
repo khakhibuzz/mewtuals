@@ -1,0 +1,1 @@
+ALTER TABLE "opportunity_brief_requests" DROP CONSTRAINT "opportunity_brief_requests_contact_check";

@@ -359,6 +359,7 @@ describe("service worker registration", () => {
 describe("generated public-only service worker", () => {
   it("owns one complete allowlist for public assets", () => {
     expect(PUBLIC_ASSET_PATHS).toEqual(expectedPublicAssetPaths);
+    expect(PUBLIC_ASSET_PATHS).not.toContain("/join");
   });
 
   it("serves the generated JavaScript without stale route caching", async () => {
@@ -579,6 +580,28 @@ describe("service worker cache behavior", () => {
 
     await expect(root.response?.text()).resolves.toContain("landing-public.js");
     await expect(member.response?.text()).resolves.toBe("offline page");
+  });
+
+  it("keeps transactional /join network-only and uses the offline document", async () => {
+    let offline = false;
+    const worker = createWorkerHarness({
+      fetchResponse: (pathname) => {
+        if (offline && pathname === "/join?source=bengaluru-meetup") {
+          throw new Error("offline");
+        }
+        return publicShellResponder(pathname);
+      },
+    });
+    await worker.dispatchLifecycle("install");
+    const cachedBefore = [...worker.cache().entries.keys()].sort();
+    offline = true;
+
+    const join = await worker.dispatchFetch(
+      documentRequest("/join?source=bengaluru-meetup"),
+    );
+
+    await expect(join.response?.text()).resolves.toBe("offline page");
+    expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
   });
 
   it("keeps the old root shell when a best-effort refresh cache step fails", async () => {
