@@ -295,12 +295,21 @@ const INDIA_CITY_ALIASES: Record<string, string> = {
   bhubaneswar: "bhubaneswar",
 };
 
+const INDIA_STATE_CANONICAL_KEYS = new Set(Object.values(INDIA_STATE_ALIASES));
+const INDIA_CITY_CANONICAL_KEYS = new Set(Object.values(INDIA_CITY_ALIASES));
+
 export function normalizeIndiaState(value: string): string | undefined {
-  return INDIA_STATE_ALIASES[normalizedAlias(value)];
+  const normalized = normalizedAlias(value);
+  return INDIA_STATE_ALIASES[normalized] ?? (
+    INDIA_STATE_CANONICAL_KEYS.has(normalized) ? normalized : undefined
+  );
 }
 
 export function normalizeIndiaCity(value: string): string | undefined {
-  return INDIA_CITY_ALIASES[normalizedAlias(value)];
+  const normalized = normalizedAlias(value);
+  return INDIA_CITY_ALIASES[normalized] ?? (
+    INDIA_CITY_CANONICAL_KEYS.has(normalized) ? normalized : undefined
+  );
 }
 
 export function categoryInferencesFor(category: string): readonly ClassificationSeed[] {

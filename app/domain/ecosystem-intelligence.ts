@@ -490,7 +490,7 @@ type GapMeasure = {
   numerator: number;
   denominator: number;
   label: string;
-  supportingFilters?: Partial<EcosystemFilters>;
+  supportingFilters: EcosystemFilters;
 };
 export type ResearchGapInsightInput = {
   representation?: GapMeasure;
@@ -516,8 +516,11 @@ function percentage(measure: GapMeasure): number {
 }
 
 function canonicalSupportingFilters(
-  filters: Partial<EcosystemFilters> | undefined,
+  filters: EcosystemFilters | undefined,
 ): EcosystemFilters {
+  if (!filters) {
+    throw new Error("Every generated insight requires an explicit supporting filter.");
+  }
   return filtersFromSearchParams(
     new URLSearchParams(
       serializeEcosystemFilters({ ...DEFAULT_ECOSYSTEM_FILTERS, ...filters, page: 1 }),
@@ -530,7 +533,7 @@ function insight(
   title: string,
   copy: string,
   measure: GapMeasure,
-  supportingFilters: Partial<EcosystemFilters> | undefined,
+  supportingFilters: EcosystemFilters,
 ): ResearchGapInsight {
   const coverage = percentage(measure);
   const confidence = "map_evidence" as const;
@@ -544,6 +547,30 @@ function insight(
     confidence,
     supportingFilters: canonicalSupportingFilters(supportingFilters),
   };
+}
+
+function geographicSupportingFilters(filters: EcosystemFilters): EcosystemFilters {
+  const canonical = canonicalSupportingFilters(filters);
+  if (!canonical.headquartersStates.some((state) => state !== "unknown")) {
+    throw new Error("Geographic concentration requires an explicit headquarters state filter.");
+  }
+  return canonical;
+}
+
+function contactSupportingFilters(filters: EcosystemFilters): EcosystemFilters {
+  const canonical = canonicalSupportingFilters(filters);
+  if (canonical.publicContactAvailability !== "unavailable") {
+    throw new Error("Public-contact coverage requires an unavailable contact filter.");
+  }
+  return canonical;
+}
+
+function staleEvidenceSupportingFilters(filters: EcosystemFilters): EcosystemFilters {
+  const canonical = canonicalSupportingFilters(filters);
+  if (canonical.evidenceFreshness !== "stale") {
+    throw new Error("Stale-evidence coverage requires the stale evidence filter.");
+  }
+  return canonical;
 }
 
 function isAtLeast(measure: GapMeasure, numerator: number, denominator: number): boolean {
@@ -563,7 +590,7 @@ export function buildResearchGapInsights(input: ResearchGapInsightInput): readon
   }
   const geographic = input.geographicConcentration;
   if (geographic && geographic.denominator >= thresholds.geographicConcentration.minimumResolvedCandidates && isAtLeast(geographic, thresholds.geographicConcentration.minimumSharePercent, 100)) {
-    insights.push(insight("geographic_concentration", "Map coverage is concentrated", `${geographic.label} accounts for ${geographic.numerator} of ${geographic.denominator} resolved locations.`, geographic, geographic.supportingFilters));
+    insights.push(insight("geographic_concentration", "Map coverage is concentrated", `${geographic.label} accounts for ${geographic.numerator} of ${geographic.denominator} resolved locations.`, geographic, geographicSupportingFilters(geographic.supportingFilters)));
   }
   const missingData = input.missingData;
   if (missingData && missingData.numerator >= thresholds.missingData.minimumAffectedCandidates && isAtLeast(missingData, thresholds.missingData.minimumRatePercent, 100)) {
@@ -571,7 +598,7 @@ export function buildResearchGapInsights(input: ResearchGapInsightInput): readon
   }
   const contacts = input.publicContacts;
   if (contacts && contacts.denominator >= thresholds.publicContacts.minimumGroupSize && isBelow(contacts, thresholds.publicContacts.maximumAvailabilityPercentExclusive, 100)) {
-    insights.push(insight("low_public_contact_coverage", "Public contact coverage is limited", `${contacts.numerator} of ${contacts.denominator} records have ${contacts.label.toLowerCase()}.`, contacts, { ...contacts.supportingFilters, publicContactAvailability: "unavailable" }));
+    insights.push(insight("low_public_contact_coverage", "Public contact coverage is limited", `${contacts.numerator} of ${contacts.denominator} records have ${contacts.label.toLowerCase()}.`, contacts, contactSupportingFilters(contacts.supportingFilters)));
   }
   const dependencySignals = input.dependencySignals;
   if (dependencySignals && dependencySignals.numerator >= thresholds.dependencySignals.minimumSignals) {
@@ -579,7 +606,7 @@ export function buildResearchGapInsights(input: ResearchGapInsightInput): readon
   }
   const staleEvidence = input.staleEvidence;
   if (staleEvidence && isAtLeast(staleEvidence, thresholds.staleEvidence.minimumAffectedSharePercent, 100)) {
-    insights.push(insight("stale_evidence", "Evidence freshness needs review", `${staleEvidence.numerator} of ${staleEvidence.denominator} records have evidence older than the ${thresholds.staleEvidence.maximumAgeDays}-day freshness threshold.`, staleEvidence, { ...staleEvidence.supportingFilters, evidenceFreshness: "stale" }));
+    insights.push(insight("stale_evidence", "Evidence freshness needs review", `${staleEvidence.numerator} of ${staleEvidence.denominator} records have evidence older than the ${thresholds.staleEvidence.maximumAgeDays}-day freshness threshold.`, staleEvidence, staleEvidenceSupportingFilters(staleEvidence.supportingFilters)));
   }
   return insights;
 }

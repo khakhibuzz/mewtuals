@@ -175,6 +175,18 @@ describe("ecosystem intelligence filters", () => {
     expect(() => parseEcosystemFilters({ headquartersCity: "somewhere" })).toThrow();
   });
 
+  it("round-trips registered headquarters aliases, canonical keys, and unknown", () => {
+    const filters = parseEcosystemFilters({
+      headquartersState: ["andhra pradesh", "orissa", "unknown"],
+      headquartersCity: ["bangalore", "bengaluru", "unknown"],
+    });
+    const reparsed = filtersFromSearchParams(
+      new URLSearchParams(serializeEcosystemFilters(filters)),
+    );
+    expect(reparsed.headquartersStates).toEqual(["andhra_pradesh", "odisha", "unknown"]);
+    expect(reparsed.headquartersCities).toEqual(["bengaluru", "unknown"]);
+  });
+
   it("rejects invalid taxonomy keys, unknown fields, invalid confidence, reversed dates, and page sizes above 100", () => {
     for (const value of [
       { ecosystemDomain: "not_a_domain" },
@@ -308,12 +320,18 @@ describe("ecosystem intelligence evidence and readiness", () => {
         numerator: 198,
         denominator: 500,
         label: "Technical layers",
+        supportingFilters: parseEcosystemFilters({ technicalLayer: "mechanical_and_actuation" }),
       },
     });
     expect(insights.map((insight) => insight.ruleKey)).toContain("representation_below_target");
 
     const concentration = buildResearchGapInsights({
-      geographicConcentration: { numerator: 37, denominator: 62, label: "Karnataka" },
+      geographicConcentration: {
+        numerator: 37,
+        denominator: 62,
+        label: "Karnataka",
+        supportingFilters: parseEcosystemFilters({ headquartersState: "karnataka" }),
+      },
     });
     expect(concentration.map((insight) => insight.ruleKey)).not.toContain("geographic_concentration");
   });
@@ -324,28 +342,38 @@ describe("ecosystem intelligence evidence and readiness", () => {
         numerator: 2,
         denominator: 10,
         label: "Technical layers",
-        supportingFilters: { technicalLayers: ["mechanical_and_actuation"] },
+        supportingFilters: parseEcosystemFilters({ technicalLayer: "mechanical_and_actuation" }),
       },
       geographicConcentration: {
         numerator: 4,
         denominator: 5,
         label: "Karnataka",
-        supportingFilters: { headquartersStates: ["karnataka"] },
+        supportingFilters: parseEcosystemFilters({ headquartersState: "karnataka" }),
       },
       missingData: {
         numerator: 3,
         denominator: 10,
         label: "Ecosystem roles",
-        supportingFilters: { ecosystemRoles: ["component_supplier"] },
+        supportingFilters: parseEcosystemFilters({ ecosystemRole: "component_supplier" }),
       },
-      publicContacts: { numerator: 1, denominator: 4, label: "Public professional contacts" },
+      publicContacts: {
+        numerator: 1,
+        denominator: 4,
+        label: "Public professional contacts",
+        supportingFilters: parseEcosystemFilters({ publicContactAvailability: "unavailable" }),
+      },
       dependencySignals: {
         numerator: 3,
         denominator: 3,
         label: "Dependency-related signals",
-        supportingFilters: { activeSignalTypes: ["partnership"] },
+        supportingFilters: parseEcosystemFilters({ activeSignalType: "partnership" }),
       },
-      staleEvidence: { numerator: 3, denominator: 10, label: "Current evidence" },
+      staleEvidence: {
+        numerator: 3,
+        denominator: 10,
+        label: "Current evidence",
+        supportingFilters: parseEcosystemFilters({ evidenceFreshness: "stale" }),
+      },
     });
     expect(insights.length).toBe(6);
     for (const insight of insights) {
@@ -364,8 +392,16 @@ describe("ecosystem intelligence evidence and readiness", () => {
     expect(insights.find((insight) => insight.ruleKey === "stale_evidence")?.supportingFilters.evidenceFreshness).toBe("stale");
     expect(insights.find((insight) => insight.ruleKey === "low_public_contact_coverage")?.supportingFilters.publicContactAvailability).toBe("unavailable");
     expect(insights.find((insight) => insight.ruleKey === "representation_below_target")?.supportingFilters.technicalLayers).toEqual(["mechanical_and_actuation"]);
-    expect(insights.find((insight) => insight.ruleKey === "geographic_concentration")?.supportingFilters.headquartersStates).toEqual(["karnataka"]);
+    const geographicInsight = insights.find((insight) => insight.ruleKey === "geographic_concentration");
+    expect(geographicInsight?.supportingFilters.headquartersStates).toEqual(["karnataka"]);
+    expect(serializeEcosystemFilters(geographicInsight!.supportingFilters)).toBe("headquartersState=karnataka");
     expect(insights.find((insight) => insight.ruleKey === "missing_data")?.supportingFilters.ecosystemRoles).toEqual(["component_supplier"]);
     expect(insights.find((insight) => insight.ruleKey === "dependency_related_signals")?.supportingFilters.activeSignalTypes).toEqual(["partnership"]);
+  });
+
+  it("rejects generated insights that omit their explicit supporting filter", () => {
+    expect(() => buildResearchGapInsights({
+      representation: { numerator: 2, denominator: 10, label: "Technical layers" } as never,
+    })).toThrow("supporting filter");
   });
 });
