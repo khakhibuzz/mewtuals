@@ -24,6 +24,7 @@
     "test:e2e": "playwright test tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts",
     "test:watch": "vitest",
     "test:render": "npm run build && node --test tests/rendered-html.test.mjs",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .worktrees",
     "db:start": "node scripts/local-postgres.mjs start",
     "db:stop": "node scripts/local-postgres.mjs stop",
