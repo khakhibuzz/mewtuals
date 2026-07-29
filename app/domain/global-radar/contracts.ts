@@ -145,6 +145,59 @@ export const professionalResponsePathTypes = [
   "official_business_email",
 ] as const;
 
+export const directDemandAskTypes = [
+  "rfp",
+  "procurement",
+  "supplier_registration",
+  "vendor_request",
+  "partner_application",
+  "distributor_request",
+  "manufacturing_request",
+  "data_collection_request",
+  "testing_or_certification_request",
+  "installation_or_service_request",
+] as const;
+
+export const precursorDevelopmentTypes = [
+  "funding",
+  "hiring",
+  "deployment",
+  "facility",
+  "platform_launch",
+  "expansion",
+] as const;
+
+export const candidateEvidenceSourceKinds = [
+  "original",
+  "summary",
+  "search_result",
+] as const;
+
+export const radarRejectionReasons = [
+  "insufficient_evidence",
+  "invalid_evidence",
+  "invalid_evidence_url",
+  "search_result_is_not_evidence",
+  "summary_is_not_evidence",
+  "missing_original_language_evidence",
+  "missing_english_summary",
+  "missing_translation_confidence",
+  "unsupported_response_path",
+  "response_path_not_cited",
+  "personal_contact_not_allowed",
+  "missing_explicit_current_ask",
+  "expired_direct_demand",
+  "missing_official_direct_demand_evidence",
+  "unsupported_precursor_development",
+  "missing_dated_precursor_evidence",
+  "insufficient_momentum_evidence",
+  "insufficient_non_syndicated_evidence",
+  "insufficient_independent_organizations",
+  "missing_primary_source",
+  "taxonomy_inconsistent",
+  "evidence_quality_too_low",
+] as const;
+
 export const signalClassLookup = createLookup(signalClasses);
 export const indiaRelevanceTypeLookup = createLookup(indiaRelevanceTypes);
 export const signalStatusLookup = createLookup(signalStatuses);
@@ -157,6 +210,16 @@ export const promotionEligibilityPathLookup = createLookup(
 );
 export const professionalResponsePathTypeLookup = createLookup(
   professionalResponsePathTypes,
+);
+export const directDemandAskTypeLookup = createLookup(directDemandAskTypes);
+export const precursorDevelopmentTypeLookup = createLookup(
+  precursorDevelopmentTypes,
+);
+export const candidateEvidenceSourceKindLookup = createLookup(
+  candidateEvidenceSourceKinds,
+);
+export const radarRejectionReasonLookup = createLookup(
+  radarRejectionReasons,
 );
 
 export const publicHttpUrlSchema = z
@@ -595,6 +658,70 @@ export type ProfessionalResponsePathType =
 export type ProfessionalResponsePath = z.infer<
   typeof professionalResponsePathSchema
 >;
+export type DirectDemandAskType = (typeof directDemandAskTypes)[number];
+export type PrecursorDevelopmentType =
+  (typeof precursorDevelopmentTypes)[number];
+export type CandidateEvidenceSourceKind =
+  (typeof candidateEvidenceSourceKinds)[number];
+export type RadarRejectionReason = (typeof radarRejectionReasons)[number];
+export type DirectDemandAsk = Readonly<{
+  type: DirectDemandAskType;
+  isExplicit: boolean;
+  expiresAt: string | null;
+}>;
+export type CandidateEvidence = Readonly<{
+  sourceUrl: string;
+  canonicalSourceUrl: string | null;
+  sourceKind: CandidateEvidenceSourceKind;
+  sourceLanguage: string;
+  originalText: string;
+  englishSummary: string;
+  publishedAt: string | null;
+  observedAt: string;
+  evidenceConfidence: number;
+  translationConfidence: number | null;
+  isPrimarySource: boolean;
+  isOfficialProcurementSource: boolean;
+  supportsDirectDemand: boolean;
+  isSyndicated: boolean;
+  organizationId: string;
+  corporateGroupId: string;
+  supportedFieldPaths: readonly string[];
+}>;
+export type MomentumGateMetrics = Readonly<{
+  taxonomyConsistency: number;
+  evidenceQuality: number;
+}>;
+export type EvidenceCandidate = Readonly<{
+  proposedSignalClass: SignalClass;
+  observedAt: string;
+  directDemandAsk: DirectDemandAsk | null;
+  precursorDevelopmentType: PrecursorDevelopmentType | null;
+  evidence: readonly CandidateEvidence[];
+  momentumMetrics: MomentumGateMetrics | null;
+  responsePath: ProfessionalResponsePath | null;
+}>;
+export type SignalGateFacts = Readonly<{
+  explicitCurrentAsk: boolean;
+  officialDirectDemandEvidence: boolean;
+  datedDevelopment: boolean;
+  evidenceItemCount: number;
+  independentOrganizationCount: number;
+  primarySourceCount: number;
+  nonSyndicatedEvidenceCount: number;
+  taxonomyConsistency: number | null;
+  evidenceQuality: number | null;
+  evidenceConfidence: number;
+  translationConfidence: number | null;
+  responsePathVerified: boolean;
+}>;
+export type ClassificationResult =
+  | Readonly<{
+      accepted: true;
+      signalClass: SignalClass;
+      gateFacts: SignalGateFacts;
+    }>
+  | Readonly<{ accepted: false; reason: RadarRejectionReason }>;
 export type ExecutedQuery = z.infer<typeof executedQuerySchema>;
 export type ObservedEntity = z.infer<typeof observedEntitySchema>;
 export type Evidence = z.infer<typeof evidenceSchema>;

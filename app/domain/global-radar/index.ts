@@ -6,7 +6,11 @@ export {
   boundedRecordSchema,
   boundedShortStringSchema,
   businessEmailSchema,
+  candidateEvidenceSourceKindLookup,
+  candidateEvidenceSourceKinds,
   confidenceSchema,
+  directDemandAskTypeLookup,
+  directDemandAskTypes,
   evidenceSchema,
   executedQuerySchema,
   fingerprintSchema,
@@ -20,6 +24,8 @@ export {
   professionalResponsePathSchema,
   professionalResponsePathTypeLookup,
   professionalResponsePathTypes,
+  precursorDevelopmentTypeLookup,
+  precursorDevelopmentTypes,
   promotionEligibilityPathLookup,
   promotionEligibilityPaths,
   publicHttpUrlSchema,
@@ -29,6 +35,8 @@ export {
   radarRunTriggers,
   radarScanModeLookup,
   radarScanModes,
+  radarRejectionReasonLookup,
+  radarRejectionReasons,
   requirementKindLookup,
   requirementKinds,
   requirementSchema,
@@ -43,14 +51,23 @@ export {
 } from "./contracts";
 
 export type {
+  CandidateEvidence,
+  CandidateEvidenceSourceKind,
+  ClassificationResult,
+  DirectDemandAsk,
+  DirectDemandAskType,
   Evidence,
+  EvidenceCandidate,
   ExecutedQuery,
   GlobalRadarBatch,
   IndiaRelevanceType,
+  MomentumGateMetrics,
   ObservedEntity,
+  PrecursorDevelopmentType,
   ProfessionalResponsePath,
   ProfessionalResponsePathType,
   PromotionEligibilityPath,
+  RadarRejectionReason,
   RadarRunStatus,
   RadarRunTrigger,
   RadarScanMode,
@@ -58,9 +75,35 @@ export type {
   RequirementKind,
   SignalClass,
   SignalDraft,
+  SignalGateFacts,
   SignalStatus,
   SourceError,
 } from "./contracts";
+
+export { classifySignal } from "./classification";
+
+export {
+  canonicalizeEvidenceUrl,
+  compareEntityIdentities,
+  createEntityIdentity,
+  createEvidenceFingerprint,
+  createGlobalRadarFingerprint,
+  createQueryFingerprint,
+  createRequirementFingerprint,
+  normalizeEntityDomain,
+  normalizeLinkedInOrganizationUrl,
+  normalizeOfficialWebsiteUrl,
+} from "./normalization";
+
+export type {
+  EntityIdentity,
+  EntityIdentityComparison,
+  EntityIdentityInput,
+  EvidenceFingerprintInput,
+  QueryFingerprintInput,
+  RequirementFingerprintInput,
+  StablePublicIdentifier,
+} from "./normalization";
 
 export {
   GLOBAL_RADAR_TAXONOMY_VERSION,
