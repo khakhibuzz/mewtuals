@@ -3,35 +3,17 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
+import {
+  CandidateReviewActions,
+  type CandidateReviewStatus,
+  type CandidateReviewUpdate,
+  type CandidateReviewUpdatedCandidate,
+} from "./CandidateReviewActions";
 import { DiscoveryResearchContext } from "./DiscoveryResearchContext";
 import styles from "./product.module.css";
 
-export type DiscoveryCandidateStatus =
-  | "discovered"
-  | "shortlisted"
-  | "rejected"
-  | "queued_for_profile";
-
-export type DiscoveryDashboardCandidate = {
-  id: string;
-  type: "company" | "creator";
-  name: string;
-  canonicalUrl: string;
-  websiteUrl: string | null;
-  primarySocialUrl: string | null;
-  linkedinUrl: string | null;
-  discoveredDescription: string;
-  category: string;
-  subcategory: string | null;
-  geography: string;
-  firstSourceName: string;
-  firstSourceUrl: string;
-  discoveredAt: string;
-  lastSeenAt: string;
-  updatedAt: string;
-  discoveryScore: number;
-  status: DiscoveryCandidateStatus;
-};
+export type DiscoveryCandidateStatus = CandidateReviewStatus;
+export type DiscoveryDashboardCandidate = CandidateReviewUpdatedCandidate;
 
 export type DiscoveryDashboardRun = {
   id: string;
@@ -150,68 +132,6 @@ function countLabel(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function nullableString(value: unknown): value is string | null {
-  return value === null || typeof value === "string";
-}
-
-function candidateFromResponse(value: unknown): DiscoveryDashboardCandidate | null {
-  if (!isRecord(value)) return null;
-  const type = value.type;
-  const status = value.status;
-  if (
-    (type !== "company" && type !== "creator") ||
-    typeof status !== "string" ||
-    !["discovered", "shortlisted", "rejected", "queued_for_profile"].includes(
-      status,
-    ) ||
-    typeof value.id !== "string" ||
-    typeof value.name !== "string" ||
-    typeof value.canonicalUrl !== "string" ||
-    !nullableString(value.websiteUrl) ||
-    !nullableString(value.primarySocialUrl) ||
-    !nullableString(value.linkedinUrl) ||
-    typeof value.discoveredDescription !== "string" ||
-    typeof value.category !== "string" ||
-    !nullableString(value.subcategory) ||
-    typeof value.geography !== "string" ||
-    typeof value.firstSourceName !== "string" ||
-    typeof value.firstSourceUrl !== "string" ||
-    typeof value.discoveredAt !== "string" ||
-    typeof value.lastSeenAt !== "string" ||
-    typeof value.updatedAt !== "string" ||
-    typeof value.discoveryScore !== "number" ||
-    !Number.isInteger(value.discoveryScore) ||
-    value.discoveryScore < 0 ||
-    value.discoveryScore > 100
-  ) {
-    return null;
-  }
-  return {
-    id: value.id,
-    type,
-    name: value.name,
-    canonicalUrl: value.canonicalUrl,
-    websiteUrl: value.websiteUrl,
-    primarySocialUrl: value.primarySocialUrl,
-    linkedinUrl: value.linkedinUrl,
-    discoveredDescription: value.discoveredDescription,
-    category: value.category,
-    subcategory: value.subcategory,
-    geography: value.geography,
-    firstSourceName: value.firstSourceName,
-    firstSourceUrl: value.firstSourceUrl,
-    discoveredAt: value.discoveredAt,
-    lastSeenAt: value.lastSeenAt,
-    updatedAt: value.updatedAt,
-    discoveryScore: value.discoveryScore,
-    status: status as DiscoveryCandidateStatus,
-  };
-}
-
 function CandidateLinks({ candidate }: { candidate: DiscoveryDashboardCandidate }) {
   const proposedLinks = [
     {
@@ -295,8 +215,6 @@ type PendingOperation =
   | { kind: "queue" }
   | { kind: "candidate"; candidateId: string };
 
-type CandidateFeedback = MutationFeedbackState & { candidateId: string };
-
 function responseError(error: unknown, fallback: string): string {
   return typeof error === "string" && error.trim() ? error : fallback;
 }
@@ -314,8 +232,6 @@ export function DiscoveryDashboard({
     useState<PendingOperation>();
   const [queueFeedback, setQueueFeedback] =
     useState<MutationFeedbackState>();
-  const [candidateFeedback, setCandidateFeedback] =
-    useState<CandidateFeedback>();
   const mutationInFlight = useRef(false);
   const previousSnapshotRef = useRef(snapshot);
   const returnFocusRef = useRef<HTMLButtonElement | null>(null);
@@ -341,11 +257,6 @@ export function DiscoveryDashboard({
   const selectedEvidence = snapshot.evidence.filter(
     ({ candidateId }) => candidateId === selectedCandidateId,
   );
-  const selectedCandidateFeedback =
-    candidateFeedback?.candidateId === selectedCandidateId
-      ? candidateFeedback
-      : undefined;
-
   useEffect(() => {
     if (previousSnapshotRef.current === snapshot) return;
     previousSnapshotRef.current = snapshot;
@@ -353,19 +264,16 @@ export function DiscoveryDashboard({
     setCandidates(snapshot.candidates.items);
     setSelectedCandidateId(undefined);
     returnFocusRef.current = null;
-    setCandidateFeedback(undefined);
   }, [snapshot]);
 
   function openCandidate(candidateId: string, trigger: HTMLButtonElement) {
     returnFocusRef.current = trigger;
-    setCandidateFeedback(undefined);
     setSelectedCandidateId(candidateId);
   }
 
   function closeCandidate() {
     closeOpenDialog(drawerRef.current);
     setSelectedCandidateId(undefined);
-    setCandidateFeedback(undefined);
     const returnFocus = returnFocusRef.current;
     returnFocusRef.current = null;
     returnFocus?.focus();
@@ -414,75 +322,17 @@ export function DiscoveryDashboard({
     );
   }
 
-  async function updateCandidateStatus(
-    candidate: DiscoveryDashboardCandidate,
-    status: DiscoveryCandidateStatus,
-  ) {
-    if (mutationInFlight.current) return;
-    mutationInFlight.current = true;
-    setPendingOperation({ kind: "candidate", candidateId: candidate.id });
-    setCandidateFeedback(undefined);
-    try {
-      const response = await fetch(
-        `/api/admin/discovery/candidates/${candidate.id}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status,
-            expectedUpdatedAt: candidate.updatedAt,
-          }),
-        },
-      );
-      const result = (await response.json().catch(() => ({}))) as {
-        error?: unknown;
-        candidate?: unknown;
-      };
-      const latest = candidateFromResponse(result.candidate);
-      if (response.status === 409 && latest) {
-        replaceCandidate(latest);
-        setCandidateFeedback({
-          candidateId: candidate.id,
-          kind: "alert",
-          message: `${candidate.name} changed elsewhere. Latest status is ${label(latest.status).toLowerCase()}. Review and try again.`,
-        });
-        return;
+  function handleCandidateUpdated(update: CandidateReviewUpdate) {
+    if (update.candidate) replaceCandidate(update.candidate);
+    setPendingOperation((current) => {
+      if (update.pending) {
+        return { kind: "candidate", candidateId: update.candidateId };
       }
-      if (!response.ok) {
-        setCandidateFeedback({
-          candidateId: candidate.id,
-          kind: "alert",
-          message: responseError(
-            result.error,
-            "The candidate status could not be saved.",
-          ),
-        });
-        return;
-      }
-      if (!latest || latest.id !== candidate.id) {
-        setCandidateFeedback({
-          candidateId: candidate.id,
-          kind: "alert",
-          message: "The candidate status response could not be verified.",
-        });
-        return;
-      }
-      replaceCandidate(latest);
-      setCandidateFeedback({
-        candidateId: candidate.id,
-        kind: "status",
-        message: `${latest.name} is now ${label(latest.status).toLowerCase()}.`,
-      });
-    } catch {
-      setCandidateFeedback({
-        candidateId: candidate.id,
-        kind: "alert",
-        message: "The candidate status could not be saved.",
-      });
-    } finally {
-      mutationInFlight.current = false;
-      setPendingOperation(undefined);
-    }
+      return current?.kind === "candidate" &&
+        current.candidateId === update.candidateId
+        ? undefined
+        : current;
+    });
   }
 
   useEffect(() => {
@@ -796,38 +646,14 @@ export function DiscoveryDashboard({
             />
             <div className={styles.discoveryDrawerGroup}>
               <h3>Review status</h3>
-              {selectedCandidateFeedback ? (
-                <MutationFeedback feedback={selectedCandidateFeedback} />
-              ) : null}
-              <div className={styles.discoveryStatusActions}>
-                {[
-                  { status: "shortlisted" as const, text: "Shortlist", label: `Shortlist ${selectedCandidate.name}` },
-                  { status: "rejected" as const, text: "Reject", label: `Reject ${selectedCandidate.name}` },
-                  {
-                    status: "queued_for_profile" as const,
-                    text: "Queue for profile",
-                    label: `Queue ${selectedCandidate.name} for profile`,
-                  },
-                ].map((action) => (
-                  <button
-                    className={
-                      action.status === "shortlisted"
-                        ? styles.button
-                        : styles.secondaryButton
-                    }
-                    type="button"
-                    key={action.status}
-                    aria-label={action.label}
-                    disabled={
-                      pendingOperation !== undefined ||
-                      selectedCandidate.status === action.status
-                    }
-                    onClick={() => updateCandidateStatus(selectedCandidate, action.status)}
-                  >
-                    {action.text}
-                  </button>
-                ))}
-              </div>
+              <CandidateReviewActions
+                candidateId={selectedCandidate.id}
+                candidateName={selectedCandidate.name}
+                status={selectedCandidate.status}
+                updatedAt={selectedCandidate.updatedAt}
+                disabled={pendingOperation !== undefined}
+                onUpdated={handleCandidateUpdated}
+              />
             </div>
           </dialog>
         </div>
