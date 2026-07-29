@@ -656,7 +656,7 @@ describe("Global Radar contracts", () => {
         !forbiddenMetadata.success && forbiddenMetadata.error.issues[0]?.message,
     }).toEqual({
       markupMessage: "Concise text must not contain HTML or document markup.",
-      metadataMessage: "Record must not contain full-page content keys.",
+      metadataMessage: "Record must not contain full-page content.",
     });
   });
 
@@ -688,6 +688,98 @@ describe("Global Radar contracts", () => {
       nestedValue: false,
       plainJsonValues: true,
       topLevelValue: false,
+    });
+  });
+
+  it("caps metadata arrays before traversing their element descriptors", () => {
+    const oversizedArray = boundedRecordSchema.safeParse({
+      values: Array.from({ length: 1_000 }, () => null),
+    });
+
+    expect({
+      atLimit: boundedRecordSchema.safeParse({
+        values: Array.from({ length: 100 }, () => null),
+      }).success,
+      issue:
+        !oversizedArray.success && oversizedArray.error.issues[0]?.message,
+      oversized: oversizedArray.success,
+    }).toEqual({
+      atLimit: true,
+      issue: "Record arrays must contain at most 100 elements.",
+      oversized: false,
+    });
+  });
+
+  it("continues rejecting cyclic, accessor, and non-JSON metadata", () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const accessor: Record<string, unknown> = {};
+    Object.defineProperty(accessor, "value", {
+      enumerable: true,
+      get: () => "hidden",
+    });
+
+    expect({
+      accessor: boundedRecordSchema.safeParse(accessor).success,
+      bigint: boundedRecordSchema.safeParse({ value: BigInt(1) }).success,
+      cyclic: boundedRecordSchema.safeParse(cyclic).success,
+      undefined: boundedRecordSchema.safeParse({ value: undefined }).success,
+    }).toEqual({
+      accessor: false,
+      bigint: false,
+      cyclic: false,
+      undefined: false,
+    });
+  });
+
+  it("rejects normalized page aliases and split plaintext page content", () => {
+    const aliases = [
+      "pageContent",
+      "PAGE_CONTENT",
+      "page-content",
+      "responseBody",
+      "RESPONSE_BODY",
+      "response-body",
+      "document",
+    ];
+    const aliasResults = aliases.map((key) =>
+      boundedRecordSchema.safeParse({ [key]: "plain page content" }),
+    );
+    const oversizedString = boundedRecordSchema.safeParse({
+      providerPayload: "x".repeat(2_049),
+    });
+    const splitPage = boundedRecordSchema.safeParse({
+      firstChunk: "a".repeat(1_900),
+      secondChunk: "b".repeat(1_900),
+      thirdChunk: "c".repeat(1_900),
+      fourthChunk: "d".repeat(1_900),
+    });
+
+    expect({
+      aliasMessages: aliasResults.map(
+        (result) => !result.success && result.error.issues[0]?.message,
+      ),
+      atAggregateLimit: boundedRecordSchema.safeParse({
+        firstChunk: "a".repeat(2_048),
+        secondChunk: "b".repeat(2_048),
+      }).success,
+      normalMetadata: boundedRecordSchema.safeParse({
+        providerPayload: "Supplier registration is open.",
+        confidence: 90,
+        current: true,
+      }).success,
+      oversizedStringMessage:
+        !oversizedString.success && oversizedString.error.issues[0]?.message,
+      splitPageMessage:
+        !splitPage.success && splitPage.error.issues[0]?.message,
+    }).toEqual({
+      aliasMessages: aliases.map(
+        () => "Record must not contain full-page content.",
+      ),
+      atAggregateLimit: true,
+      normalMetadata: true,
+      oversizedStringMessage: "Record must not contain full-page content.",
+      splitPageMessage: "Record must not contain full-page content.",
     });
   });
 
@@ -759,16 +851,32 @@ describe("Global Radar contracts", () => {
   });
 
   it("rejects a valid-shape batch above two serialized MiB", () => {
-    const rawMetadata = { padding: "x".repeat(8_150) };
+    const rawMetadata = {
+      firstChunk: "x".repeat(2_048),
+      secondChunk: "y".repeat(2_048),
+    };
+    const supportedFieldPaths = Array.from({ length: 50 }, (_, index) =>
+      `field${index}.`.padEnd(200, "x"),
+    );
     const signals = Array.from({ length: 20 }, () =>
       signalDraft({
         evidence: Array.from({ length: 5 }, () =>
-          evidenceItem({ rawMetadata }),
+          evidenceItem({
+            claim: "c".repeat(1_000),
+            englishSummary: "s".repeat(2_000),
+            excerpt: "e".repeat(500),
+            rawMetadata,
+            sourceName: "n".repeat(200),
+            supportedFieldPaths,
+          }),
         ),
         requirements: Array.from({ length: 5 }, () =>
-          requirement({ rawMetadata }),
+          requirement({ rawMetadata, summary: "r".repeat(1_000) }),
         ),
+        factualSummary: "f".repeat(2_000),
+        interpretationSummary: "i".repeat(2_000),
         rawMetadata,
+        title: "t".repeat(300),
       }),
     );
     const batch = {
@@ -829,6 +937,42 @@ describe("Global Radar contracts", () => {
       partial: true,
       zeroSignalsWithError: false,
     });
+  });
+
+  it("rejects zero-signal batches when an executed query reports an error", () => {
+    expect({
+      failedQuery: globalRadarBatchSchema.safeParse({
+        ...honestEmptyBatch(),
+        executedQueries: [executedQuery({ error: "The source timed out." })],
+      }).success,
+      successfulQuery: globalRadarBatchSchema.safeParse({
+        ...honestEmptyBatch(),
+        executedQueries: [executedQuery()],
+      }).success,
+    }).toEqual({ failedQuery: false, successfulQuery: true });
+  });
+
+  it("requires source-error query fingerprints to reference executed queries", () => {
+    const batch = {
+      ...honestEmptyBatch(),
+      executedQueries: [executedQuery()],
+      signals: [signalDraft()],
+    };
+
+    expect({
+      globalFailure: globalRadarBatchSchema.safeParse({
+        ...batch,
+        sourceErrors: [sourceError()],
+      }).success,
+      matching: globalRadarBatchSchema.safeParse({
+        ...batch,
+        sourceErrors: [sourceError({ queryFingerprint: "b".repeat(64) })],
+      }).success,
+      unknown: globalRadarBatchSchema.safeParse({
+        ...batch,
+        sourceErrors: [sourceError({ queryFingerprint: "c".repeat(64) })],
+      }).success,
+    }).toEqual({ globalFailure: true, matching: true, unknown: false });
   });
 
   it("defines the exact managed contract vocabularies", () => {

@@ -9,6 +9,9 @@ import {
 } from "../taxonomies/global-radar-v1";
 
 const MAX_BOUNDED_RECORD_BYTES = 8_192;
+const MAX_BOUNDED_RECORD_ARRAY_LENGTH = 100;
+const MAX_BOUNDED_RECORD_STRING_CHARACTERS = 4_096;
+const MAX_BOUNDED_RECORD_STRING_LENGTH = 2_048;
 const MAX_BOUNDED_RECORD_KEYS = 20;
 const MAX_BOUNDED_RECORD_KEY_LENGTH = 64;
 const MAX_BOUNDED_RECORD_DEPTH = 3;
@@ -42,13 +45,23 @@ const BATCH_BYTES_MESSAGE =
   "Global Radar batch must be at most 2097152 bytes.";
 const DOCUMENT_MARKUP_MESSAGE =
   "Concise text must not contain HTML or document markup.";
-const FORBIDDEN_RECORD_KEY_MESSAGE =
-  "Record must not contain full-page content keys.";
+const RECORD_PAGE_CONTENT_MESSAGE =
+  "Record must not contain full-page content.";
+const SOURCE_ERROR_QUERY_REFERENCE_MESSAGE =
+  "Source error query fingerprint must reference an executed query.";
 const forbiddenRecordKeys = new Set([
   "body",
+  "document",
+  "documentcontent",
   "fullpage",
+  "fullpagecontent",
   "html",
+  "pagebody",
+  "pagecontent",
+  "rawbody",
   "rawcontent",
+  "responsebody",
+  "responsecontent",
 ]);
 const documentMarkupPattern =
   /<(?:!doctype\b|\?xml\b|!\[cdata\[|\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\/?>)/i;
@@ -177,12 +190,19 @@ export const nullableBoundedStringArraySchema = z
   .max(MAX_BOUNDED_STRING_ARRAY_ITEMS)
   .nullable();
 
-export function serializedJsonByteLength(value: unknown): number {
+function trySerializedJsonByteLength(value: unknown): number | null {
   try {
-    return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+    const serialized = JSON.stringify(value);
+    return serialized === undefined
+      ? null
+      : new TextEncoder().encode(serialized).byteLength;
   } catch {
-    return Number.POSITIVE_INFINITY;
+    return null;
   }
+}
+
+export function serializedJsonByteLength(value: unknown): number {
+  return trySerializedJsonByteLength(value) ?? Number.POSITIVE_INFINITY;
 }
 
 type RecordInspectionTask =
@@ -190,22 +210,33 @@ type RecordInspectionTask =
   | { action: "leave"; value: object };
 
 type RecordInspectionIssue =
+  | "array_length"
   | "bytes"
   | "depth"
   | "document_markup"
   | "forbidden_key"
   | "invalid"
   | "key_length"
+  | "page_content"
   | "keys";
 
 function inspectBoundedRecord(
   record: Record<string, unknown>,
 ): RecordInspectionIssue | null {
+  const serializedBytes = trySerializedJsonByteLength(record);
+  if (
+    serializedBytes !== null &&
+    serializedBytes > MAX_BOUNDED_RECORD_BYTES
+  ) {
+    return "bytes";
+  }
+
   const activeObjects = new Set<object>();
   const tasks: RecordInspectionTask[] = [
     { action: "visit", value: record, depth: 1 },
   ];
   let keyCount = 0;
+  let stringCharacterCount = 0;
   let workUnits = 0;
 
   try {
@@ -223,6 +254,13 @@ function inspectBoundedRecord(
       const { value, depth } = task;
       if (typeof value === "string") {
         if (documentMarkupPattern.test(value)) return "document_markup";
+        stringCharacterCount += value.length;
+        if (
+          value.length > MAX_BOUNDED_RECORD_STRING_LENGTH ||
+          stringCharacterCount > MAX_BOUNDED_RECORD_STRING_CHARACTERS
+        ) {
+          return "page_content";
+        }
         continue;
       }
       if (value === null || typeof value === "boolean") {
@@ -246,24 +284,47 @@ function inspectBoundedRecord(
       activeObjects.add(value);
       tasks.push({ action: "leave", value });
 
+      if (array) {
+        if (value.length > MAX_BOUNDED_RECORD_ARRAY_LENGTH) {
+          return "array_length";
+        }
+        if (Object.hasOwn(value, "toJSON")) return "invalid";
+        for (const key in value) {
+          if (
+            Object.hasOwn(value, key) &&
+            (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= value.length)
+          ) {
+            return "invalid";
+          }
+        }
+        for (let index = value.length - 1; index >= 0; index -= 1) {
+          const descriptor = Object.getOwnPropertyDescriptor(value, index);
+          if (!descriptor?.enumerable) continue;
+          if (!("value" in descriptor)) return "invalid";
+          tasks.push({
+            action: "visit",
+            value: descriptor.value,
+            depth: depth + 1,
+          });
+        }
+        continue;
+      }
+
       const descriptors = Object.getOwnPropertyDescriptors(value);
       if (Object.hasOwn(descriptors, "toJSON")) return "invalid";
       const entries = Object.entries(descriptors).filter(
-        ([key, descriptor]) =>
-          descriptor.enumerable && (!array || key !== "length"),
+        ([, descriptor]) => descriptor.enumerable,
       );
-      if (!array) {
-        keyCount += entries.length;
-        if (keyCount > MAX_BOUNDED_RECORD_KEYS) return "keys";
-      }
+      keyCount += entries.length;
+      if (keyCount > MAX_BOUNDED_RECORD_KEYS) return "keys";
 
       for (let index = entries.length - 1; index >= 0; index -= 1) {
         const [key, descriptor] = entries[index];
-        if (!array && key.length > MAX_BOUNDED_RECORD_KEY_LENGTH) {
+        if (key.length > MAX_BOUNDED_RECORD_KEY_LENGTH) {
           return "key_length";
         }
         const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-        if (!array && forbiddenRecordKeys.has(normalizedKey)) {
+        if (forbiddenRecordKeys.has(normalizedKey)) {
           return "forbidden_key";
         }
         if (!("value" in descriptor)) return "invalid";
@@ -278,32 +339,36 @@ function inspectBoundedRecord(
     return "invalid";
   }
 
-  return serializedJsonByteLength(record) > MAX_BOUNDED_RECORD_BYTES
-    ? "bytes"
-    : null;
+  return null;
 }
 
 const boundedRecordMessages = {
+  array_length: "Record arrays must contain at most 100 elements.",
   bytes: "Record must be at most 8192 serialized bytes.",
   depth: "Record must have JSON depth at most 3.",
-  document_markup: DOCUMENT_MARKUP_MESSAGE,
-  forbidden_key: FORBIDDEN_RECORD_KEY_MESSAGE,
+  document_markup: RECORD_PAGE_CONTENT_MESSAGE,
+  forbidden_key: RECORD_PAGE_CONTENT_MESSAGE,
   invalid: "Record must contain only JSON-compatible values.",
   key_length: "Record keys must be at most 64 characters.",
+  page_content: RECORD_PAGE_CONTENT_MESSAGE,
   keys: "Record must contain at most 20 keys.",
 } as const;
 
-export const boundedRecordSchema = z
-  .record(z.string(), z.unknown())
-  .superRefine((record, context) => {
-    const issue = inspectBoundedRecord(record);
-    if (issue) {
-      context.addIssue({
-        code: "custom",
-        message: boundedRecordMessages[issue],
-      });
+export const boundedRecordSchema = z.preprocess(
+  (input, context) => {
+    if (input !== null && typeof input === "object") {
+      const issue = inspectBoundedRecord(input as Record<string, unknown>);
+      if (issue) {
+        context.addIssue({
+          code: "custom",
+          message: boundedRecordMessages[issue],
+        });
+      }
     }
-  });
+    return input;
+  },
+  z.record(z.string(), z.unknown()),
+);
 
 export const scoreComponentSchema = z.number().int().min(0).max(100);
 export const confidenceSchema = scoreComponentSchema;
@@ -477,14 +542,32 @@ const normalizedGlobalRadarBatchSchema = globalRadarBatchObjectSchema.superRefin
         message: BATCH_BYTES_MESSAGE,
       });
     }
-    if (batch.signals.length === 0 && batch.sourceErrors.length > 0) {
+    const hasRecordedFailure =
+      batch.sourceErrors.length > 0 ||
+      batch.executedQueries.some((query) => query.error !== null);
+    if (batch.signals.length === 0 && hasRecordedFailure) {
       context.addIssue({
         code: "custom",
         message:
-          "Global Radar batch with source errors must contain a valid signal.",
+          "Global Radar batch with query or source errors must contain a valid signal.",
         path: ["signals"],
       });
     }
+    const executedQueryFingerprints = new Set(
+      batch.executedQueries.map((query) => query.fingerprint),
+    );
+    batch.sourceErrors.forEach((error, index) => {
+      if (
+        error.queryFingerprint !== null &&
+        !executedQueryFingerprints.has(error.queryFingerprint)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: SOURCE_ERROR_QUERY_REFERENCE_MESSAGE,
+          path: ["sourceErrors", index, "queryFingerprint"],
+        });
+      }
+    });
   },
 );
 
