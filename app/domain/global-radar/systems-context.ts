@@ -61,6 +61,9 @@ function contextMatchesStack(
   const chain: readonly string[] =
     stackType === "hardware" ? hardwareStackChain : physicalDataStackChain;
   const targetIndex = chain.indexOf(context.relevantStackLayer);
+  const inputIndices = context.lowerLevelInputsRequired.map((stage) =>
+    chain.indexOf(stage),
+  );
   const hasRequiredInputs =
     targetIndex === 0
       ? context.lowerLevelInputsRequired.length === 0
@@ -68,10 +71,12 @@ function contextMatchesStack(
   return (
     targetIndex >= 0 &&
     hasRequiredInputs &&
-    context.lowerLevelInputsRequired.every((stage) => {
-      const inputIndex = chain.indexOf(stage);
-      return inputIndex >= 0 && inputIndex < targetIndex;
-    })
+    inputIndices.every(
+      (inputIndex, index) =>
+        inputIndex >= 0 &&
+        inputIndex < targetIndex &&
+        (index === 0 || inputIndices[index - 1]! < inputIndex),
+    )
   );
 }
 

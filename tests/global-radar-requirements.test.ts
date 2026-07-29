@@ -200,4 +200,11 @@ describe("Global Radar normalized requirements", () => {
     expect(individuallyBounded).toEqual([false, false, false, false]);
     expect(normalizeRequirements(overLimit).valid).toBe(false);
   });
+
+  it("requires at least one normalized requirement per signal", () => {
+    expect(normalizeRequirements([])).toEqual({
+      valid: false,
+      reason: "invalid_requirement",
+    });
+  });
 });

@@ -152,6 +152,39 @@ describe("Global Radar systems context", () => {
     });
   });
 
+  it("requires lower-level stack inputs to be unique and strictly ascending", () => {
+    expect({
+      orderedSubset: validateSystemsContext(
+        validationInput({
+          context: systemsContext({
+            relevantStackLayer: "ai_and_control",
+            lowerLevelInputsRequired: ["components", "power", "sensors"],
+          }),
+        }),
+      ),
+      reversed: validateSystemsContext(
+        validationInput({
+          context: systemsContext({
+            relevantStackLayer: "ai_and_control",
+            lowerLevelInputsRequired: ["sensors", "compute_and_chips"],
+          }),
+        }),
+      ),
+      duplicate: validateSystemsContext(
+        validationInput({
+          context: systemsContext({
+            relevantStackLayer: "ai_and_control",
+            lowerLevelInputsRequired: ["sensors", "sensors"],
+          }),
+        }),
+      ),
+    }).toMatchObject({
+      orderedSubset: { valid: true },
+      reversed: { valid: false, reason: "invalid_systems_context" },
+      duplicate: { valid: false, reason: "invalid_systems_context" },
+    });
+  });
+
   it("requires context at the strong-precursor threshold without fabricating it for weaker records", () => {
     expect({
       strongPrecursor: validateSystemsContext(

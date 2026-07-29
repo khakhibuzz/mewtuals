@@ -32,7 +32,11 @@ function normalizedRequirement(overrides: Record<string, unknown> = {}) {
   return result.requirements[0]!;
 }
 
-function evidence(supportedFieldPath: string, sourceKind = "original") {
+function evidence(
+  supportedFieldPath: string,
+  sourceKind = "original",
+  overrides: Record<string, unknown> = {},
+) {
   return {
     sourceUrl: "https://example.com/india",
     canonicalSourceUrl: null,
@@ -51,6 +55,7 @@ function evidence(supportedFieldPath: string, sourceKind = "original") {
     organizationId: "example-robotics",
     corporateGroupId: "example-group",
     supportedFieldPaths: [supportedFieldPath],
+    ...overrides,
   };
 }
 
@@ -117,6 +122,84 @@ describe("Global Radar India relevance", () => {
           assessmentInput({
             proposedType,
             evidence: [evidence(fieldPath)],
+          }),
+        ),
+      ).toMatchObject({
+        assessed: true,
+        relevanceType: proposedType,
+        supportedEvidencePaths: [fieldPath],
+      });
+    },
+  );
+
+  it.each([
+    ["explicit_India", "suppliers"],
+    ["existing_India_presence", "manufacturing"],
+    ["India_expansion", "distribution"],
+  ] as const)(
+    "rejects a North-America-only original claim mislabeled as %s",
+    (proposedType, factKind) => {
+      const fieldPath = `indiaRelevance.${proposedType}.${factKind}`;
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType,
+            evidence: [
+              evidence(fieldPath, "original", {
+                originalText:
+                  "The organisation operates only in the United States and Canada.",
+                englishSummary:
+                  "A worker incorrectly summarized this as an India claim.",
+              }),
+            ],
+          }),
+        ),
+      ).toEqual({
+        assessed: false,
+        reason: "missing_exact_original_evidence",
+      });
+    },
+  );
+
+  it.each([
+    [
+      "explicit_India",
+      "suppliers",
+      "hi",
+      "संगठन भारत में आपूर्तिकर्ताओं की तलाश कर रहा है।",
+      88,
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "hi",
+      "भारतीय विनिर्माण केंद्र वर्तमान में चालू है।",
+      90,
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "zh-CN",
+      "该组织正在印度扩大分销业务。",
+      92,
+    ],
+  ] as const)(
+    "accepts an original-language India marker for %s",
+    (proposedType, factKind, sourceLanguage, originalText, confidence) => {
+      const fieldPath = `indiaRelevance.${proposedType}.${factKind}`;
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType,
+            evidence: [
+              evidence(fieldPath, "original", {
+                sourceLanguage,
+                originalText,
+                englishSummary:
+                  "The original claim explicitly describes an India activity.",
+                translationConfidence: confidence,
+              }),
+            ],
           }),
         ),
       ).toMatchObject({
@@ -247,6 +330,23 @@ describe("Global Radar India relevance", () => {
       },
       excluded: { assessed: false, reason: "india_exclusion_present" },
       openness: { assessed: false, reason: "missing_open_requirement" },
+    });
+  });
+
+  it("blocks inferred compatibility when original no-fit evidence is in the main evidence collection", () => {
+    expect(
+      assessIndiaRelevance(
+        assessmentInput({
+          proposedType: "inferred_India_compatible",
+          evidence: [
+            evidence("indiaRelevance.no_current_India_fit.exclusion"),
+          ],
+          exclusionEvidence: [],
+        }),
+      ),
+    ).toEqual({
+      assessed: false,
+      reason: "india_exclusion_present",
     });
   });
 

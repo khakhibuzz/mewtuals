@@ -128,6 +128,7 @@ export function normalizeRequirements(
 ): RequirementNormalizationResult {
   const parsed = z
     .array(normalizedRequirementInputSchema)
+    .min(1)
     .max(100)
     .safeParse(input);
   if (!parsed.success) {

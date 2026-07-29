@@ -25,6 +25,9 @@ const exactEvidenceRelevanceTypes = new Set([
   "existing_India_presence",
   "India_expansion",
 ]);
+const latinIndiaMarkerPattern =
+  /(?:^|[^\p{L}\p{N}])(?:India|Indian|Indians)(?=$|[^\p{L}\p{N}])/iu;
+const originalLanguageIndiaMarkers = ["भारत", "भारतीय", "印度"] as const;
 
 const assessedRequirementSchema = z.strictObject({
   requirement: normalizedRequirementSchema,
@@ -160,7 +163,11 @@ function exactEvidencePaths(
   return Object.freeze([
     ...new Set(
       input.evidence.flatMap((item) =>
-        item.sourceKind === "original"
+        item.sourceKind === "original" &&
+        (latinIndiaMarkerPattern.test(item.originalText) ||
+          originalLanguageIndiaMarkers.some((marker) =>
+            item.originalText.includes(marker),
+          ))
           ? item.supportedFieldPaths.filter((path) => allowedPaths.has(path))
           : [],
       ),
@@ -206,12 +213,17 @@ export function assessIndiaRelevance(
     );
   }
   if (assessment.proposedType === "inferred_India_compatible") {
-    const hasOriginalExclusion = assessment.exclusionEvidence.some(
-      (item) =>
-        item.sourceKind === "original" &&
-        item.supportedFieldPaths.some((path) =>
-          path.startsWith("indiaRelevance.no_current_India_fit."),
-        ),
+    const hasOriginalExclusion = [
+      assessment.evidence,
+      assessment.exclusionEvidence,
+    ].some((evidenceItems) =>
+      evidenceItems.some(
+        (item) =>
+          item.sourceKind === "original" &&
+          item.supportedFieldPaths.some((path) =>
+            path.startsWith("indiaRelevance.no_current_India_fit."),
+          ),
+      ),
     );
     if (hasOriginalExclusion) {
       return rejectIndiaAssessment("india_exclusion_present");
