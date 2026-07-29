@@ -286,6 +286,26 @@ describe("Global Radar India relevance", () => {
       "distribution",
       "We are expanding distribution in India but the India expansion plan was cancelled",
     ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are expanding distribution in India but the plan is being cancelled",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are expanding distribution in India but we are cancelling the plan",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are expanding distribution in India but the plan was recently cancelled",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are expanding distribution in India but the initiative is being abandoned",
+    ],
   ] as const)(
     "rejects negated or abandoned original evidence mislabeled as %s",
     (proposedType, factKind, originalText) => {
@@ -534,6 +554,8 @@ describe("Global Radar India relevance", () => {
     "Applications are open worldwide but do not currently accept paper applications",
     "Applications are open worldwide but do not accept paper applications to keep the process digital",
     "Applications are open worldwide but do not accept paper submissions for environmental reasons",
+    "Applications are open worldwide but do not accept online applications from the legacy portal",
+    "Applications are open worldwide but do not accept online applications from unregistered applicants",
     "We only accept applications worldwide.",
     "Applications are open worldwide; the support desk operates daily except Sunday.",
     "Applications are open worldwide; technical support is restricted to business hours.",
@@ -873,6 +895,10 @@ describe("Global Radar India relevance", () => {
     "Applications are open worldwide but do not accept applications via the portal from India",
     "Applications are open worldwide but do not accept online applications from Brazil",
     "Applications are open worldwide but do not accept applications via the portal from Brazil",
+    "Applications are open worldwide but do not accept online applications in Brazil",
+    "Applications are open worldwide but do not accept online applications within Brazil",
+    "Applications are open worldwide but do not accept online applications outside Europe",
+    "Applications are open worldwide but do not accept online applications originating in Brazil",
     "We only accept applications from Brazil worldwide.",
     "Applications are open worldwide but restricted to partner region zeta.",
     "申请面向全球供应商开放，但仅限日本",

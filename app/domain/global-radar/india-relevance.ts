@@ -329,22 +329,36 @@ const phraseLevelRelevantNegativePatterns = [
 const cancellationSubjectSource =
   "(?:(?:India|Indian)\\s+expansion\\s+(?:initiative|plan|proposal|project|programme|program)|(?:distribution|expansion)\\s+(?:initiative|plan|proposal|project|programme|program)|expansion|initiatives?|plans?|proposals?)";
 const cancellationAdverbSource =
-  "(?:already|formally|later|now|officially|since|subsequently)";
+  "(?:already|formally|later|now|officially|recently|since|subsequently)";
+const completedCancellationVerbSource =
+  "(?:abandoned|cancelled|canceled|withdrawn)";
+const progressiveCancellationVerbSource =
+  "(?:abandoning|cancelling|canceling|withdrawing)";
+const cancellationBeAuxiliarySource = "(?:am|are|is|was|were)";
+const cancellationHaveAuxiliarySource = "(?:had|has|have)";
 const abandonedPlanContinuationPatterns = [
   new RegExp(
     `^(?:(?:we|they|the\\s+(?:company|organisation|organization))\\s+)?` +
       `(?:${cancellationAdverbSource}\\s+)?` +
-      `(?:(?:had|has|have)\\s+(?:${cancellationAdverbSource}\\s+)?)?` +
-      `(?:abandoned|cancelled|canceled|withdrew|withdrawn)\\s+` +
+      `(?:` +
+      `(?:${cancellationHaveAuxiliarySource}\\s+` +
+      `(?:${cancellationAdverbSource}\\s+)?)?` +
+      `(?:${completedCancellationVerbSource}|withdrew)|` +
+      `${cancellationBeAuxiliarySource}\\s+` +
+      `(?:${cancellationAdverbSource}\\s+)?${progressiveCancellationVerbSource}` +
+      `)\\s+` +
       `(?:(?:the|this|that|our|their|those)\\s+)?${cancellationSubjectSource}\\b`,
     "iu",
   ),
   new RegExp(
     `^(?:(?:the|this|that|our|their|those)\\s+)?${cancellationSubjectSource}\\s+` +
-      `(?:(?:is|was)\\s+(?:${cancellationAdverbSource}\\s+)?|` +
-      `(?:had|has)\\s+(?:${cancellationAdverbSource}\\s+)?been\\s+` +
-      `(?:${cancellationAdverbSource}\\s+)?)` +
-      `(?:abandoned|cancelled|canceled|withdrawn)\\b`,
+      `(?:` +
+      `${cancellationBeAuxiliarySource}\\s+(?:${cancellationAdverbSource}\\s+)?` +
+      `(?:being\\s+(?:${cancellationAdverbSource}\\s+)?)?|` +
+      `${cancellationHaveAuxiliarySource}\\s+` +
+      `(?:${cancellationAdverbSource}\\s+)?been\\s+` +
+      `(?:${cancellationAdverbSource}\\s+)?` +
+      `)${completedCancellationVerbSource}\\b`,
     "iu",
   ),
 ] as const;
@@ -502,7 +516,13 @@ const englishAccessClaimNounPattern = new RegExp(
   `\\b${englishAccessClaimNounSource}\\b`,
   "iu",
 );
-const englishResidualFromAccessScopePattern = /\bfrom\s+(?=\S)/iu;
+const allowedEnglishResidualChannelTargetPattern = new RegExp(
+  `^(?:(?:a|an|the)\\s+)?(?:(?:current|legacy|new)\\s+)?` +
+    `${englishAccessChannelSource}$`,
+  "iu",
+);
+const englishResidualAccessScopePattern =
+  /\b(?:originating\s+in|from|in|outside|within)\s+/giu;
 const allowedEnglishEligibilityScopeTargetPattern =
   new RegExp(
     `^(?:only\\s+)?(?:(?:${termsPatternSource(englishEligibilityQualifierTerms)})\\s+)?(?:${englishGlobalAccessActorSource})$`,
@@ -724,20 +744,54 @@ function hasIndiaMarker(value: string): boolean {
   );
 }
 
-function hasUnqualifiedEnglishAccessClaim(value: string): boolean {
-  const withoutChannelFormats = value
+function hasDisallowedResidualAccessScope(value: string): boolean {
+  for (const match of value.matchAll(englishResidualAccessScopePattern)) {
+    const target = value
+      .slice((match.index ?? 0) + match[0].length)
+      .trim();
+    if (target.length === 0) continue;
+    if (allowedEnglishResidualChannelTargetPattern.test(target)) continue;
+    if (isAllowedEnglishEligibilityExclusionTarget(target)) continue;
+    return true;
+  }
+  return false;
+}
+
+function removeEnglishChannelAccessClaims(value: string): string {
+  return value
     .replace(leadingChannelAccessClaimPattern, " ")
     .replace(trailingChannelAccessClaimPattern, " ");
+}
+
+function hasUnqualifiedEnglishAccessClaim(value: string): boolean {
+  const withoutChannelFormats = removeEnglishChannelAccessClaims(value);
   const removedChannelAccessClaim = withoutChannelFormats !== value;
   return (
     englishAccessClaimNounPattern.test(withoutChannelFormats) ||
     (removedChannelAccessClaim &&
       (hasIndiaMarker(withoutChannelFormats) ||
-        englishResidualFromAccessScopePattern.test(withoutChannelFormats)))
+        hasDisallowedResidualAccessScope(withoutChannelFormats)))
+  );
+}
+
+function isAllowedChannelOnlyEnglishAccessClaim(value: string): boolean {
+  const residual = removeEnglishChannelAccessClaims(value);
+  return (
+    residual !== value &&
+    !englishAccessClaimNounPattern.test(residual) &&
+    !hasIndiaMarker(residual) &&
+    !hasDisallowedResidualAccessScope(residual)
   );
 }
 
 function concernsGlobalAccessPolicy(unit: string): boolean {
+  if (
+    isAllowedChannelOnlyEnglishAccessClaim(unit) &&
+    !matchesAny(unit, globalScopePatterns) &&
+    !matchesAny(unit, globalAccessPolicyTermPatterns)
+  ) {
+    return false;
+  }
   return (
     matchesAny(unit, globalScopePatterns) ||
     matchesAny(unit, globalAccessCounterpartyPatterns) ||
