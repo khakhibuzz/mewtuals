@@ -589,7 +589,7 @@ export function normalizeDiscoveryUrl(value: string): string {
   return normalized;
 }
 
-function normalizePublicDiscoveryUrl(value: string): string {
+export function normalizePublicDiscoveryUrl(value: string): string {
   let url: URL;
   try {
     url = new URL(value.trim());
