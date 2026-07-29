@@ -2,6 +2,7 @@ import type { SignalClass } from "./contracts";
 import {
   GLOBAL_RADAR_QUERY_VERSION,
   stableGlobalRadarFingerprint,
+  type GlobalRadarCategorySearchTerms,
   type GlobalRadarLanguage,
   type GlobalRadarSourceAdapter,
   type GlobalRadarSourceFamily,
@@ -177,22 +178,23 @@ function queryText(
   language: string,
   intent: SignalClass,
   sourceFamily: GlobalRadarSourceFamily,
-  category?: string,
+  categorySearchTerm?: string,
 ): string {
-  const categoryQualifier = category
-    ? ` ${category.replaceAll("_", " ")}`
+  const categoryQualifier = categorySearchTerm
+    ? ` ${categorySearchTerm}`
     : "";
   const leafIdentifier = globalRadarThemeLeafIdentifiers[theme];
-  const capability = `${taxonomySearchPhrase(leafIdentifier)}${categoryQualifier}`;
+  const englishCapability = `${taxonomySearchPhrase(leafIdentifier)}${categoryQualifier}`;
+  const chineseCapability = `${chineseCapabilityByLeafIdentifier[leafIdentifier]}${categoryQualifier}`;
   return language === "zh-CN"
     ? chineseQuery(
-        chineseCapabilityByLeafIdentifier[leafIdentifier],
+        chineseCapability,
         isChina(country) ? "中国" : "",
         chineseSourceConstraintByFamily[sourceFamily],
         intent,
       )
     : englishQuery(
-        capability,
+        englishCapability,
         country,
         englishSourceConstraintByFamily[sourceFamily],
         intent,
@@ -208,6 +210,7 @@ function buildQuery(
   sourceFamily: GlobalRadarSourceFamily,
   ordinal: number,
   category?: string,
+  categorySearchTerm?: string,
 ): SearchQuery {
   const query = queryText(
     theme,
@@ -215,7 +218,7 @@ function buildQuery(
     language,
     signalIntent,
     sourceFamily,
-    category,
+    categorySearchTerm,
   );
   const queryFields = {
     query,
@@ -243,6 +246,7 @@ type QueryWorkItem = {
   theme: GlobalRadarTheme;
   languages: readonly GlobalRadarLanguage[];
   category?: string;
+  categorySearchTerms?: GlobalRadarCategorySearchTerms;
 };
 
 function plannedWorkItems(plan: RadarPlan): QueryWorkItem[] {
@@ -253,6 +257,7 @@ function plannedWorkItems(plan: RadarPlan): QueryWorkItem[] {
         theme: entry.theme,
         languages: languagesForCountry(country, entry.languages),
         category: entry.category,
+        categorySearchTerms: entry.categorySearchTerms,
       })),
     );
   }
@@ -286,6 +291,7 @@ export function generateGlobalRadarQueries(
               sourceFamily,
               queries.length + index,
               workItem.category,
+              workItem.categorySearchTerms?.[language],
             ),
           );
           if (candidateGroup.length === 0) continue;

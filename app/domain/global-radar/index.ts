@@ -92,6 +92,7 @@ export {
 
 export type {
   GlobalRadarPlannerInput,
+  GlobalRadarCategorySearchTerms,
   GlobalRadarLanguage,
   GlobalRadarSourceAdapter,
   GlobalRadarSourceFamily,

@@ -121,6 +121,10 @@ describe("Global Radar query generator", () => {
       watchlist: [
         {
           category: "foundation_models",
+          categorySearchTerms: {
+            en: "foundation models",
+            "zh-CN": "基础模型",
+          },
           theme: "robot_teleoperation_demonstrations",
           countries: ["China"],
           languages: ["en", "zh-CN"],
@@ -129,6 +133,7 @@ describe("Global Radar query generator", () => {
         },
         {
           category: "component_suppliers",
+          categorySearchTerms: { en: "component suppliers" },
           theme: "robotics_manufacturing",
           countries: ["Japan"],
           languages: ["en"],
@@ -147,7 +152,7 @@ describe("Global Radar query generator", () => {
       (query) => query.query.includes("foundation models"),
     )).toBe(true);
     expect(queries.slice(3).filter((query) => query.language === "zh-CN").every(
-      (query) => !query.query.includes("foundation models"),
+      (query) => query.query.includes("基础模型"),
     )).toBe(true);
     expect(new Set(queries.map((query) => `${query.sourceCountry}:${query.theme}`))).toEqual(
       new Set([
@@ -175,6 +180,7 @@ describe("Global Radar query generator", () => {
       watchlist: [
         {
           category: "motors",
+          categorySearchTerms: { en: "motors", "zh-CN": "电机" },
           theme: "robotics_manufacturing",
           countries: ["China"],
           languages: ["en"],
@@ -183,6 +189,7 @@ describe("Global Radar query generator", () => {
         },
         {
           category: "batteries",
+          categorySearchTerms: { en: "batteries", "zh-CN": "电池" },
           theme: "robotics_manufacturing",
           countries: ["China"],
           languages: ["en"],
@@ -210,6 +217,16 @@ describe("Global Radar query generator", () => {
           query.language === "en" && query.query.includes("batteries"),
       ),
     ).toHaveLength(3);
+    const chineseQueries = queries.filter(
+      (query) => query.language === "zh-CN",
+    );
+    expect(chineseQueries.slice(0, 3).every((query) =>
+      query.query.includes("电机"),
+    )).toBe(true);
+    expect(chineseQueries.slice(3).every((query) =>
+      query.query.includes("电池"),
+    )).toBe(true);
+    expect(new Set(chineseQueries.map((query) => query.query))).toHaveLength(6);
     for (let index = 0; index < queries.length; index += 2) {
       expect(queries.slice(index, index + 2).map((query) => query.language)).toEqual(
         ["en", "zh-CN"],

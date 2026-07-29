@@ -12,6 +12,9 @@ export type GlobalRadarTheme = (typeof globalRadarThemes)[number];
 export type GlobalRadarSourceFamily = (typeof globalRadarSourceFamilies)[number];
 export type GlobalRadarSourceAdapter = "codex_public_web";
 export type GlobalRadarLanguage = "en" | "zh-CN";
+export type GlobalRadarCategorySearchTerms = Readonly<
+  Partial<Record<GlobalRadarLanguage, string>>
+>;
 
 export type PublicGlobalRadarPlanningConfig = {
   countries: readonly string[];
@@ -31,6 +34,7 @@ export type RadarCoverageState = {
 
 export type WatchlistPlanningInput = {
   category: string;
+  categorySearchTerms: GlobalRadarCategorySearchTerms;
   theme: GlobalRadarTheme;
   countries: readonly string[];
   languages: readonly GlobalRadarLanguage[];
@@ -291,18 +295,42 @@ function dueWatchlistEntries(
       if (!Number.isInteger(entry.priority)) {
         throw new Error("Global Radar watchlist priority must be an integer.");
       }
+      const configuredLanguages = entry.languages.map((language) =>
+        language.trim(),
+      );
+      if (
+        configuredLanguages.some(
+          (language) => language !== "en" && language !== "zh-CN",
+        )
+      ) {
+        throw new Error("Global Radar watchlist language must be en or zh-CN.");
+      }
+      const languages = normalizeChinaLanguages(
+        entry.countries,
+        unique(configuredLanguages as GlobalRadarLanguage[]).filter((language) =>
+          config.languages.includes(language),
+        ),
+      ).filter((language) => config.languages.includes(language));
+      const categorySearchTerms: Partial<
+        Record<GlobalRadarLanguage, string>
+      > = {};
+      languages.forEach((language) => {
+        const searchTerm = entry.categorySearchTerms?.[language]?.trim();
+        if (!searchTerm) {
+          throw new Error(
+            `Global Radar watchlist ${language} category search term is required.`,
+          );
+        }
+        categorySearchTerms[language] = searchTerm;
+      });
       return {
         category: entry.category.trim(),
+        categorySearchTerms,
         theme: entry.theme,
         countries: unique(entry.countries).filter((country) =>
           config.countries.includes(country),
         ),
-        languages: normalizeChinaLanguages(
-          entry.countries,
-          unique(entry.languages).filter((language) =>
-            config.languages.includes(language),
-          ),
-        ).filter((language) => config.languages.includes(language)),
+        languages,
         cadenceDays: entry.cadenceDays,
         priority: entry.priority,
       };
@@ -372,6 +400,7 @@ function freezePlan(plan: Omit<RadarPlan, "fingerprint">): RadarPlan {
       plan.watchlist.map((entry) =>
         Object.freeze({
           ...entry,
+          categorySearchTerms: Object.freeze({ ...entry.categorySearchTerms }),
           countries: Object.freeze([...entry.countries]),
           languages: Object.freeze([...entry.languages]),
         }),

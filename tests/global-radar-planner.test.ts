@@ -239,6 +239,10 @@ describe("Global Radar planner", () => {
         watchlist: [
           {
             category: "foundation_models",
+            categorySearchTerms: {
+              en: "foundation models",
+              "zh-CN": "基础模型",
+            },
             theme: "robot_teleoperation_demonstrations",
             countries: ["China", "US"],
             languages: ["zh-CN", "en"],
@@ -247,6 +251,7 @@ describe("Global Radar planner", () => {
           },
           {
             category: "component_suppliers",
+            categorySearchTerms: { en: "component suppliers" },
             theme: "robotics_manufacturing",
             countries: ["Japan"],
             languages: ["en"],
@@ -272,6 +277,66 @@ describe("Global Radar planner", () => {
     );
   });
 
+  it.each([
+    {
+      missingLanguage: "en",
+      countries: ["US"],
+      languages: ["en"] as GlobalRadarLanguage[],
+      categorySearchTerms: { "zh-CN": "电机" },
+    },
+    {
+      missingLanguage: "zh-CN",
+      countries: ["China"],
+      languages: ["en"] as GlobalRadarLanguage[],
+      categorySearchTerms: { en: "motors" },
+    },
+  ])(
+    "rejects a missing $missingLanguage category term for an effective watchlist language",
+    ({ missingLanguage, countries, languages, categorySearchTerms }) => {
+      expect(() =>
+        planGlobalRadarRun(
+          plannerInput({
+            scanMode: "watchlist_refresh",
+            config: { ...planningConfig, countries, languages: ["en"] },
+            watchlist: [
+              {
+                category: "motors",
+                categorySearchTerms,
+                theme: "robotics_manufacturing",
+                countries,
+                languages,
+                cadenceDays: 7,
+                priority: 100,
+              },
+            ],
+          }),
+        ),
+      ).toThrow(new RegExp(`watchlist.*${missingLanguage}.*search term`, "i"));
+    },
+  );
+
+  it("rejects unsupported watchlist languages before config filtering", () => {
+    expect(() =>
+      planGlobalRadarRun(
+        plannerInput({
+          scanMode: "watchlist_refresh",
+          config: { ...planningConfig, countries: ["US"] },
+          watchlist: [
+            {
+              category: "motors",
+              categorySearchTerms: { en: "motors" },
+              theme: "robotics_manufacturing",
+              countries: ["US"],
+              languages: ["fr"] as unknown as GlobalRadarLanguage[],
+              cadenceDays: 7,
+              priority: 100,
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/watchlist language/i);
+  });
+
   it("uses locale-independent code-point ordering for canonical ties", () => {
     const plan = planGlobalRadarRun(
       plannerInput({
@@ -279,6 +344,7 @@ describe("Global Radar planner", () => {
         watchlist: [
           {
             category: "äardvark",
+            categorySearchTerms: { en: "äardvark" },
             theme: "robotics_manufacturing",
             countries: ["US"],
             languages: ["en"],
@@ -287,6 +353,7 @@ describe("Global Radar planner", () => {
           },
           {
             category: "Zebra",
+            categorySearchTerms: { en: "Zebra" },
             theme: "robotics_manufacturing",
             countries: ["US"],
             languages: ["en"],
@@ -343,12 +410,17 @@ describe("Global Radar planner", () => {
       "official_jobs",
     ];
     const watchlistCountries = ["China"];
+    const categorySearchTerms = {
+      en: "foundation models",
+      "zh-CN": "基础模型",
+    };
     const input = plannerInput({
       scanMode: "watchlist_refresh",
       config: { ...planningConfig, countries, languages, sourceFamilies },
       watchlist: [
         {
           category: "foundation_models",
+          categorySearchTerms,
           theme: "robot_teleoperation_demonstrations",
           countries: watchlistCountries,
           languages,
@@ -364,6 +436,7 @@ describe("Global Radar planner", () => {
     languages.length = 0;
     sourceFamilies.reverse();
     watchlistCountries.push("US");
+    categorySearchTerms.en = "mutated";
     input.watchlist[0].category = "mutated";
 
     expect(JSON.stringify(plan)).toBe(before);
@@ -377,6 +450,7 @@ describe("Global Radar planner", () => {
       plan.dateWindow,
       plan.watchlist,
       plan.watchlist[0],
+      plan.watchlist[0].categorySearchTerms,
       plan.watchlist[0].countries,
       plan.watchlist[0].languages,
     ].every(Object.isFrozen)).toBe(true);
