@@ -40,8 +40,7 @@ export type QueryFingerprintInput = Readonly<{
 export type EvidenceFingerprintInput = Readonly<{
   sourceUrl: string;
   canonicalSourceUrl?: string | null;
-  isPrimarySource: boolean;
-  publishedAt: string | null;
+  claim: string;
 }>;
 
 export type RequirementFingerprintInput = Readonly<{
@@ -239,11 +238,9 @@ export function createEvidenceFingerprint(
   return createGlobalRadarFingerprint({
     version: "global-radar-evidence-fingerprint-v1",
     canonicalSourceUrl: canonicalizeEvidenceUrl(
-      input.isPrimarySource
-        ? input.sourceUrl
-        : (input.canonicalSourceUrl ?? input.sourceUrl),
+      input.canonicalSourceUrl ?? input.sourceUrl,
     ),
-    publishedAt: input.publishedAt,
+    claim: normalizeWords(input.claim),
   });
 }
 

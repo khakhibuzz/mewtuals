@@ -129,26 +129,23 @@ describe("Global Radar normalization", () => {
 
   it("deduplicates mirrors of one canonical source but preserves distinct primary sources", () => {
     const shared = {
-      publishedAt: "2026-07-29T00:00:00.000Z",
+      claim: "Supplier registration is open.",
     };
     const primaryUrl = "https://example.com/suppliers";
     const original = createEvidenceFingerprint({
       ...shared,
       sourceUrl: `${primaryUrl}?utm_source=newsletter`,
       canonicalSourceUrl: primaryUrl,
-      isPrimarySource: true,
     });
     const mirror = createEvidenceFingerprint({
       sourceUrl: "https://mirror.example/story/123",
       canonicalSourceUrl: primaryUrl,
-      publishedAt: shared.publishedAt,
-      isPrimarySource: false,
+      claim: "  supplier   registration is OPEN. ",
     });
     const independentPrimary = createEvidenceFingerprint({
       ...shared,
       sourceUrl: "https://procurement.example/notices/456",
-      canonicalSourceUrl: primaryUrl,
-      isPrimarySource: true,
+      canonicalSourceUrl: null,
     });
 
     expect(mirror).toBe(original);

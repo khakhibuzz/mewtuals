@@ -404,6 +404,40 @@ describe("Global Radar signal classification", () => {
     ).toBe("insufficient_non_syndicated_evidence");
   });
 
+  it("does not let a differently dated mirror satisfy momentum breadth", () => {
+    expect(
+      rejectionReason(
+        candidate({
+          proposedSignalClass: "ecosystem_momentum",
+          directDemandAsk: null,
+          evidence: [
+            evidence({
+              sourceUrl: "https://example.com/announcement",
+              canonicalSourceUrl: "https://example.com/announcement",
+              publishedAt: "2026-07-27T00:00:00.000Z",
+              organizationId: "org:one",
+              corporateGroupId: "group:one",
+              isSyndicated: false,
+            }),
+            evidence({
+              sourceUrl: "https://mirror.example/story",
+              canonicalSourceUrl: "https://example.com/announcement",
+              publishedAt: "2026-07-28T00:00:00.000Z",
+              organizationId: "org:two",
+              corporateGroupId: "group:two",
+              isPrimarySource: false,
+              isSyndicated: false,
+            }),
+          ],
+          momentumMetrics: {
+            taxonomyConsistency: 90,
+            evidenceQuality: 90,
+          },
+        }),
+      ),
+    ).toBe("insufficient_non_syndicated_evidence");
+  });
+
   it.each([
     [
       "fewer than two evidence items",
@@ -528,6 +562,82 @@ describe("Global Radar signal classification", () => {
     ).toBe("missing_english_summary");
   });
 
+  it("rejects a Chinese summary containing only one incidental Latin token", () => {
+    expect(
+      rejectionReason(
+        candidate({
+          evidence: [
+            evidence({
+              sourceLanguage: "zh-CN",
+              originalText: "本公司现公开招募印度制造合作伙伴。",
+              englishSummary: "AI 本公司现公开招募印度制造合作伙伴。",
+              translationConfidence: 80,
+            }),
+          ],
+        }),
+      ),
+    ).toBe("missing_english_summary");
+  });
+
+  it("rejects a Han-dominant summary despite several Latin tokens", () => {
+    expect(
+      rejectionReason(
+        candidate({
+          evidence: [
+            evidence({
+              sourceLanguage: "zh-CN",
+              originalText: "本公司现公开招募印度制造合作伙伴。",
+              englishSummary:
+                "AI robotics RFP 本公司现公开招募印度制造合作伙伴并提供相关服务。",
+              translationConfidence: 80,
+            }),
+          ],
+        }),
+      ),
+    ).toBe("missing_english_summary");
+  });
+
+  it("allows a short Chinese proper name inside a genuine English summary", () => {
+    const result = classifySignal(
+      candidate({
+        evidence: [
+          evidence({
+            sourceLanguage: "zh-CN",
+            originalText: "优必选现公开招募制造供应商。",
+            englishSummary:
+              "优必选 is publicly seeking manufacturing suppliers.",
+            translationConfidence: 80,
+          }),
+        ],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      signalClass: "direct_demand",
+    });
+  });
+
+  it("accepts a concise English summary containing a company name", () => {
+    const result = classifySignal(
+      candidate({
+        evidence: [
+          evidence({
+            sourceLanguage: "zh-CN",
+            originalText: "优必选现公开招募供应商。",
+            englishSummary: "UBTECH seeks suppliers.",
+            translationConfidence: 80,
+          }),
+        ],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      signalClass: "direct_demand",
+    });
+  });
+
   it("rejects a summary masquerading as source evidence", () => {
     expect(
       rejectionReason(
@@ -563,6 +673,54 @@ describe("Global Radar signal classification", () => {
         }),
       ),
     ).toBe("search_result_is_not_evidence");
+  });
+
+  it.each([
+    "https://cn.bing.com/search?q=robotics+rfp",
+    "https://search.brave.com/search?q=robotics+rfp",
+    "https://search.yahoo.co.jp/search?p=robotics+rfp",
+    "https://duckduckgo.com/?q=robotics+rfp",
+    "https://m.baidu.com/s?word=robotics+rfp",
+    "https://yandex.ru/search/?text=robotics+rfp",
+    "https://www.ecosia.org/search?q=robotics+rfp",
+    "https://www.qwant.com/?q=robotics+rfp",
+  ])("rejects known public search-engine result URL %s", (sourceUrl) => {
+    expect(
+      rejectionReason(candidate({ evidence: [evidence({ sourceUrl })] })),
+    ).toBe("search_result_is_not_evidence");
+  });
+
+  it("rejects a search-result canonical URL behind an ordinary source URL", () => {
+    expect(
+      rejectionReason(
+        candidate({
+          evidence: [
+            evidence({
+              sourceUrl: "https://example.com/robotics-rfp",
+              canonicalSourceUrl:
+                "https://search.brave.com/search?q=robotics+rfp",
+            }),
+          ],
+        }),
+      ),
+    ).toBe("search_result_is_not_evidence");
+  });
+
+  it("allows an ordinary company search page to serve as first-party evidence", () => {
+    const result = classifySignal(
+      candidate({
+        evidence: [
+          evidence({
+            sourceUrl: "https://example.com/search?notice=robotics-rfp",
+          }),
+        ],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      signalClass: "direct_demand",
+    });
   });
 
   it("accepts a cited role-based public business email", () => {
@@ -640,6 +798,72 @@ describe("Global Radar signal classification", () => {
         }),
       ),
     ).toBe("personal_contact_not_allowed");
+  });
+
+  it("rejects a personal alias containing an approved role token", () => {
+    const email = "jane.contact@example.com";
+    expect(
+      rejectionReason(
+        candidate({
+          evidence: [
+            evidence({ originalText: `For enquiries email ${email}.` }),
+          ],
+          responsePath: {
+            type: "official_business_email",
+            url: null,
+            businessEmail: email,
+            evidenceUrl: "https://example.com/suppliers",
+          },
+        }),
+      ),
+    ).toBe("personal_contact_not_allowed");
+  });
+
+  it("requires exact email-token equality instead of substring provenance", () => {
+    expect(
+      rejectionReason(
+        candidate({
+          evidence: [
+            evidence({
+              originalText:
+                "The public address is notprocurement@example.com.",
+            }),
+          ],
+          responsePath: {
+            type: "official_business_email",
+            url: null,
+            businessEmail: "procurement@example.com",
+            evidenceUrl: "https://example.com/suppliers",
+          },
+        }),
+      ),
+    ).toBe("response_path_not_cited");
+  });
+
+  it.each([
+    "partners.procurement@example.com",
+    "supplier-support@example.com",
+  ])("accepts the cited multi-role business alias %s", (email) => {
+    const result = classifySignal(
+      candidate({
+        evidence: [
+          evidence({
+            originalText: `Suppliers may use ${email} for registration.`,
+          }),
+        ],
+        responsePath: {
+          type: "official_business_email",
+          url: null,
+          businessEmail: email,
+          evidenceUrl: "https://example.com/suppliers",
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      gateFacts: { responsePathVerified: true },
+    });
   });
 
   it("rejects response paths whose evidence URL is not cited first-party evidence", () => {

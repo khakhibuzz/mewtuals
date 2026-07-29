@@ -21,12 +21,12 @@ import {
 const documentMarkupPattern =
   /<(?:!doctype\b|\?xml\b|!\[cdata\[|\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\/?>)/i;
 const hanTextPattern = /\p{Script=Han}/u;
-const latinTextPattern = /[A-Za-z]/;
 const responseFieldNames = new Set([
   "professionalresponsepath",
   "publicresponsepath",
   "responsepath",
 ]);
+const commonSecondLevelDomainLabels = new Set(["co", "com", "net", "org"]);
 const roleEmailTerms = new Set([
   "bd",
   "business",
@@ -40,6 +40,8 @@ const roleEmailTerms = new Set([
   "installation",
   "manufacturing",
   "partner",
+  "partners",
+  "partnership",
   "partnerships",
   "procurement",
   "purchasing",
@@ -85,18 +87,70 @@ function normalizedFieldPath(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+function hasEngineDomain(host: string, engine: string): boolean {
+  const labels = host.split(".");
+  const engineIndex = labels.lastIndexOf(engine);
+  if (engineIndex < 0) return false;
+  const suffixLabels = labels.slice(engineIndex + 1);
+  if (suffixLabels.length === 1) return true;
+  return (
+    suffixLabels.length === 2 &&
+    commonSecondLevelDomainLabels.has(suffixLabels[0]) &&
+    suffixLabels[1].length === 2
+  );
+}
+
 function isSearchResultUrl(value: string): boolean {
   const url = new URL(value);
   const host = url.hostname.toLowerCase();
   const path = url.pathname.toLowerCase();
+  const query = url.searchParams;
+  if (
+    hasEngineDomain(host, "google") &&
+    ["/search", "/url", "/imgres"].some((prefix) => path.startsWith(prefix))
+  ) {
+    return true;
+  }
+  if (
+    hasEngineDomain(host, "bing") &&
+    ["/search", "/ck/", "/aclick"].some((prefix) => path.startsWith(prefix))
+  ) {
+    return true;
+  }
+  if (host === "search.brave.com" && path.startsWith("/search")) return true;
+  if (
+    hasEngineDomain(host, "yahoo") &&
+    host.split(".").includes("search")
+  ) {
+    return true;
+  }
+  if (
+    hasEngineDomain(host, "duckduckgo") &&
+    (query.has("q") ||
+      ["/html", "/lite", "/l/"].some((prefix) => path.startsWith(prefix)))
+  ) {
+    return true;
+  }
+  if (
+    hasEngineDomain(host, "baidu") &&
+    ["/s", "/link", "/from"].some((prefix) => path.startsWith(prefix))
+  ) {
+    return true;
+  }
+  if (
+    hasEngineDomain(host, "yandex") &&
+    ["/search", "/clck", "/images/search"].some((prefix) =>
+      path.startsWith(prefix),
+    )
+  ) {
+    return true;
+  }
+  if (hasEngineDomain(host, "ecosia") && path.startsWith("/search")) {
+    return true;
+  }
   return (
-    ((host.startsWith("google.") || host === "bing.com") &&
-      ["/search", "/url", "/ck/"].some((prefix) =>
-        path.startsWith(prefix),
-      )) ||
-    (host === "baidu.com" && ["/s", "/link"].includes(path)) ||
-    host === "search.yahoo.com" ||
-    host === "duckduckgo.com"
+    hasEngineDomain(host, "qwant") &&
+    (path.startsWith("/search") || query.has("q"))
   );
 }
 
@@ -106,6 +160,17 @@ function isConcisePlainText(value: string, maximumLength: number): boolean {
     trimmed.length > 0 &&
     trimmed.length <= maximumLength &&
     !documentMarkupPattern.test(trimmed)
+  );
+}
+
+function hasEnglishSummarySignal(value: string): boolean {
+  const words = value.match(/[A-Za-z]+(?:['’-][A-Za-z]+)?/g) ?? [];
+  const latinLetterCount = value.match(/[A-Za-z]/g)?.length ?? 0;
+  const hanCharacterCount = value.match(/\p{Script=Han}/gu)?.length ?? 0;
+  return (
+    words.length >= 3 &&
+    latinLetterCount >= 10 &&
+    latinLetterCount >= Math.ceil(hanCharacterCount * 1.5)
   );
 }
 
@@ -121,15 +186,21 @@ function validateEvidenceItem(
   }
 
   let sourceUrl: string;
+  let canonicalSourceUrl: string | null = null;
   try {
     sourceUrl = canonicalizeEvidenceUrl(item.sourceUrl);
     if (item.canonicalSourceUrl) {
-      canonicalizeEvidenceUrl(item.canonicalSourceUrl);
+      canonicalSourceUrl = canonicalizeEvidenceUrl(item.canonicalSourceUrl);
     }
   } catch {
     return "invalid_evidence_url";
   }
-  if (isSearchResultUrl(sourceUrl)) return "search_result_is_not_evidence";
+  if (
+    isSearchResultUrl(sourceUrl) ||
+    (canonicalSourceUrl !== null && isSearchResultUrl(canonicalSourceUrl))
+  ) {
+    return "search_result_is_not_evidence";
+  }
 
   if (
     !isConcisePlainText(item.originalText, 1_000) ||
@@ -156,7 +227,7 @@ function validateEvidenceItem(
     if (item.translationConfidence === null) {
       return "missing_translation_confidence";
     }
-    if (!latinTextPattern.test(item.englishSummary)) {
+    if (!hasEnglishSummarySignal(item.englishSummary)) {
       return "missing_english_summary";
     }
   }
@@ -187,8 +258,7 @@ function validateEvidence(
         fingerprint: createEvidenceFingerprint({
           sourceUrl: item.sourceUrl,
           canonicalSourceUrl: item.canonicalSourceUrl,
-          isPrimarySource: item.isPrimarySource,
-          publishedAt: item.publishedAt,
+          claim: item.originalText,
         }),
       }),
     );
@@ -304,7 +374,14 @@ function baseGateFacts(
 function isRoleBusinessEmail(value: string): boolean {
   const [localPart] = value.toLowerCase().split("@");
   const terms = localPart.split(/[^a-z0-9]+/).filter(Boolean);
-  return terms.some((term) => roleEmailTerms.has(term));
+  return terms.length > 0 && terms.every((term) => roleEmailTerms.has(term));
+}
+
+function publishedEmailAddresses(value: string): ReadonlySet<string> {
+  const matches = value.match(
+    /[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi,
+  );
+  return new Set(matches?.map((email) => email.toLowerCase()) ?? []);
 }
 
 function canonicalEvidenceUrls(item: CandidateEvidence): readonly string[] {
@@ -362,7 +439,7 @@ function validateResponsePath(
     if (!isRoleBusinessEmail(email)) {
       return { valid: false, reason: "personal_contact_not_allowed" };
     }
-    if (!citedEvidence.originalText.toLowerCase().includes(email)) {
+    if (!publishedEmailAddresses(citedEvidence.originalText).has(email)) {
       return { valid: false, reason: "response_path_not_cited" };
     }
     return { valid: true, verified: true };
