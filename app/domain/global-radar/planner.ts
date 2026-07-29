@@ -11,10 +11,11 @@ export const GLOBAL_RADAR_QUERY_VERSION = "global-radar-query-v1" as const;
 export type GlobalRadarTheme = (typeof globalRadarThemes)[number];
 export type GlobalRadarSourceFamily = (typeof globalRadarSourceFamilies)[number];
 export type GlobalRadarSourceAdapter = "codex_public_web";
+export type GlobalRadarLanguage = "en" | "zh-CN";
 
 export type PublicGlobalRadarPlanningConfig = {
   countries: readonly string[];
-  languages: readonly string[];
+  languages: readonly GlobalRadarLanguage[];
   themes: readonly GlobalRadarTheme[];
   enabledSourceAdapters: readonly GlobalRadarSourceAdapter[];
   sourceFamilies: readonly GlobalRadarSourceFamily[];
@@ -32,7 +33,7 @@ export type WatchlistPlanningInput = {
   category: string;
   theme: GlobalRadarTheme;
   countries: readonly string[];
-  languages: readonly string[];
+  languages: readonly GlobalRadarLanguage[];
   cadenceDays: number;
   priority: number;
 };
@@ -55,7 +56,7 @@ export type RadarPlan = Readonly<{
   configHash: string;
   scanMode: RadarScanMode;
   countries: readonly string[];
-  languages: readonly string[];
+  languages: readonly GlobalRadarLanguage[];
   themes: readonly GlobalRadarTheme[];
   sourceAdapters: readonly GlobalRadarSourceAdapter[];
   sourceFamilies: readonly GlobalRadarSourceFamily[];
@@ -99,8 +100,8 @@ function isChina(country: string): boolean {
 
 function normalizeChinaLanguages(
   countries: readonly string[],
-  languages: readonly string[],
-): string[] {
+  languages: readonly GlobalRadarLanguage[],
+): GlobalRadarLanguage[] {
   const uniqueLanguages = unique(languages);
   if (uniqueLanguages.length === 0) return [];
   if (!countries.some(isChina)) return uniqueLanguages;
@@ -212,9 +213,17 @@ function canonicalConfig(config: PublicGlobalRadarPlanningConfig) {
     throw new Error("Global Radar score version is required.");
   }
   const countries = unique(config.countries.map((country) => country.trim()));
+  const configuredLanguages = config.languages.map((language) => language.trim());
+  if (
+    configuredLanguages.some(
+      (language) => language !== "en" && language !== "zh-CN",
+    )
+  ) {
+    throw new Error("Global Radar language must be en or zh-CN.");
+  }
   const languages = normalizeChinaLanguages(
     countries,
-    config.languages.map((language) => language.trim()),
+    configuredLanguages as GlobalRadarLanguage[],
   );
   if (countries.some((country) => !country)) {
     throw new Error("Global Radar countries must be non-empty strings.");

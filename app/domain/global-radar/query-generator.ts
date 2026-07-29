@@ -2,6 +2,7 @@ import type { SignalClass } from "./contracts";
 import {
   GLOBAL_RADAR_QUERY_VERSION,
   stableGlobalRadarFingerprint,
+  type GlobalRadarLanguage,
   type GlobalRadarSourceAdapter,
   type GlobalRadarSourceFamily,
   type GlobalRadarTheme,
@@ -36,9 +37,7 @@ const recencyByIntent: Readonly<Record<SignalClass, number>> = Object.freeze({
   ecosystem_momentum: 90,
 });
 
-export const globalRadarThemeLeafIdentifiers: Readonly<
-  Record<GlobalRadarTheme, GlobalRadarLeafIdentifier>
-> = Object.freeze({
+export const globalRadarThemeLeafIdentifiers = Object.freeze({
   robot_teleoperation_demonstrations: "teleoperated_trajectories",
   egocentric_human_task_video: "first_person_video",
   industrial_robotics_data: "robotic_assembly",
@@ -51,6 +50,71 @@ export const globalRadarThemeLeafIdentifiers: Readonly<
   physical_ai_evaluation: "physical_ai_benchmarks",
   robotics_manufacturing: "contract_manufacturing",
   india_market_entry_and_after_sales_infrastructure: "distribution",
+} as const satisfies Readonly<
+  Record<GlobalRadarTheme, GlobalRadarLeafIdentifier>
+>);
+
+type PlannedCapabilityLeaf =
+  (typeof globalRadarThemeLeafIdentifiers)[GlobalRadarTheme];
+
+const chineseCapabilityByLeafIdentifier: Readonly<
+  Record<PlannedCapabilityLeaf, string>
+> = Object.freeze({
+  teleoperated_trajectories: "遥操作轨迹",
+  first_person_video: "第一人称视频",
+  robotic_assembly: "机器人装配",
+  av_adas: "自动驾驶与高级驾驶辅助系统",
+  tactile_images: "触觉图像",
+  "3d_reconstruction": "三维重建",
+  human_robot_commands: "人机指令",
+  agriculture: "农业",
+  robotics_simulation: "机器人仿真",
+  physical_ai_benchmarks: "实体人工智能基准测试",
+  contract_manufacturing: "合同制造",
+  distribution: "分销",
+});
+
+const chineseSourceConstraintByFamily: Readonly<
+  Record<GlobalRadarSourceFamily, string>
+> = Object.freeze({
+  official_company_material: "官网 OR 公司网站 OR 官方公告",
+  official_partner_supplier_pages:
+    "供应商 OR 合作伙伴 OR 供应商注册 OR 合作伙伴申请",
+  public_procurement_and_rfp_portals: "招标 OR 采购 OR 征求建议书",
+  official_research: "官方研究 OR 研究实验室 OR 技术报告",
+  official_datasets_and_benchmarks: "数据集 OR 基准测试 OR 数据目录",
+  official_jobs: "招聘 OR 职位 OR 人才招聘",
+  official_investor_material: "投资者关系 OR 财报 OR 股东",
+  government_and_industry_sources: "政府 OR 行业协会 OR 公共机构",
+  accelerator_investor_updates: "加速器 OR 投资机构 OR 项目更新",
+  reputable_technical_business_publications:
+    "技术媒体 OR 商业媒体 OR 行业出版物",
+  public_conference_material: "会议 OR 峰会 OR 技术演讲",
+  official_public_social_posts: "官方公告 OR 官方动态 OR 官方社交账号",
+});
+
+const englishSourceConstraintByFamily: Readonly<
+  Record<GlobalRadarSourceFamily, string>
+> = Object.freeze({
+  official_company_material:
+    '"official website" OR "company website" OR "company announcement"',
+  official_partner_supplier_pages:
+    'supplier OR partner OR "supplier registration" OR "partner application"',
+  public_procurement_and_rfp_portals: "RFP OR procurement OR tender OR bid",
+  official_research: '"research lab" OR "technical report" OR publication',
+  official_datasets_and_benchmarks: 'dataset OR benchmark OR "data catalog"',
+  official_jobs: "careers OR jobs OR hiring",
+  official_investor_material:
+    '"investor relations" OR earnings OR shareholder',
+  government_and_industry_sources:
+    'government OR ministry OR "industry association"',
+  accelerator_investor_updates:
+    'accelerator OR investor OR "portfolio update"',
+  reputable_technical_business_publications:
+    '"technical publication" OR "business publication" OR "industry report"',
+  public_conference_material: 'conference OR summit OR "technical talk"',
+  official_public_social_posts:
+    '"official announcement" OR "official update" OR "verified account"',
 });
 
 for (const leafIdentifier of Object.values(globalRadarThemeLeafIdentifiers)) {
@@ -70,10 +134,10 @@ function isChina(country: string): boolean {
 
 function languagesForCountry(
   country: string,
-  languages: readonly string[],
-): readonly string[] {
-  return isChina(country)
-    ? languages
+  languages: readonly GlobalRadarLanguage[],
+): readonly GlobalRadarLanguage[] {
+  return isChina(country) && languages.length > 0
+    ? ["en", "zh-CN"]
     : languages.filter((language) => language !== "zh-CN");
 }
 
@@ -84,12 +148,12 @@ function englishQuery(
   intent: SignalClass,
 ): string {
   if (intent === "direct_demand") {
-    return `"${capability}" "${country}" "${sourceQualifier}" (RFP OR procurement OR "supplier registration" OR vendor OR "partner application" OR distributor OR "contract manufacturing" OR "data collection" OR teleoperation OR demonstrations OR testing OR certification OR installation OR service)`;
+    return `"${capability}" "${country}" (${sourceQualifier}) (RFP OR procurement OR "supplier registration" OR vendor OR "partner application" OR distributor OR "contract manufacturing" OR "data collection" OR teleoperation OR demonstrations OR testing OR certification OR installation OR service)`;
   }
   if (intent === "demand_precursor") {
-    return `"${capability}" "${country}" "${sourceQualifier}" (launch OR funding OR hiring OR deployment OR facility OR expansion OR "supply-chain buildout" OR "robot fleets" OR "India market entry")`;
+    return `"${capability}" "${country}" (${sourceQualifier}) (launch OR funding OR hiring OR deployment OR facility OR expansion OR "supply-chain buildout" OR "robot fleets" OR "India market entry")`;
   }
-  return `"${capability}" "${country}" "${sourceQualifier}" (trend OR "ecosystem growth" OR "increasing activity")`;
+  return `"${capability}" "${country}" (${sourceQualifier}) (trend OR "ecosystem growth" OR "increasing activity")`;
 }
 
 function chineseQuery(
@@ -99,12 +163,12 @@ function chineseQuery(
   intent: SignalClass,
 ): string {
   if (intent === "direct_demand") {
-    return `"${capability}" "${country}" "${sourceQualifier}" (招标 OR 采购 OR 供应商注册 OR 供应商 OR 合作伙伴申请 OR 经销商 OR 合同制造 OR 数据采集 OR 遥操作 OR 示范 OR 测试 OR 认证 OR 安装 OR 服务)`;
+    return `"${capability}" "${country}" (${sourceQualifier}) (招标 OR 采购 OR 供应商注册 OR 供应商 OR 合作伙伴申请 OR 经销商 OR 合同制造 OR 数据采集 OR 遥操作 OR 示范 OR 测试 OR 认证 OR 安装 OR 服务)`;
   }
   if (intent === "demand_precursor") {
-    return `"${capability}" "${country}" "${sourceQualifier}" (发布 OR 融资 OR 招聘 OR 部署 OR 设施 OR 扩张 OR 供应链建设 OR 机器人车队 OR 进入印度市场)`;
+    return `"${capability}" "${country}" (${sourceQualifier}) (发布 OR 融资 OR 招聘 OR 部署 OR 设施 OR 扩张 OR 供应链建设 OR 机器人车队 OR 进入印度市场)`;
   }
-  return `"${capability}" "${country}" "${sourceQualifier}" (趋势 OR 生态系统增长 OR 活动增加)`;
+  return `"${capability}" "${country}" (${sourceQualifier}) (趋势 OR 生态系统增长 OR 活动增加)`;
 }
 
 function queryText(
@@ -118,13 +182,21 @@ function queryText(
   const categoryQualifier = category
     ? ` ${category.replaceAll("_", " ")}`
     : "";
-  const capability = `${taxonomySearchPhrase(
-    globalRadarThemeLeafIdentifiers[theme],
-  )}${categoryQualifier}`;
-  const sourceQualifier = taxonomySearchPhrase(sourceFamily);
+  const leafIdentifier = globalRadarThemeLeafIdentifiers[theme];
+  const capability = `${taxonomySearchPhrase(leafIdentifier)}${categoryQualifier}`;
   return language === "zh-CN"
-    ? chineseQuery(capability, country, sourceQualifier, intent)
-    : englishQuery(capability, country, sourceQualifier, intent);
+    ? chineseQuery(
+        chineseCapabilityByLeafIdentifier[leafIdentifier],
+        isChina(country) ? "中国" : "",
+        chineseSourceConstraintByFamily[sourceFamily],
+        intent,
+      )
+    : englishQuery(
+        capability,
+        country,
+        englishSourceConstraintByFamily[sourceFamily],
+        intent,
+      );
 }
 
 function buildQuery(
@@ -157,6 +229,8 @@ function buildQuery(
   return Object.freeze({
     fingerprint: stableGlobalRadarFingerprint({
       version: GLOBAL_RADAR_QUERY_VERSION,
+      sourceFamily,
+      ...(category ? { watchlistCategory: category } : {}),
       ...queryFields,
     }),
     ...queryFields,
@@ -167,31 +241,27 @@ function buildQuery(
 type QueryWorkItem = {
   country: string;
   theme: GlobalRadarTheme;
-  language: string;
+  languages: readonly GlobalRadarLanguage[];
   category?: string;
 };
 
 function plannedWorkItems(plan: RadarPlan): QueryWorkItem[] {
   if (plan.scanMode === "watchlist_refresh") {
     return plan.watchlist.flatMap((entry) =>
-      entry.countries.flatMap((country) =>
-        languagesForCountry(country, entry.languages).map((language) => ({
-          country,
-          theme: entry.theme,
-          language,
-          category: entry.category,
-        })),
-      ),
+      entry.countries.map((country) => ({
+        country,
+        theme: entry.theme,
+        languages: languagesForCountry(country, entry.languages),
+        category: entry.category,
+      })),
     );
   }
   return plan.countries.flatMap((country) =>
-    plan.themes.flatMap((theme) =>
-      languagesForCountry(country, plan.languages).map((language) => ({
+    plan.themes.map((theme) => ({
         country,
         theme,
-        language,
+        languages: languagesForCountry(country, plan.languages),
       })),
-    ),
   );
 }
 
@@ -206,20 +276,30 @@ export function generateGlobalRadarQueries(
     for (const sourceFamily of plan.sourceFamilies) {
       for (const workItem of workItems) {
         for (const signalIntent of signalIntents) {
-          const query = buildQuery(
-            sourceAdapter,
-            workItem.country,
-            workItem.theme,
-            workItem.language,
-            signalIntent,
-            sourceFamily,
-            queries.length,
-            workItem.category,
+          const candidateGroup = workItem.languages.map((language, index) =>
+            buildQuery(
+              sourceAdapter,
+              workItem.country,
+              workItem.theme,
+              language,
+              signalIntent,
+              sourceFamily,
+              queries.length + index,
+              workItem.category,
+            ),
           );
-          if (seen.has(query.fingerprint)) continue;
-          seen.add(query.fingerprint);
-          queries.push(query);
-          if (queries.length === 120) return Object.freeze(queries);
+          if (candidateGroup.length === 0) continue;
+          const seenCount = candidateGroup.filter((query) =>
+            seen.has(query.fingerprint),
+          ).length;
+          if (seenCount > 0) continue;
+          if (queries.length + candidateGroup.length > 120) {
+            return Object.freeze(queries);
+          }
+          candidateGroup.forEach((query) => {
+            seen.add(query.fingerprint);
+            queries.push(query);
+          });
         }
       }
     }

@@ -6,6 +6,7 @@ import {
   GLOBAL_RADAR_QUERY_VERSION,
   planGlobalRadarRun,
   type GlobalRadarPlannerInput,
+  type GlobalRadarLanguage,
   type GlobalRadarSourceFamily,
   type PublicGlobalRadarPlanningConfig,
 } from "../app/domain/global-radar/planner";
@@ -128,17 +129,30 @@ describe("Global Radar planner", () => {
   it("normalizes China plans to paired English and Chinese families", () => {
     const englishOnly = planGlobalRadarRun(
       plannerInput({
-        config: { ...planningConfig, languages: ["en", "fr"] },
+        config: { ...planningConfig, languages: ["en"] },
       }),
     );
     const chineseOnly = planGlobalRadarRun(
       plannerInput({
-        config: { ...planningConfig, languages: ["zh-CN", "fr"] },
+        config: { ...planningConfig, languages: ["zh-CN"] },
       }),
     );
 
-    expect(englishOnly.languages).toEqual(["en", "zh-CN", "fr"]);
-    expect(chineseOnly.languages).toEqual(["en", "zh-CN", "fr"]);
+    expect(englishOnly.languages).toEqual(["en", "zh-CN"]);
+    expect(chineseOnly.languages).toEqual(["en", "zh-CN"]);
+  });
+
+  it("rejects languages without implemented query text", () => {
+    expect(() =>
+      planGlobalRadarRun(
+        plannerInput({
+          config: {
+            ...planningConfig,
+            languages: ["fr"],
+          } as unknown as PublicGlobalRadarPlanningConfig,
+        }),
+      ),
+    ).toThrow(/language/);
   });
 
   it("builds an ISO-week thematic plan from the approved rotation", () => {
@@ -323,7 +337,7 @@ describe("Global Radar planner", () => {
 
   it("copies and freezes caller-owned planning inputs", () => {
     const countries = ["US", "China"];
-    const languages = ["en", "zh-CN"];
+    const languages: GlobalRadarLanguage[] = ["en", "zh-CN"];
     const sourceFamilies: GlobalRadarSourceFamily[] = [
       "official_company_material",
       "official_jobs",

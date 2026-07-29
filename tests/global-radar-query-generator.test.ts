@@ -11,6 +11,7 @@ import {
 } from "../app/domain/global-radar/planner";
 import {
   globalRadarLeafIdentifiers,
+  globalRadarSourceFamilies,
   globalRadarThemes,
 } from "../app/domain/taxonomies/global-radar-v1";
 
@@ -57,10 +58,10 @@ describe("Global Radar query generator", () => {
       "US:en:demand_precursor",
       "US:en:ecosystem_momentum",
       "China:en:direct_demand",
-      "China:en:demand_precursor",
-      "China:en:ecosystem_momentum",
       "China:zh-CN:direct_demand",
+      "China:en:demand_precursor",
       "China:zh-CN:demand_precursor",
+      "China:en:ecosystem_momentum",
       "China:zh-CN:ecosystem_momentum",
     ]);
     expect(first.map((query) => query.ordinal)).toEqual(
@@ -82,6 +83,22 @@ describe("Global Radar query generator", () => {
       "recencyDays",
       "ordinal",
     ]);
+  });
+
+  it("emits fully localized Chinese capability, source, country, and intent text", () => {
+    const query = generateGlobalRadarQueries(plan()).find(
+      (candidate) =>
+        candidate.language === "zh-CN" &&
+        candidate.signalIntent === "direct_demand",
+    );
+
+    expect(query?.query).toMatch(/^"合同制造"/);
+    expect(query?.query).toContain('"中国"');
+    expect(query?.query).toMatch(/官网.*公司网站.*官方公告/);
+    expect(query?.query).toMatch(/招标.*采购.*供应商注册.*合作伙伴申请/);
+    expect(query?.query).not.toMatch(
+      /contract manufacturing|official company material|"China"/i,
+    );
   });
 
   it("preserves watchlist entry scope instead of fabricating a cartesian plan", () => {
@@ -126,8 +143,11 @@ describe("Global Radar query generator", () => {
     expect(queries.slice(0, 3).every((query) =>
       query.query.includes("component suppliers"),
     )).toBe(true);
-    expect(queries.slice(3).every((query) =>
-      query.query.includes("foundation models"),
+    expect(queries.slice(3).filter((query) => query.language === "en").every(
+      (query) => query.query.includes("foundation models"),
+    )).toBe(true);
+    expect(queries.slice(3).filter((query) => query.language === "zh-CN").every(
+      (query) => !query.query.includes("foundation models"),
     )).toBe(true);
     expect(new Set(queries.map((query) => `${query.sourceCountry}:${query.theme}`))).toEqual(
       new Set([
@@ -135,6 +155,66 @@ describe("Global Radar query generator", () => {
         "China:robot_teleoperation_demonstrations",
       ]),
     );
+  });
+
+  it("keeps distinct China watchlist categories as complete bilingual families", () => {
+    const watchlistPlan = planGlobalRadarRun({
+      now: new Date("2026-07-29T05:00:00.000Z"),
+      scanMode: "watchlist_refresh",
+      config: {
+        ...planningConfig,
+        countries: ["China"],
+        languages: ["en"],
+        themes: ["robotics_manufacturing"],
+      },
+      coverageState: {
+        countryLastCoveredAt: {},
+        themeLastCoveredAt: {},
+        watchlistLastCoveredAt: {},
+      },
+      watchlist: [
+        {
+          category: "motors",
+          theme: "robotics_manufacturing",
+          countries: ["China"],
+          languages: ["en"],
+          cadenceDays: 7,
+          priority: 100,
+        },
+        {
+          category: "batteries",
+          theme: "robotics_manufacturing",
+          countries: ["China"],
+          languages: ["en"],
+          cadenceDays: 7,
+          priority: 50,
+        },
+      ],
+    });
+    const queries = generateGlobalRadarQueries(watchlistPlan);
+
+    expect(queries).toHaveLength(12);
+    expect(new Set(queries.map((query) => query.fingerprint))).toHaveLength(12);
+    expect(queries.filter((query) => query.language === "en")).toHaveLength(6);
+    expect(queries.filter((query) => query.language === "zh-CN")).toHaveLength(
+      6,
+    );
+    expect(
+      queries.filter(
+        (query) => query.language === "en" && query.query.includes("motors"),
+      ),
+    ).toHaveLength(3);
+    expect(
+      queries.filter(
+        (query) =>
+          query.language === "en" && query.query.includes("batteries"),
+      ),
+    ).toHaveLength(3);
+    for (let index = 0; index < queries.length; index += 2) {
+      expect(queries.slice(index, index + 2).map((query) => query.language)).toEqual(
+        ["en", "zh-CN"],
+      );
+    }
   });
 
   it("uses explicit intent templates without claiming confirmed opportunities", () => {
@@ -184,7 +264,9 @@ describe("Global Radar query generator", () => {
       globalRadarLeafIdentifiers.includes(identifier),
     )).toBe(true);
     expect(queries.every((query) =>
-      query.query.startsWith('"contract manufacturing"'),
+      query.query.startsWith(
+        query.language === "zh-CN" ? '"合同制造"' : '"contract manufacturing"',
+      ),
     )).toBe(true);
     expect(queries.some((query) =>
       query.query.includes("robotics manufacturing and components"),
@@ -203,10 +285,10 @@ describe("Global Radar query generator", () => {
 
     expect(queries).toHaveLength(6);
     expect(queries.slice(0, 3).every((query) =>
-      query.query.includes('"official company material"'),
+      /official website.*company website.*company announcement/.test(query.query),
     )).toBe(true);
     expect(queries.slice(3).every((query) =>
-      query.query.includes('"official jobs"'),
+      /careers.*jobs.*hiring/.test(query.query),
     )).toBe(true);
     expect(Object.keys(queries[0])).toEqual([
       "fingerprint",
@@ -219,6 +301,59 @@ describe("Global Radar query generator", () => {
       "recencyDays",
       "ordinal",
     ]);
+  });
+
+  it("uses search-effective localized source constraints without internal labels", () => {
+    const queries = generateGlobalRadarQueries(
+      plan({
+        ...planningConfig,
+        countries: ["China"],
+        languages: ["en"],
+        sourceFamilies: globalRadarSourceFamilies,
+      }),
+    );
+    const englishConstraints = [
+      /official website.*company website.*company announcement/,
+      /supplier.*partner.*supplier registration.*partner application/,
+      /RFP.*procurement.*tender.*bid/,
+      /research lab.*technical report.*publication/,
+      /dataset.*benchmark.*data catalog/,
+      /careers.*jobs.*hiring/,
+      /investor relations.*earnings.*shareholder/,
+      /government.*ministry.*industry association/,
+      /accelerator.*investor.*portfolio update/,
+      /technical publication.*business publication.*industry report/,
+      /conference.*summit.*technical talk/,
+      /official announcement.*official update.*verified account/,
+    ];
+    const chineseConstraints = [
+      /官网.*公司网站.*官方公告/,
+      /供应商.*合作伙伴.*供应商注册.*合作伙伴申请/,
+      /招标.*采购.*征求建议书/,
+      /官方研究.*研究实验室.*技术报告/,
+      /数据集.*基准测试.*数据目录/,
+      /招聘.*职位.*人才招聘/,
+      /投资者关系.*财报.*股东/,
+      /政府.*行业协会.*公共机构/,
+      /加速器.*投资机构.*项目更新/,
+      /技术媒体.*商业媒体.*行业出版物/,
+      /会议.*峰会.*技术演讲/,
+      /官方公告.*官方动态.*官方社交账号/,
+    ];
+
+    expect(queries).toHaveLength(globalRadarSourceFamilies.length * 6);
+    globalRadarSourceFamilies.forEach((sourceFamily, index) => {
+      const familyQueries = queries.slice(index * 6, index * 6 + 6);
+      const english = familyQueries.find((query) => query.language === "en");
+      const chinese = familyQueries.find((query) => query.language === "zh-CN");
+      const internalLabel = sourceFamily.replaceAll("_", " ");
+
+      expect(english?.query).toMatch(englishConstraints[index]);
+      expect(chinese?.query).toMatch(chineseConstraints[index]);
+      expect(familyQueries.every((query) =>
+        !query.query.includes(`"${internalLabel}"`),
+      )).toBe(true);
+    });
   });
 
   it("caps deterministic query work at 120", () => {
@@ -244,6 +379,59 @@ describe("Global Radar query generator", () => {
 
     expect(queries).toHaveLength(120);
     expect(queries.at(-1)?.ordinal).toBe(119);
+  });
+
+  it("keeps China bilingual query families atomic at the cap", () => {
+    const cappedPlan = planGlobalRadarRun({
+      now: new Date("2026-07-29T05:00:00.000Z"),
+      scanMode: "manual",
+      administratorRequestId: "44444444-4444-4444-8444-444444444444",
+      config: {
+        ...planningConfig,
+        countries: ["US", "China"],
+        languages: ["en"],
+        themes: [
+          "robot_teleoperation_demonstrations",
+          "industrial_robotics_data",
+          "robotics_manufacturing",
+        ],
+        sourceFamilies: globalRadarSourceFamilies,
+      },
+      coverageState: {
+        countryLastCoveredAt: {},
+        themeLastCoveredAt: {},
+        watchlistLastCoveredAt: {},
+      },
+      watchlist: [],
+    });
+    const queries = generateGlobalRadarQueries(cappedPlan);
+    const chinaQueries = queries.filter(
+      (query) => query.sourceCountry === "China",
+    );
+
+    expect(queries.length).toBeLessThanOrEqual(120);
+    expect(queries).toHaveLength(119);
+    expect(chinaQueries.filter((query) => query.language === "en")).toHaveLength(
+      chinaQueries.filter((query) => query.language === "zh-CN").length,
+    );
+    for (let index = 0; index < chinaQueries.length; index += 2) {
+      const english = chinaQueries[index];
+      const chinese = chinaQueries[index + 1];
+      expect([english.language, chinese.language]).toEqual(["en", "zh-CN"]);
+      expect({
+        sourceAdapter: chinese.sourceAdapter,
+        sourceCountry: chinese.sourceCountry,
+        theme: chinese.theme,
+        signalIntent: chinese.signalIntent,
+        recencyDays: chinese.recencyDays,
+      }).toEqual({
+        sourceAdapter: english.sourceAdapter,
+        sourceCountry: english.sourceCountry,
+        theme: english.theme,
+        signalIntent: english.signalIntent,
+        recencyDays: english.recencyDays,
+      });
+    }
   });
 
   it("returns an explicit empty query plan when no source or work is enabled", () => {
