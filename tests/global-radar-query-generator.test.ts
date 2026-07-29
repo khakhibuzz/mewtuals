@@ -7,6 +7,7 @@ import {
 } from "../app/domain/global-radar/query-generator";
 import {
   planGlobalRadarRun,
+  type GlobalRadarLanguage,
   type PublicGlobalRadarPlanningConfig,
 } from "../app/domain/global-radar/planner";
 import {
@@ -24,6 +25,40 @@ const planningConfig: PublicGlobalRadarPlanningConfig = {
   resultLimit: 20,
   scoreVersion: "global-radar-score-v1",
 };
+
+const nonWatchlistScanModes = [
+  { label: "daily_tactical", scanMode: "daily" },
+  { label: "weekly_thematic", scanMode: "thematic" },
+  { label: "manual", scanMode: "manual" },
+] as const;
+
+function mixedCountryPlan(
+  scanMode: (typeof nonWatchlistScanModes)[number]["scanMode"],
+  languages: readonly GlobalRadarLanguage[],
+) {
+  return planGlobalRadarRun({
+    now: new Date("2026-07-29T05:00:00.000Z"),
+    scanMode,
+    ...(scanMode === "manual"
+      ? {
+          administratorRequestId: "55555555-5555-4555-8555-555555555555",
+          requestedTheme: "robotics_manufacturing" as const,
+        }
+      : {}),
+    config: {
+      ...planningConfig,
+      countries: ["Japan", "China"],
+      languages,
+      themes: ["robotics_manufacturing"],
+    },
+    coverageState: {
+      countryLastCoveredAt: {},
+      themeLastCoveredAt: {},
+      watchlistLastCoveredAt: {},
+    },
+    watchlist: [],
+  });
+}
 
 function plan(
   config: PublicGlobalRadarPlanningConfig = planningConfig,
@@ -44,6 +79,49 @@ function plan(
 }
 
 describe("Global Radar query generator", () => {
+  it.each(nonWatchlistScanModes)(
+    "$label scopes selected Chinese per country",
+    ({ scanMode }) => {
+      const radarPlan = mixedCountryPlan(scanMode, ["zh-CN"]);
+      const queries = generateGlobalRadarQueries(radarPlan);
+
+      expect(radarPlan.languages).toEqual(["zh-CN"]);
+      expect(queries.map(({ sourceCountry, language }) =>
+        `${sourceCountry}:${language}`,
+      )).toEqual([
+        "China:en",
+        "China:zh-CN",
+        "China:en",
+        "China:zh-CN",
+        "China:en",
+        "China:zh-CN",
+      ]);
+    },
+  );
+
+  it.each(nonWatchlistScanModes)(
+    "$label scopes selected English per country",
+    ({ scanMode }) => {
+      const radarPlan = mixedCountryPlan(scanMode, ["en"]);
+      const queries = generateGlobalRadarQueries(radarPlan);
+
+      expect(radarPlan.languages).toEqual(["en"]);
+      expect(queries.map(({ sourceCountry, language }) =>
+        `${sourceCountry}:${language}`,
+      )).toEqual([
+        "Japan:en",
+        "Japan:en",
+        "Japan:en",
+        "China:en",
+        "China:zh-CN",
+        "China:en",
+        "China:zh-CN",
+        "China:en",
+        "China:zh-CN",
+      ]);
+    },
+  );
+
   it("generates stable ordered English and Chinese query families", () => {
     const first = generateGlobalRadarQueries(plan());
     const second = generateGlobalRadarQueries(plan());

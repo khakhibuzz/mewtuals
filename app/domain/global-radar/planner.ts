@@ -112,22 +112,6 @@ export function executableGlobalRadarLanguagesForCountry(
   return selectedLanguages.includes("en") ? ["en"] : [];
 }
 
-function normalizeChinaLanguages(
-  countries: readonly string[],
-  languages: readonly GlobalRadarLanguage[],
-): GlobalRadarLanguage[] {
-  const uniqueLanguages = unique(languages);
-  if (uniqueLanguages.length === 0) return [];
-  if (!countries.some(isChina)) return uniqueLanguages;
-  return [
-    "en",
-    "zh-CN",
-    ...uniqueLanguages.filter(
-      (language) => language !== "en" && language !== "zh-CN",
-    ),
-  ];
-}
-
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(canonicalJson).join(",")}]`;
@@ -235,10 +219,7 @@ function canonicalConfig(config: PublicGlobalRadarPlanningConfig) {
   ) {
     throw new Error("Global Radar language must be en or zh-CN.");
   }
-  const languages = normalizeChinaLanguages(
-    countries,
-    configuredLanguages as GlobalRadarLanguage[],
-  );
+  const languages = unique(configuredLanguages as GlobalRadarLanguage[]);
   if (countries.some((country) => !country)) {
     throw new Error("Global Radar countries must be non-empty strings.");
   }

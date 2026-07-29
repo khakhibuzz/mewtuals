@@ -126,7 +126,7 @@ describe("Global Radar planner", () => {
     expect(fewerSources.fingerprint).not.toBe(plan.fingerprint);
   });
 
-  it("normalizes China plans to paired English and Chinese families", () => {
+  it("preserves configured languages when China is selected", () => {
     const englishOnly = planGlobalRadarRun(
       plannerInput({
         config: { ...planningConfig, languages: ["en"] },
@@ -138,8 +138,8 @@ describe("Global Radar planner", () => {
       }),
     );
 
-    expect(englishOnly.languages).toEqual(["en", "zh-CN"]);
-    expect(chineseOnly.languages).toEqual(["en", "zh-CN"]);
+    expect(englishOnly.languages).toEqual(["en"]);
+    expect(chineseOnly.languages).toEqual(["zh-CN"]);
   });
 
   it("rejects languages without implemented query text", () => {
