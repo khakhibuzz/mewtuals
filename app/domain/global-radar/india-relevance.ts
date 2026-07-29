@@ -33,19 +33,152 @@ const exactEvidenceRelevanceTypes = new Set([
 const latinIndiaMarkerPattern =
   /(?:^|[^\p{L}\p{N}])(?:India|Indian|Indians)(?=$|[^\p{L}\p{N}])/iu;
 const originalLanguageIndiaMarkers = ["भारत", "भारतीय", "印度"] as const;
-const positiveActionPatterns = [
-  /\b(?:accept|accepts|accepted|accepting|apply|applies|applying|collect|collects|collecting|deploy|deploys|deploying|distribute|distributes|distributing|eligible|establish|established|expand|expands|expanding|has|have|install|installs|installing|invite|invites|inviting|launch|launches|launching|maintain|maintains|manufacture|manufactures|manufacturing|offer|offers|offering|operate|operates|operating|permit|permits|permitted|produce|produces|producing|provide|provides|providing|recruit|recruits|recruiting|seek|seeks|seeking|service|services|servicing|support|supports|supporting|use|uses|using|welcome|welcomes|welcoming)\b/iu,
-  /\b(?:can|may)\s+apply\b/iu,
+
+function escapeRegexTerm(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function termsPatternSource(terms: readonly string[]): string {
+  return [...terms]
+    .sort((left, right) => right.length - left.length)
+    .map(escapeRegexTerm)
+    .join("|");
+}
+
+function boundedEnglishTermsPattern(terms: readonly string[]): RegExp {
+  return new RegExp(`\\b(?:${termsPatternSource(terms)})\\b`, "iu");
+}
+
+const explicitIndiaEnglishSupportTerms = [
+  "accept",
+  "accepts",
+  "accepted",
+  "accepting",
+  "apply",
+  "applies",
+  "applying",
+  "collect",
+  "collects",
+  "collecting",
+  "deploy",
+  "deploys",
+  "deploying",
+  "distribute",
+  "distributes",
+  "distributing",
+  "eligible",
+  "establish",
+  "established",
+  "expand",
+  "expands",
+  "expanding",
+  "has",
+  "have",
+  "install",
+  "installs",
+  "installing",
+  "invite",
+  "invites",
+  "inviting",
+  "launch",
+  "launches",
+  "launching",
+  "maintain",
+  "maintains",
+  "manufacture",
+  "manufactures",
+  "manufacturing",
+  "offer",
+  "offers",
+  "offering",
+  "operate",
+  "operates",
+  "operating",
+  "permit",
+  "permits",
+  "permitted",
+  "produce",
+  "produces",
+  "producing",
+  "provide",
+  "provides",
+  "providing",
+  "recruit",
+  "recruits",
+  "recruiting",
+  "seek",
+  "seeks",
+  "seeking",
+  "service",
+  "services",
+  "servicing",
+  "support",
+  "supports",
+  "supporting",
+  "use",
+  "uses",
+  "using",
+  "welcome",
+  "welcomes",
+  "welcoming",
+] as const;
+const existingPresenceEnglishSupportTerms = [
+  "active",
+  "current",
+  "currently",
+  "established",
+  "existing",
+  "has",
+  "have",
+  "maintain",
+  "maintains",
+  "operate",
+  "operates",
+  "operating",
+  "present",
+] as const;
+const expansionEnglishSupportTerms = [
+  "enter",
+  "entering",
+  "expand",
+  "expands",
+  "expanding",
+  "expansion",
+  "grow",
+  "growing",
+  "launch",
+  "launches",
+  "launching",
+  "new",
+] as const;
+const englishSupportTermsByRelevanceType: Readonly<
+  Record<ExactIndiaRelevanceType, readonly string[]>
+> = Object.freeze({
+  explicit_India: explicitIndiaEnglishSupportTerms,
+  existing_India_presence: existingPresenceEnglishSupportTerms,
+  India_expansion: expansionEnglishSupportTerms,
+});
+const englishSupportPatternsByRelevanceType: Readonly<
+  Record<ExactIndiaRelevanceType, RegExp>
+> = Object.freeze({
+  explicit_India: boundedEnglishTermsPattern(explicitIndiaEnglishSupportTerms),
+  existing_India_presence: boundedEnglishTermsPattern(
+    existingPresenceEnglishSupportTerms,
+  ),
+  India_expansion: boundedEnglishTermsPattern(expansionEnglishSupportTerms),
+});
+const explicitIndiaSupportPatterns = [
+  englishSupportPatternsByRelevanceType.explicit_India,
   /स्वीकार|तलाश|भर्ती|चालू|संचालित|विस्तार|प्रदान|संग्रह|संकलन|स्थापना|सेवा|विनिर्माण/u,
   /接受|寻找|招募|运营|设有|扩大|扩张|拓展|提供|收集|采集|安装|部署|服务|维护|制造|分销/u,
 ] as const;
 const existingPresencePatterns = [
-  /\b(?:active|current|currently|established|existing|has|have|maintain|maintains|operate|operates|operating|present)\b/iu,
+  englishSupportPatternsByRelevanceType.existing_India_presence,
   /वर्तमान|चालू|संचालित|मौजूद|स्थापित/u,
   /目前|现有|已有|运营|设有|已建立|在印度/u,
 ] as const;
 const expansionPatterns = [
-  /\b(?:enter|entering|expand|expands|expanding|expansion|grow|growing|launch|launches|launching|new)\b/iu,
+  englishSupportPatternsByRelevanceType.India_expansion,
   /विस्तार|प्रवेश|शुरू|नया/u,
   /扩大|扩张|拓展|进入|新增|启动|正在/u,
 ] as const;
@@ -60,13 +193,39 @@ const opennessActionPatterns = [
   /\b(?:can|may)\s+apply\b/iu,
   /开放|接受|欢迎|可申请|面向/u,
 ] as const;
-const englishNegatedRelevantActionPatterns = [
-  /\b(?:are|can|could|did|do|does|had|has|have|is|must|shall|should|was|were|will|would)\s+not\s+(?!only\b)(?:currently\s+)?(?:accept|accepted|accepting|active|apply|available|collect|deploy|distribute|eligible|establish|expand|expanding|have|install|invite|launch|maintain|manufacture|offer|open|operate|operating|permit|permitted|present|produce|provide|recruit|seek|service|support|use|welcome)\b/iu,
-  /\b(?:cannot|never)\s+(?:accept|apply|collect|deploy|distribute|establish|expand|have|install|invite|launch|maintain|manufacture|offer|open|operate|permit|produce|provide|recruit|seek|service|support|use|welcome)\b/iu,
-  /\bnot\s+(?!only\b)(?:accepted|accepting|active|available|eligible|established|expanding|open|operating|permitted|present|welcome)\b/iu,
-  /\b(?:decided\s+)?against\s+(?:accepting|collecting|deploying|distributing|establishing|expanding|installing|inviting|launching|maintaining|manufacturing|offering|operating|permitting|producing|providing|recruiting|seeking|servicing|supporting|using|welcoming)\b/iu,
-  /\bno\s+longer\s+(?:accept|collect|deploy|distribute|establish|expand|have|install|invite|launch|maintain|manufacture|offer|open|operate|permit|produce|provide|recruit|seek|service|support|use|welcome)\b/iu,
-] as const;
+
+function negatedEnglishSupportPatterns(
+  terms: readonly string[],
+): readonly RegExp[] {
+  const termSource = termsPatternSource(terms);
+  return Object.freeze([
+    new RegExp(
+      `\\b(?:are|can|could|did|do|does|had|has|have|is|must|shall|should|was|were|will|would)\\s+not\\s+(?!only\\b)(?:currently\\s+)?(?:${termSource})\\b`,
+      "iu",
+    ),
+    new RegExp(`\\b(?:cannot|never)\\s+(?:${termSource})\\b`, "iu"),
+    new RegExp(`\\bnot\\s+(?!only\\b)(?:${termSource})\\b`, "iu"),
+    new RegExp(
+      `\\b(?:decided\\s+)?against\\s+(?:${termSource})\\b`,
+      "iu",
+    ),
+    new RegExp(`\\bno\\s+longer\\s+(?:${termSource})\\b`, "iu"),
+  ]);
+}
+
+const englishNegatedSupportPatternsByRelevanceType: Readonly<
+  Record<ExactIndiaRelevanceType, readonly RegExp[]>
+> = Object.freeze({
+  explicit_India: negatedEnglishSupportPatterns(
+    englishSupportTermsByRelevanceType.explicit_India,
+  ),
+  existing_India_presence: negatedEnglishSupportPatterns(
+    englishSupportTermsByRelevanceType.existing_India_presence,
+  ),
+  India_expansion: negatedEnglishSupportPatterns(
+    englishSupportTermsByRelevanceType.India_expansion,
+  ),
+});
 const indiaSpecificExclusionPatterns = [
   /\b(?:against|except|excluding|other\s+than|outside)\s+(?:India|Indian|Indians)\b/iu,
   /\b(?:India|Indian|Indians)\b.{0,80}\b(?:banned|excluded|ineligible|prohibited|unavailable|unwelcome)\b/iu,
@@ -92,24 +251,138 @@ const globalScopeOnlyRestrictionPatterns = [
   /仅限(?:国内|本国)|(?:国内|本国)限定/u,
 ] as const;
 const globalAccessRestrictionContinuationPatterns = [
-  /^(?:but\s+|however\s+)?(?:except|excluding|limited\s+to|other\s+than|restricted\s+to)\b/iu,
+  /^(?:but\s+|however\s+)?(?:except|excluding|limited\s+to|only|other\s+than|restricted\s+to)\b/iu,
   /^(?:但|但是|不过)?(?:仅限(?:于)?|只限(?:于)?|限于|限制(?:为|于|在|到)|排除|不包括)/u,
 ] as const;
 const adverbialOnlyScopeRestrictionPatterns = [
   /\b(?:except|excluding|from|limited|other\s+than|restricted)\b/iu,
 ] as const;
+const englishGlobalAccessActorTerms = [
+  "applicant",
+  "applicants",
+  "businesses",
+  "company",
+  "companies",
+  "counterparty",
+  "counterparties",
+  "entity",
+  "entities",
+  "laboratory",
+  "laboratories",
+  "organisation",
+  "organisations",
+  "organization",
+  "organizations",
+  "participant",
+  "participants",
+  "research institution",
+  "research institutions",
+  "research institute",
+  "research institutes",
+  "research lab",
+  "research labs",
+  "researcher",
+  "researchers",
+  "supplier",
+  "suppliers",
+  "university",
+  "universities",
+  "vendor",
+  "vendors",
+] as const;
+const englishEligibilityQualifierTerms = [
+  "accredited",
+  "approved",
+  "authorized",
+  "authorised",
+  "eligible",
+  "licensed",
+  "prequalified",
+  "qualified",
+  "registered",
+  "verified",
+] as const;
+const englishEligibilityExclusionQualifierTerms = [
+  "ineligible",
+  "unaccredited",
+  "unapproved",
+  "unauthorized",
+  "unauthorised",
+  "unlicensed",
+  "unqualified",
+  "unregistered",
+  "unverified",
+] as const;
+const chineseGlobalAccessActorTerms = [
+  "公司",
+  "企业",
+  "供应商",
+  "供货商",
+  "厂商",
+  "申请人",
+  "申请者",
+  "研究人员",
+  "参与者",
+  "高校",
+  "大学",
+  "研究机构",
+  "研究所",
+  "实验室",
+] as const;
+const chineseEligibilityQualifierTerms = [
+  "注册",
+  "已注册",
+  "合格",
+  "获批",
+  "经批准",
+  "认可",
+  "认证",
+  "核准",
+  "符合资格",
+] as const;
+const chineseEligibilityExclusionQualifierTerms = [
+  "未注册",
+  "不合格",
+  "未获批",
+  "未经批准",
+  "不符合资格",
+] as const;
+const englishGlobalAccessActorSource = termsPatternSource(
+  englishGlobalAccessActorTerms,
+);
+const chineseGlobalAccessActorSource = termsPatternSource(
+  chineseGlobalAccessActorTerms,
+);
 const globalAccessPolicySubjectPatterns = [
-  /\b(?:applicants?|applications?|companies|company|counterparties|counterparty|eligibility|eligible|organisations?|organizations?|suppliers?|vendors?)\b/iu,
-  /申请|申请人|申请者|资格|公司|企业|供应商|供货商|厂商|合作方/u,
+  boundedEnglishTermsPattern([
+    ...englishGlobalAccessActorTerms,
+    "application",
+    "applications",
+    "eligibility",
+    "eligible",
+  ]),
+  new RegExp(`(?:${chineseGlobalAccessActorSource}|申请|资格|合作方)`, "u"),
 ] as const;
 const allowedEnglishEligibilityScopeTargetPattern =
-  /^(?:only\s+)?(?:accredited|approved|authori[sz]ed|eligible|licensed|prequalified|qualified|registered|verified)\s+(?:applicants?|businesses|companies|company|entities|organisations?|organizations?|suppliers?|vendors?)$/iu;
+  new RegExp(
+    `^(?:only\\s+)?(?:(?:${termsPatternSource(englishEligibilityQualifierTerms)})\\s+)?(?:${englishGlobalAccessActorSource})$`,
+    "iu",
+  );
 const allowedEnglishEligibilityExclusionTargetPattern =
-  /^(?:ineligible|unaccredited|unapproved|unauthori[sz]ed|unlicensed|unqualified|unregistered|unverified)\s+(?:applicants?|businesses|companies|company|entities|organisations?|organizations?|suppliers?|vendors?)$/iu;
+  new RegExp(
+    `^(?:${termsPatternSource(englishEligibilityExclusionQualifierTerms)})\\s+(?:${englishGlobalAccessActorSource})$`,
+    "iu",
+  );
 const allowedChineseEligibilityScopeTargetPattern =
-  /^(?:(?:已)?注册|合格|获批|经批准|认可|认证|核准|符合资格)的?(?:公司|企业|供应商|供货商|厂商|申请人|申请者)(?:申请|参与)?$/u;
+  new RegExp(
+    `^(?:(?:${termsPatternSource(chineseEligibilityQualifierTerms)})的?)?(?:${chineseGlobalAccessActorSource})(?:申请|参与)?$`,
+    "u",
+  );
 const allowedChineseEligibilityExclusionTargetPattern =
-  /^(?:未注册|不合格|未获批|未经批准|不符合资格)的?(?:公司|企业|供应商|供货商|厂商|申请人|申请者)$/u;
+  new RegExp(
+    `^(?:${termsPatternSource(chineseEligibilityExclusionQualifierTerms)})的?(?:${chineseGlobalAccessActorSource})$`,
+    "u",
+  );
 const factSupportPatterns: Readonly<
   Record<IndiaEvidenceFactKind, readonly RegExp[]>
 > = {
@@ -429,7 +702,7 @@ function supportsRelevanceType(
   if (relevanceType === "India_expansion") {
     return matchesAny(clause, expansionPatterns);
   }
-  return matchesAny(clause, positiveActionPatterns);
+  return matchesAny(clause, explicitIndiaSupportPatterns);
 }
 
 function isNegativeExactIndiaClause(
@@ -451,7 +724,10 @@ function isNegativeExactIndiaClause(
     return true;
   }
   if (
-    matchesAny(clause, englishNegatedRelevantActionPatterns) ||
+    matchesAny(
+      clause,
+      englishNegatedSupportPatternsByRelevanceType[relevanceType],
+    ) ||
     matchesAny(clause, phraseLevelRelevantNegativePatterns)
   ) {
     return true;
