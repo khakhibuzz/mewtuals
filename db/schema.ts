@@ -754,7 +754,7 @@ export const candidateRelationships = pgTable(
       name: "candidate_relationships_target_candidate_fk",
       columns: [table.targetCandidateId],
       foreignColumns: [discoveryCandidates.id],
-    }).onDelete("no action"),
+    }).onDelete("cascade"),
     uniqueIndex("candidate_relationships_evidence_key_idx").on(
       table.evidenceKey,
     ),

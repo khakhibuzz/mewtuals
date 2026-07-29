@@ -595,7 +595,7 @@ describe("Mewtuals PostgreSQL schema", () => {
       candidateRelationships,
     ).foreignKeys;
     expect(sourceForeignKey?.onDelete).toBe("cascade");
-    expect(targetForeignKey?.onDelete).toBe("no action");
+    expect(targetForeignKey?.onDelete).toBe("cascade");
     expect(
       hasUniqueIndex(
         candidateRelationships,

@@ -936,7 +936,7 @@ async function assertEcosystemIntelligenceMigration(sql) {
       candidate_relationships_source_candidate_fk:
         "FOREIGN KEY (source_candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
       candidate_relationships_target_candidate_fk:
-        "FOREIGN KEY (target_candidate_id) REFERENCES discovery_candidates(id)",
+        "FOREIGN KEY (target_candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
     },
     "ecosystem intelligence foreign key",
   );
@@ -1450,6 +1450,49 @@ async function assertEcosystemConstraintBehavior(sql, candidateId) {
         'both-targets-evidence-key'
       )
     `,
+  );
+  const [resolvedRelationship] = await sql`
+    insert into candidate_relationships (
+      source_candidate_id,
+      target_candidate_id,
+      relationship_type,
+      evidence_url,
+      confidence,
+      evidence_key
+    ) values (
+      ${candidateId},
+      ${resolvedTarget.id},
+      'supplies_to',
+      'https://migration-robotics.example.test/resolved-target',
+      90,
+      'resolved-target-evidence-key'
+    )
+    returning id
+  `;
+  await sql`
+    delete from discovery_candidates
+    where id = ${resolvedTarget.id}
+  `;
+  const [targetCascadeState] = await sql`
+    select
+      exists(
+        select 1 from discovery_candidates where id = ${candidateId}
+      ) as "sourceCandidateExists",
+      exists(
+        select 1 from discovery_candidates where id = ${resolvedTarget.id}
+      ) as "targetCandidateExists",
+      exists(
+        select 1 from candidate_relationships where id = ${resolvedRelationship.id}
+      ) as "resolvedRelationshipExists"
+  `;
+  assert(
+    JSON.stringify(targetCascadeState) ===
+      JSON.stringify({
+        sourceCandidateExists: true,
+        targetCandidateExists: false,
+        resolvedRelationshipExists: false,
+      }),
+    `Expected target deletion to cascade only the resolved relationship, found ${JSON.stringify(targetCascadeState)}.`,
   );
   await assertConstraintFailure(
     "Invalid relationship confidence",
