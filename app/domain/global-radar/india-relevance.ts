@@ -326,9 +326,27 @@ const indiaSpecificExclusionPatterns = [
 const phraseLevelRelevantNegativePatterns = [
   /不(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放|欢迎)|未(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放)/u,
 ] as const;
+const cancellationSubjectSource =
+  "(?:(?:distribution|expansion)\\s+(?:initiative|plan|proposal|project|programme|program)|expansion|plans?)";
+const cancellationAdverbSource =
+  "(?:already|formally|later|now|officially|since|subsequently)";
 const abandonedPlanContinuationPatterns = [
-  /^(?:(?:we|they|the\s+(?:company|organisation|organization))\s+)?(?:(?:later|subsequently)\s+)?(?:(?:had|has|have)\s+)?(?:abandoned|cancelled|canceled|withdrew|withdrawn)\s+(?:(?:the|this|that|our|their|those)\s+)?(?:expansion|initiative|plan|plans|proposal)\b/iu,
-  /^(?:(?:the|this|that|our|their|those)\s+)?(?:expansion|initiative|plan|plans|proposal)\s+(?:(?:is|was)\s+|(?:had|has)\s+been\s+)(?:abandoned|cancelled|canceled|withdrawn)\b/iu,
+  new RegExp(
+    `^(?:(?:we|they|the\\s+(?:company|organisation|organization))\\s+)?` +
+      `(?:${cancellationAdverbSource}\\s+)?` +
+      `(?:(?:had|has|have)\\s+(?:${cancellationAdverbSource}\\s+)?)?` +
+      `(?:abandoned|cancelled|canceled|withdrew|withdrawn)\\s+` +
+      `(?:(?:the|this|that|our|their|those)\\s+)?${cancellationSubjectSource}\\b`,
+    "iu",
+  ),
+  new RegExp(
+    `^(?:(?:the|this|that|our|their|those)\\s+)?${cancellationSubjectSource}\\s+` +
+      `(?:(?:is|was)\\s+(?:${cancellationAdverbSource}\\s+)?|` +
+      `(?:had|has)\\s+(?:${cancellationAdverbSource}\\s+)?been\\s+` +
+      `(?:${cancellationAdverbSource}\\s+)?)` +
+      `(?:abandoned|cancelled|canceled|withdrawn)\\b`,
+    "iu",
+  ),
 ] as const;
 const negatedOpennessPatterns = [
   ...negatedEnglishSupportPatterns(englishOpennessSupportTerms),
@@ -476,7 +494,8 @@ const leadingChannelAccessClaimPattern = new RegExp(
   "giu",
 );
 const trailingChannelAccessClaimPattern = new RegExp(
-  `\\b${englishAccessClaimNounSource}\\s+(?:by|through|via)\\s+(?:(?:a|an|the)\\s+)?${englishAccessChannelSource}\\b`,
+  `\\b${englishAccessClaimNounSource}\\s+(?:by|through|via)\\s+` +
+    `(?:(?:a|an|the)\\s+)?${englishAccessChannelSource}\\b`,
   "giu",
 );
 const englishAccessClaimNounPattern = new RegExp(
@@ -708,7 +727,11 @@ function hasUnqualifiedEnglishAccessClaim(value: string): boolean {
   const withoutChannelFormats = value
     .replace(leadingChannelAccessClaimPattern, " ")
     .replace(trailingChannelAccessClaimPattern, " ");
-  return englishAccessClaimNounPattern.test(withoutChannelFormats);
+  const removedChannelAccessClaim = withoutChannelFormats !== value;
+  return (
+    englishAccessClaimNounPattern.test(withoutChannelFormats) ||
+    (removedChannelAccessClaim && hasIndiaMarker(withoutChannelFormats))
+  );
 }
 
 function concernsGlobalAccessPolicy(unit: string): boolean {
