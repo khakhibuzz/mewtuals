@@ -492,10 +492,14 @@ type CoreProjection = {
   status: string;
   state: string | null;
   city: string | null;
+  domains: string[];
+  subtypes: string[];
   role: string | null;
   stage: string | null;
   layer: string | null;
   capability: string | null;
+  componentCategories: string[];
+  verticals: string[];
   activeSignal: string | null;
   contact: "available" | "missing";
   evidenceBand: string;
@@ -506,28 +510,38 @@ type CoreProjection = {
 function coreProjection(candidateId: string): CoreProjection {
   if (candidateId === fixture.componentMaker.id) return {
     id: candidateId, type: "company", status: "shortlisted", state: "karnataka", city: "bengaluru",
+    domains: ["hardware", "robotics"], subtypes: ["manufacturer"],
     role: "component_supplier", stage: "component_manufacturing", layer: "mechanical_and_actuation",
-    capability: "motion_control", activeSignal: "product_launch", contact: "available",
+    capability: "motion_control", componentCategories: ["actuators"], verticals: ["industrial_robotics"],
+    activeSignal: "product_launch", contact: "available",
     evidenceBand: "strong", freshness: "current", recent: true,
   };
   if (candidateId === fixture.unknownCompany.id) return {
     id: candidateId, type: "company", status: "discovered", state: null, city: null,
+    domains: [], subtypes: [],
     role: null, stage: null, layer: null, capability: null, activeSignal: null, contact: "missing",
+    componentCategories: [], verticals: [],
     evidenceBand: "limited", freshness: "stale", recent: false,
   };
   if (candidateId === fixture.rejectedCompany.id) return {
     id: candidateId, type: "company", status: "rejected", state: "delhi", city: "delhi",
+    domains: ["electronics"], subtypes: [],
     role: null, stage: null, layer: "electronics_and_compute", capability: null, activeSignal: null,
+    componentCategories: ["compute_modules"], verticals: [],
     contact: "available", evidenceBand: "partial", freshness: "stale", recent: false,
   };
   if (candidateId === fixture.creatorEnabler.id) return {
     id: candidateId, type: "creator", status: "queued_for_profile", state: null, city: null,
+    domains: [], subtypes: ["ecosystem_enabler"],
     role: "research_enabler", stage: "research_and_ecosystem", layer: null, capability: null,
+    componentCategories: [], verticals: [],
     activeSignal: null, contact: "available", evidenceBand: "strong", freshness: "stale", recent: false,
   };
   if (candidateId === fixture.laterGeneralCompany.id) return {
     id: candidateId, type: "company", status: "queued_for_profile", state: null, city: null,
+    domains: ["robotics"], subtypes: [],
     role: "system_integrator", stage: "system_integration", layer: null, capability: null,
+    componentCategories: [], verticals: [],
     activeSignal: "partnership", contact: "available", evidenceBand: "partial", freshness: "current", recent: true,
   };
   throw new Error(`No core projection fixture exists for ${candidateId}.`);
@@ -597,19 +611,62 @@ function assertCandidateLevelSectionProjection(
     candidates.map(({ state, role }) => [state ?? "unknown", role ?? "unknown"]),
   ));
 
+  const total = candidates.length;
+  const knownRoles = candidates.filter(({ role }) => role !== null).length;
+  const resolvedStates = candidates.filter(({ state }) => state !== null);
+  const topStateCount = Math.max(0, ...keyCounts(resolvedStates.map(({ state }) => state)).map((value) =>
+    Number(value.slice(value.lastIndexOf(":") + 1))));
+  const missingLayers = candidates.filter(({ layer }) => layer === null).length;
+  const publicContacts = candidates.filter(({ contact }) => contact === "available").length;
+  const dependencySignals = candidates.filter(({ activeSignal }) => activeSignal === "partnership").length;
+  const staleEvidence = candidates.filter(({ freshness }) => freshness === "stale").length;
+  const expectedInsights: Array<{ ruleKey: string; numerator: number; denominator: number }> = [];
+  if (total > 0 && knownRoles * 100 < total * 40) {
+    expectedInsights.push({ ruleKey: "representation_below_target", numerator: knownRoles, denominator: total });
+  }
+  if (resolvedStates.length >= 5 && topStateCount * 100 >= resolvedStates.length * 60) {
+    expectedInsights.push({ ruleKey: "geographic_concentration", numerator: topStateCount, denominator: resolvedStates.length });
+  }
+  if (missingLayers >= 3 && total > 0 && missingLayers * 100 >= total * 20) {
+    expectedInsights.push({ ruleKey: "missing_data", numerator: missingLayers, denominator: total });
+  }
+  if (total >= 4 && publicContacts * 100 < total * 35) {
+    expectedInsights.push({ ruleKey: "low_public_contact_coverage", numerator: publicContacts, denominator: total });
+  }
+  if (dependencySignals >= 3) {
+    expectedInsights.push({ ruleKey: "dependency_related_signals", numerator: dependencySignals, denominator: dependencySignals });
+  }
+  if (total > 0 && staleEvidence * 100 >= total * 25) {
+    expectedInsights.push({ ruleKey: "stale_evidence", numerator: staleEvidence, denominator: total });
+  }
+  expect(snapshot.insights.items.map(({ ruleKey, numerator, denominator }) => ({
+    ruleKey,
+    numerator,
+    denominator,
+  }))).toEqual(expectedInsights);
   for (const insight of snapshot.insights.items) {
-    const expectedMeasure = insight.ruleKey === "representation_below_target"
-      ? [candidates.filter(({ role }) => role !== null).length, candidates.length]
-      : insight.ruleKey === "geographic_concentration"
-        ? [Math.max(0, ...snapshot.geography.states.map(({ count }) => count)), candidates.filter(({ state }) => state !== null).length]
-        : insight.ruleKey === "missing_data"
-          ? [candidates.filter(({ layer }) => layer === null).length, candidates.length]
-          : insight.ruleKey === "low_public_contact_coverage"
-            ? [candidates.filter(({ contact }) => contact === "available").length, candidates.length]
-            : insight.ruleKey === "dependency_related_signals"
-              ? [candidates.filter(({ activeSignal }) => activeSignal === "partnership").length, candidates.filter(({ activeSignal }) => activeSignal === "partnership").length]
-              : [candidates.filter(({ freshness }) => freshness === "stale").length, candidates.length];
-    expect([insight.numerator, insight.denominator], insight.ruleKey).toEqual(expectedMeasure);
+    expect(insight.percentage).toBe(Math.round((insight.numerator / insight.denominator) * 100));
+    expect(insight.supportingFilters).toMatchObject({
+      analysisVersion: snapshot.filters.analysisVersion,
+      participantType: snapshot.filters.participantType,
+      includeEnablers: snapshot.filters.includeEnablers,
+      reviewStatuses: snapshot.filters.reviewStatuses,
+      minimumDiscoveryConfidence: snapshot.filters.minimumDiscoveryConfidence,
+      discoveredAfter: snapshot.filters.discoveredAfter,
+      discoveredBefore: snapshot.filters.discoveredBefore,
+      page: 1,
+    });
+    if (insight.ruleKey === "representation_below_target") {
+      expect(insight.supportingFilters.ecosystemRoles).toEqual(["unknown"]);
+    } else if (insight.ruleKey === "missing_data") {
+      expect(insight.supportingFilters.technicalLayers).toEqual(["unknown"]);
+    } else if (insight.ruleKey === "low_public_contact_coverage") {
+      expect(insight.supportingFilters.publicContactAvailability).toBe("missing");
+    } else if (insight.ruleKey === "dependency_related_signals") {
+      expect(insight.supportingFilters.activeSignalTypes).toEqual(["partnership"]);
+    } else if (insight.ruleKey === "stale_evidence") {
+      expect(insight.supportingFilters.evidenceFreshness).toBe("stale");
+    }
   }
 
   const recentCandidates = candidates.filter(({ recent }) => recent);
@@ -638,10 +695,16 @@ function assertCandidateLevelSectionProjection(
   expect(positiveOptionCounts(snapshot.filterOptions.reviewStatuses)).toEqual(keyCounts(candidates.map(({ status }) => status)));
   expect(positiveOptionCounts(snapshot.filterOptions.headquartersStates)).toEqual(keyCounts(candidates.map(({ state }) => state)));
   expect(positiveOptionCounts(snapshot.filterOptions.headquartersCities)).toEqual(keyCounts(candidates.map(({ city }) => city)));
+  const multiValueFacetCounts = (facet: "domains" | "subtypes" | "componentCategories" | "verticals") =>
+    keyCounts(candidates.flatMap((candidate) => candidate[facet].length > 0 ? candidate[facet] : [null]));
+  expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.ecosystem_domain)).toEqual(multiValueFacetCounts("domains"));
+  expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.organisation_subtype)).toEqual(multiValueFacetCounts("subtypes"));
   expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.ecosystem_role)).toEqual(keyCounts(candidates.map(({ role }) => role)));
   expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.business_stage)).toEqual(keyCounts(candidates.map(({ stage }) => stage)));
   expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.technical_layer)).toEqual(keyCounts(candidates.map(({ layer }) => layer)));
   expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.capability)).toEqual(keyCounts(candidates.map(({ capability }) => capability)));
+  expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.component_category)).toEqual(multiValueFacetCounts("componentCategories"));
+  expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.robotics_vertical)).toEqual(multiValueFacetCounts("verticals"));
   expect(positiveOptionCounts(snapshot.filterOptions.activeSignalTypes)).toEqual(keyCounts(candidates.map(({ activeSignal }) => activeSignal)));
   expect(positiveOptionCounts(snapshot.filterOptions.publicContacts)).toEqual(keyCounts(candidates.map(({ contact }) => contact)));
   expect(positiveOptionCounts(snapshot.filterOptions.evidenceCoverageBands)).toEqual(keyCounts(candidates.map(({ evidenceBand }) => evidenceBand)));
