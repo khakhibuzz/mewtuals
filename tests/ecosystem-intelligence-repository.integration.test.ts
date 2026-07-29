@@ -1017,6 +1017,218 @@ describe("Ecosystem Intelligence analytical repository", () => {
     }
   });
 
+  it("derives active signal filters, coverage, momentum, ledger, and detail from exact public URLs", async () => {
+    const runId = await createRun("signal-url-truth", "robotics_hardware_india", recent);
+    const validCandidate = await createCandidate({
+      suffix: "signal-url-valid",
+      runId,
+      name: "Signal URL Valid Candidate",
+      status: "rejected",
+      score: 97,
+      discoveredAt: recent,
+      researchAt: recent,
+      sourceAt: recent,
+    });
+    const invalidOnlyCandidate = await createCandidate({
+      suffix: "signal-url-invalid-only",
+      runId,
+      name: "Signal URL Invalid Only Candidate",
+      status: "rejected",
+      score: 97,
+      discoveredAt: recent,
+      researchAt: recent,
+      sourceAt: recent,
+    });
+    const rawValidSourceUrl = "https://www.Example.COM:443/signal-proof/?utm_source=test&b=2&a=1#fragment";
+    const [validSignal] = await database.insert(candidatePublicSignals).values({
+      candidateId: validCandidate.id,
+      signalType: "partnership",
+      title: "Exact public signal evidence",
+      occurredAt: recent,
+      sourceUrl: rawValidSourceUrl,
+      confidence: 95,
+      evidenceKey: `signal-url-truth-valid-${testId}`,
+      createdAt: recent,
+      updatedAt: recent,
+    }).returning({ id: candidatePublicSignals.id });
+    if (!validSignal) throw new Error("Valid signal fixture was not inserted.");
+    await database.insert(candidatePublicSignals).values([
+      {
+        candidateId: validCandidate.id,
+        signalType: "funding",
+        title: "Credential-bearing signal evidence",
+        occurredAt: recent,
+        sourceUrl: "https://user:secret@example.com/private-signal",
+        confidence: 90,
+        evidenceKey: `signal-url-truth-credentials-${testId}`,
+        createdAt: recent,
+        updatedAt: recent,
+      },
+      {
+        candidateId: validCandidate.id,
+        signalType: "facility_expansion",
+        title: "Internal signal evidence",
+        occurredAt: recent,
+        sourceUrl: "http://service.internal/private-signal",
+        confidence: 90,
+        evidenceKey: `signal-url-truth-internal-${testId}`,
+        createdAt: recent,
+        updatedAt: recent,
+      },
+      {
+        candidateId: validCandidate.id,
+        signalType: "certification",
+        title: "Malformed signal evidence",
+        occurredAt: recent,
+        sourceUrl: "https://[not-an-ip]/private-signal",
+        confidence: 90,
+        evidenceKey: `signal-url-truth-malformed-${testId}`,
+        createdAt: recent,
+        updatedAt: recent,
+      },
+      {
+        candidateId: invalidOnlyCandidate.id,
+        signalType: "hiring",
+        title: "Loopback signal evidence",
+        occurredAt: recent,
+        sourceUrl: "http://0x7f000001/private-signal",
+        confidence: 90,
+        evidenceKey: `signal-url-truth-loopback-${testId}`,
+        createdAt: recent,
+        updatedAt: recent,
+      },
+    ]);
+    const baseFilters = {
+      reviewStatus: "rejected",
+      minimumDiscoveryConfidence: "97",
+      pageSize: "100",
+    };
+
+    try {
+      const snapshot = await repository.getSnapshot(parseEcosystemFilters(baseFilters), now);
+      assertSharedPopulation(snapshot, [validCandidate.id, invalidOnlyCandidate.id]);
+      expect(snapshot.summary.activeSignals).toEqual({
+        count: 1,
+        organisations: { numerator: 1, denominator: 2, percentage: 50 },
+      });
+      expect(snapshot.dataQuality.organisationsWithActiveSignal)
+        .toEqual({ numerator: 1, denominator: 2, percentage: 50 });
+      expect(snapshot.momentum).toMatchObject({
+        ready: false,
+        activeSignalCount: 1,
+        organisationCount: 1,
+        categories: [],
+        companies: [],
+        signals: [],
+      });
+      expect(new Map(snapshot.ledger.items.map(({ id, activeSignalCount }) => [id, activeSignalCount])))
+        .toEqual(new Map([[validCandidate.id, 1], [invalidOnlyCandidate.id, 0]]));
+      expect(positiveOptionCounts(snapshot.filterOptions.activeSignalTypes)).toEqual([
+        "partnership:1",
+        "unknown:1",
+      ]);
+
+      const partnership = await repository.getSnapshot(parseEcosystemFilters({
+        ...baseFilters,
+        activeSignalType: "partnership",
+      }), now);
+      assertSharedPopulation(partnership, [validCandidate.id]);
+      const unknown = await repository.getSnapshot(parseEcosystemFilters({
+        ...baseFilters,
+        activeSignalType: "unknown",
+      }), now);
+      assertSharedPopulation(unknown, [invalidOnlyCandidate.id]);
+
+      const validDetail = await repository.getCandidateDetail(validCandidate.id, now);
+      expect(validDetail?.signals).toEqual([
+        expect.objectContaining({
+          id: validSignal.id,
+          sourceUrl: normalizePublicDiscoveryUrl(rawValidSourceUrl),
+        }),
+      ]);
+      const invalidDetail = await repository.getCandidateDetail(invalidOnlyCandidate.id, now);
+      expect(invalidDetail?.signals).toEqual([]);
+    } finally {
+      await database.delete(discoveryCandidates).where(
+        inArray(discoveryCandidates.id, [validCandidate.id, invalidOnlyCandidate.id]),
+      );
+      await database.delete(discoveryRuns).where(eq(discoveryRuns.id, runId));
+    }
+  });
+
+  it("caps equal-degree disconnected relationship pairs without isolated graph nodes", async () => {
+    const runId = await createRun("graph-disconnected-pairs", "robotics_hardware_india", recent);
+    const pairs: Array<{ source: FixtureCandidate; target: FixtureCandidate }> = [];
+    for (let index = 0; index < 40; index += 1) {
+      const suffix = index.toString().padStart(2, "0");
+      const source = await createCandidate({
+        suffix: `graph-pair-source-${suffix}`,
+        runId,
+        name: `AA Graph Source ${suffix}`,
+        status: "rejected",
+        score: 94,
+        discoveredAt: recent,
+        researchAt: recent,
+        sourceAt: recent,
+      });
+      const target = await createCandidate({
+        suffix: `graph-pair-target-${suffix}`,
+        runId,
+        name: `ZZ Graph Target ${suffix}`,
+        status: "rejected",
+        score: 94,
+        discoveredAt: recent,
+        researchAt: recent,
+        sourceAt: recent,
+      });
+      pairs.push({ source, target });
+    }
+    await database.insert(candidateRelationships).values(pairs.map(({ source, target }, index) => ({
+      sourceCandidateId: source.id,
+      targetCandidateId: target.id,
+      relationshipType: "integrates_with" as const,
+      evidenceUrl: `${source.canonicalUrl}/pair-evidence`,
+      confidence: 90,
+      observedAt: recent,
+      evidenceKey: `graph-disconnected-pair-${testId}-${index}`,
+      createdAt: recent,
+      updatedAt: recent,
+    })));
+    const filters = parseEcosystemFilters({
+      reviewStatus: "rejected",
+      minimumDiscoveryConfidence: "94",
+      pageSize: "100",
+    });
+
+    try {
+      const first = await repository.getSnapshot(filters, now);
+      expect(first.relationships).toMatchObject({
+        ready: true,
+        evidencedEdgeCount: 40,
+        candidateCount: 80,
+      });
+      expect(first.relationships.edges.length).toBeGreaterThan(0);
+      expect(first.relationships.edges.length).toBeLessThanOrEqual(60);
+      expect(first.relationships.nodes.length).toBeLessThanOrEqual(40);
+      const endpoints = new Set(first.relationships.edges.flatMap(({ sourceCandidateId, targetCandidateId }) =>
+        [sourceCandidateId, targetCandidateId]));
+      expect(new Set(first.relationships.nodes.map(({ id }) => id))).toEqual(endpoints);
+      expect(first.relationships.nodes).toHaveLength(first.relationships.edges.length * 2);
+
+      const second = await repository.getSnapshot(filters, now);
+      expect(second.relationships.nodes.map(({ id }) => id))
+        .toEqual(first.relationships.nodes.map(({ id }) => id));
+      expect(second.relationships.edges.map(({ id }) => id))
+        .toEqual(first.relationships.edges.map(({ id }) => id));
+    } finally {
+      await database.delete(discoveryCandidates).where(inArray(
+        discoveryCandidates.id,
+        pairs.flatMap(({ source, target }) => [source.id, target.id]),
+      ));
+      await database.delete(discoveryRuns).where(eq(discoveryRuns.id, runId));
+    }
+  });
+
   it("uses durable Physical AI research membership and one shared population for every supported filter", async () => {
     const defaultIds = [
       fixture.componentMaker.id,

@@ -112,6 +112,7 @@ type PublicRelationshipEvidenceRow = {
 
 export async function loadValidPublicRelationshipEvidenceIds(
   transaction: ReadTransaction,
+  candidateId?: string,
 ): Promise<string[]> {
   // Relationship evidence uses the same exact domain validator as candidate
   // contact URLs. This uncapped preliminary read deliberately selects only the
@@ -121,6 +122,8 @@ export async function loadValidPublicRelationshipEvidenceIds(
       relationship.id as "id",
       relationship.evidence_url as "evidenceUrl"
     from ${candidateRelationships} relationship
+    ${candidateId ? sql`where relationship.source_candidate_id = ${candidateId}
+      or relationship.target_candidate_id = ${candidateId}` : sql``}
     order by relationship.id
   `);
   return rows
@@ -128,9 +131,35 @@ export async function loadValidPublicRelationshipEvidenceIds(
     .map(({ id }) => id);
 }
 
+type PublicSignalEvidenceRow = {
+  id: string;
+  sourceUrl: string;
+};
+
+export async function loadValidPublicSignalEvidenceIds(
+  transaction: ReadTransaction,
+  candidateId?: string,
+): Promise<string[]> {
+  const rows = await transaction.execute<PublicSignalEvidenceRow>(sql`
+    select
+      signal.id as "id",
+      signal.source_url as "sourceUrl"
+    from ${candidatePublicSignals} signal
+    ${candidateId ? sql`where signal.candidate_id = ${candidateId}` : sql``}
+    order by signal.id
+  `);
+  return rows
+    .filter(({ sourceUrl }) => publicHttpUrlOrNull(sourceUrl) !== null)
+    .map(({ id }) => id);
+}
+
 export function activeSignalPredicate(alias: string, now: Date): SQL {
   const signal = sql.raw(alias);
-  return sql`${signal}.occurred_at <= ${timestamp(now)}
+  return sql`exists (
+      select 1 from valid_public_signal_evidence_ids valid_signal
+      where valid_signal.id = ${signal}.id
+    )
+    and ${signal}.occurred_at <= ${timestamp(now)}
     and least(
       coalesce(${signal}.expires_at, 'infinity'::timestamptz),
       ${signal}.occurred_at + make_interval(days => signal_freshness.freshness_days)
@@ -278,9 +307,11 @@ function filteredCandidatesCte(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
 ): SQL {
   const validPublicContactCandidateIdsJson = JSON.stringify(validPublicContactCandidateIds);
   const validPublicRelationshipEvidenceIdsJson = JSON.stringify(validPublicRelationshipEvidenceIds);
+  const validPublicSignalEvidenceIdsJson = JSON.stringify(validPublicSignalEvidenceIds);
   const hasPublicContact = sql`exists (
     select 1
     from valid_public_contact_candidate_ids public_contact_candidate
@@ -307,6 +338,10 @@ function filteredCandidatesCte(
     valid_public_relationship_evidence_ids(id) as (
       select value::uuid
       from jsonb_array_elements_text(${validPublicRelationshipEvidenceIdsJson}::jsonb)
+    ),
+    valid_public_signal_evidence_ids(id) as (
+      select value::uuid
+      from jsonb_array_elements_text(${validPublicSignalEvidenceIdsJson}::jsonb)
     ),
     inferred_rules(category, kind, term_key) as (values ${inferenceValues}),
     signal_freshness(signal_type, freshness_days) as (values ${signalFreshnessValues}),
@@ -432,6 +467,7 @@ export function withFilteredCandidates(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   query: SQL,
 ): SQL {
   return sql`with ${filteredCandidatesCte(
@@ -439,5 +475,6 @@ export function withFilteredCandidates(
     now,
     validPublicContactCandidateIds,
     validPublicRelationshipEvidenceIds,
+    validPublicSignalEvidenceIds,
   )} ${query}`;
 }

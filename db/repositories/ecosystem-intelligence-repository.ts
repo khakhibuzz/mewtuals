@@ -7,6 +7,7 @@ import { loadEcosystemOverview } from "./ecosystem-intelligence-overview-queries
 import {
   loadValidPublicContactCandidateIds,
   loadValidPublicRelationshipEvidenceIds,
+  loadValidPublicSignalEvidenceIds,
 } from "./ecosystem-intelligence-query";
 import type { EcosystemIntelligenceRepository } from "./ecosystem-intelligence-types";
 
@@ -47,12 +48,14 @@ export function createEcosystemIntelligenceRepository(
         const validPublicRelationshipEvidenceIds = await loadValidPublicRelationshipEvidenceIds(
           transaction,
         );
+        const validPublicSignalEvidenceIds = await loadValidPublicSignalEvidenceIds(transaction);
         const overview = await loadEcosystemOverview(
           transaction,
           filters,
           now,
           validPublicContactCandidateIds,
           validPublicRelationshipEvidenceIds,
+          validPublicSignalEvidenceIds,
         );
         const activity = await loadEcosystemActivity(
           transaction,
@@ -60,6 +63,7 @@ export function createEcosystemIntelligenceRepository(
           now,
           validPublicContactCandidateIds,
           validPublicRelationshipEvidenceIds,
+          validPublicSignalEvidenceIds,
           overview.population.total,
         );
 
@@ -80,12 +84,18 @@ export function createEcosystemIntelligenceRepository(
       return database.transaction(async (transaction) => {
         const validPublicRelationshipEvidenceIds = await loadValidPublicRelationshipEvidenceIds(
           transaction,
+          candidateId,
+        );
+        const validPublicSignalEvidenceIds = await loadValidPublicSignalEvidenceIds(
+          transaction,
+          candidateId,
         );
         return loadCandidateDetail(
           transaction,
           candidateId,
           now,
           validPublicRelationshipEvidenceIds,
+          validPublicSignalEvidenceIds,
         );
       }, { isolationLevel: "repeatable read", accessMode: "read only" });
     },

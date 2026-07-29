@@ -18,6 +18,7 @@ import {
 } from "../schema";
 import {
   activeSignalPredicate,
+  publicHttpUrlOrNull,
   timestamp,
   withFilteredCandidates,
 } from "./ecosystem-intelligence-query";
@@ -83,9 +84,10 @@ async function loadVelocity(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["velocity"]> {
-  const rows = await transaction.execute<VelocityRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
+  const rows = await transaction.execute<VelocityRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, validPublicSignalEvidenceIds, sql`
     , windows(days) as (values (7), (30), (90)),
     candidate_activity as (
       select candidate.*,
@@ -188,9 +190,10 @@ async function loadMomentum(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["momentum"]> {
-  const [row] = await transaction.execute<MomentumAggregateRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
+  const [row] = await transaction.execute<MomentumAggregateRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, validPublicSignalEvidenceIds, sql`
     , active_signals as (
       select
         signal.id,
@@ -277,7 +280,8 @@ async function loadMomentum(
       expiresAt: nullableDate(signal.expiresAt),
     };
     const activeUntil = activeUntilForSignal(signalInput);
-    return activeUntil && isActiveSignal(signalInput, now) ? [{
+    const sourceUrl = publicHttpUrlOrNull(signal.sourceUrl);
+    return activeUntil && isActiveSignal(signalInput, now) && sourceUrl ? [{
       id: signal.id,
       candidateId: signal.candidateId,
       candidateName: signal.candidateName,
@@ -286,7 +290,7 @@ async function loadMomentum(
       occurredAt: date(signal.occurredAt),
       expiresAt: nullableDate(signal.expiresAt),
       activeUntil,
-      sourceUrl: signal.sourceUrl,
+      sourceUrl,
       confidence: number(signal.confidence),
     }] : [];
   });
@@ -325,6 +329,7 @@ export async function loadEcosystemChange(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<Pick<EcosystemSnapshot, "velocity" | "momentum">> {
   return {
@@ -334,6 +339,7 @@ export async function loadEcosystemChange(
       now,
       validPublicContactCandidateIds,
       validPublicRelationshipEvidenceIds,
+      validPublicSignalEvidenceIds,
       denominator,
     ),
     momentum: await loadMomentum(
@@ -342,6 +348,7 @@ export async function loadEcosystemChange(
       now,
       validPublicContactCandidateIds,
       validPublicRelationshipEvidenceIds,
+      validPublicSignalEvidenceIds,
       denominator,
     ),
   };

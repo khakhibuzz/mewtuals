@@ -122,6 +122,7 @@ async function loadCandidateDetail(
   candidateId: string,
   now: Date,
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
 ): Promise<EcosystemCandidateDetail | null> {
   const [identity] = await transaction.execute<DetailIdentityRow>(sql`
     select
@@ -206,8 +207,13 @@ async function loadCandidateDetail(
     where candidate_id = ${candidateId}
     limit 1
   `);
+  const validPublicSignalEvidenceIdsJson = JSON.stringify(validPublicSignalEvidenceIds);
   const signalRows = await transaction.execute<DetailSignalRow>(sql`
-    with signal_freshness(signal_type, freshness_days) as (values ${signalFreshnessValues})
+    with valid_public_signal_evidence_ids(id) as (
+      select value::uuid
+      from jsonb_array_elements_text(${validPublicSignalEvidenceIdsJson}::jsonb)
+    ),
+    signal_freshness(signal_type, freshness_days) as (values ${signalFreshnessValues})
     select
       signal.id as "id",
       signal.candidate_id as "candidateId",
@@ -313,7 +319,8 @@ async function loadCandidateDetail(
       expiresAt: nullableDate(row.expiresAt),
     };
     const activeUntil = activeUntilForSignal(input);
-    return activeUntil && isActiveSignal(input, now) ? [{
+    const sourceUrl = publicHttpUrlOrNull(row.sourceUrl);
+    return activeUntil && isActiveSignal(input, now) && sourceUrl ? [{
       id: row.id,
       candidateId: row.candidateId,
       candidateName: row.candidateName,
@@ -322,7 +329,7 @@ async function loadCandidateDetail(
       occurredAt: date(row.occurredAt),
       expiresAt: nullableDate(row.expiresAt),
       activeUntil,
-      sourceUrl: row.sourceUrl,
+      sourceUrl,
       confidence: number(row.confidence),
     }] : [];
   });

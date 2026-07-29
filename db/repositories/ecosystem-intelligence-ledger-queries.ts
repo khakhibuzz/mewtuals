@@ -152,6 +152,7 @@ async function loadLedger(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   total: number,
 ): Promise<EcosystemSnapshot["ledger"]> {
   const sortExpression: SQL = filters.sort === "name"
@@ -162,7 +163,7 @@ async function loadLedger(
         ? sql`candidate.evidence_score`
         : sql`candidate.discovered_at`;
   const orderExpression = filters.direction === "asc" ? asc(sortExpression) : desc(sortExpression);
-  const rows = await transaction.execute<LedgerRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
+  const rows = await transaction.execute<LedgerRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, validPublicSignalEvidenceIds, sql`
     select
       candidate.id as "id",
       candidate.type::text as "type",
@@ -258,9 +259,10 @@ async function loadFilterOptions(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["filterOptions"]> {
-  const rows = await transaction.execute<OptionRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
+  const rows = await transaction.execute<OptionRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, validPublicSignalEvidenceIds, sql`
     , city_option_counts as (
       select coalesce(city_key, 'unknown') as key, count(*)::integer as count
       from filtered_candidates
@@ -386,6 +388,7 @@ export async function loadEcosystemDirectory(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<Pick<EcosystemSnapshot, "ledger" | "filterOptions">> {
   return {
@@ -395,6 +398,7 @@ export async function loadEcosystemDirectory(
       now,
       validPublicContactCandidateIds,
       validPublicRelationshipEvidenceIds,
+      validPublicSignalEvidenceIds,
       denominator,
     ),
     filterOptions: await loadFilterOptions(
@@ -403,6 +407,7 @@ export async function loadEcosystemDirectory(
       now,
       validPublicContactCandidateIds,
       validPublicRelationshipEvidenceIds,
+      validPublicSignalEvidenceIds,
       denominator,
     ),
   };

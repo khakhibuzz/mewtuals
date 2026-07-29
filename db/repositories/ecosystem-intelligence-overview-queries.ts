@@ -84,9 +84,10 @@ async function loadPopulationAndSummary(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
 ): Promise<SummaryRow> {
   const [summary] = await transaction.execute<SummaryRow>(
-    withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
+    withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, validPublicSignalEvidenceIds, sql`
       select
         md5(coalesce(string_agg(filtered.id::text, ',' order by filtered.id), '')) as "fingerprint",
         count(*)::integer as "total",
@@ -187,10 +188,11 @@ async function loadGeography(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   denominator: number,
   unresolvedCount: number,
 ): Promise<EcosystemSnapshot["geography"]> {
-  const rows = await transaction.execute<GeographyRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
+  const rows = await transaction.execute<GeographyRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, validPublicSignalEvidenceIds, sql`
     select
       'state'::text as "dimension",
       state_key as "key",
@@ -258,9 +260,10 @@ async function loadExplorer(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["explorer"]> {
-  const rows = await transaction.execute<ExplorerRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
+  const rows = await transaction.execute<ExplorerRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, validPublicSignalEvidenceIds, sql`
     , facet_membership as (
       select distinct classification.kind, classification.term_key, candidate.id, candidate.name,
         (candidate.evidence_score >= 80 and candidate.classification_state = 'evidence_backed') as strong_evidence
@@ -368,9 +371,10 @@ async function loadMatrices(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["matrices"]> {
-  const rows = await transaction.execute<MatrixRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
+  const rows = await transaction.execute<MatrixRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, validPublicSignalEvidenceIds, sql`
     , candidate_roles as (
       select distinct candidate.id, role.term_key as key, candidate.evidence_score, candidate.classification_state
       from filtered_candidates candidate
@@ -456,6 +460,7 @@ export async function loadEcosystemOverview(
   now: Date,
   validPublicContactCandidateIds: readonly string[],
   validPublicRelationshipEvidenceIds: readonly string[],
+  validPublicSignalEvidenceIds: readonly string[],
 ): Promise<Pick<
   EcosystemSnapshot,
   "population" | "summary" | "dataQuality" | "geography" | "explorer" | "matrices" | "insights"
@@ -466,6 +471,7 @@ export async function loadEcosystemOverview(
     now,
     validPublicContactCandidateIds,
     validPublicRelationshipEvidenceIds,
+    validPublicSignalEvidenceIds,
   );
   const total = number(summaryRow.total);
   const geography = await loadGeography(
@@ -474,6 +480,7 @@ export async function loadEcosystemOverview(
     now,
     validPublicContactCandidateIds,
     validPublicRelationshipEvidenceIds,
+    validPublicSignalEvidenceIds,
     total,
     number(summaryRow.unknownState),
   );
@@ -483,6 +490,7 @@ export async function loadEcosystemOverview(
     now,
     validPublicContactCandidateIds,
     validPublicRelationshipEvidenceIds,
+    validPublicSignalEvidenceIds,
     total,
   );
   const matrices = await loadMatrices(
@@ -491,6 +499,7 @@ export async function loadEcosystemOverview(
     now,
     validPublicContactCandidateIds,
     validPublicRelationshipEvidenceIds,
+    validPublicSignalEvidenceIds,
     total,
   );
   const topState = geography.states[0];
