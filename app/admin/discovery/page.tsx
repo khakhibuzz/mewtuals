@@ -4,6 +4,7 @@ import {
   DiscoveryDashboard,
   type DiscoveryDashboardSnapshot,
 } from "../../components/product/DiscoveryDashboard";
+import { ADMIN_HEADER_LINKS } from "../../components/product/admin-navigation";
 import { ProductShell } from "../../components/product/ProductShell";
 import { getDiscoveryService } from "../../server/discovery";
 import { getCurrentSession } from "../../server/session";
@@ -146,11 +147,7 @@ export default async function DiscoveryAdminPage({
       eyebrow="Discovery network"
       title="Discovery operations."
       intro="Review source-supported companies and creators before they enter the profile pipeline."
-      headerLinks={[
-        { href: "/admin/opportunity-briefs", label: "Opportunity Briefs" },
-        { href: "/admin/discovery", label: "Discovery" },
-        { href: "/admin/verifications", label: "Verification queue" },
-      ]}
+      headerLinks={ADMIN_HEADER_LINKS}
       wide
     >
       <DiscoveryDashboard

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { ProductShell } from "../../components/product/ProductShell";
+import { ADMIN_HEADER_LINKS } from "../../components/product/admin-navigation";
 import {
   VerificationQueue,
   type VerificationQueueProfile,
@@ -52,11 +53,7 @@ export default async function VerificationAdminPage() {
       eyebrow="Verification operations"
       title="Profiles awaiting review."
       intro="Decisions are final in v1 and create a durable review record with your administrator email."
-      headerLinks={[
-        { href: "/admin/opportunity-briefs", label: "Opportunity Briefs" },
-        { href: "/admin/discovery", label: "Discovery" },
-        { href: "/admin/verifications", label: "Verification queue" },
-      ]}
+      headerLinks={ADMIN_HEADER_LINKS}
       wide
     >
       <VerificationQueue profiles={result.profiles.map(toQueueProfile)} />

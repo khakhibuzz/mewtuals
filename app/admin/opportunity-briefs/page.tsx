@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { OpportunityBriefDashboard } from "../../components/product/OpportunityBriefDashboard";
 import { ProductShell } from "../../components/product/ProductShell";
+import { ADMIN_HEADER_LINKS } from "../../components/product/admin-navigation";
 import { getOpportunityBriefService } from "../../server/opportunity-brief";
 import {
   parseOpportunityBriefAdminFilters,
@@ -38,11 +39,7 @@ function OpportunityBriefAdminShell({ children }: { children: ReactNode }) {
       eyebrow="Opportunity Brief operations"
       title="Opportunity Brief requests."
       intro="Review public requests, record research progress, and connect exact Discovery candidates."
-      headerLinks={[
-        { href: "/admin/opportunity-briefs", label: "Opportunity Briefs" },
-        { href: "/admin/discovery", label: "Discovery" },
-        { href: "/admin/verifications", label: "Verification queue" },
-      ]}
+      headerLinks={ADMIN_HEADER_LINKS}
       wide
     >
       {children}
