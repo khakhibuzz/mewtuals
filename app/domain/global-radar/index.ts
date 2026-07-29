@@ -146,10 +146,13 @@ export type {
 } from "./systems-context";
 
 export {
+  GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
   GLOBAL_RADAR_SCORE_VERSION,
+  MAX_GLOBAL_RADAR_MOMENTUM_OBSERVATIONS,
   assessDirectDemandActivity,
   calculateFreshness,
   calculateTimeHorizon,
+  createGlobalRadarMomentumPolicy,
   deriveEcosystemMomentum,
   directDemandActivityInputSchema,
   directDemandActivityResultSchema,
@@ -193,9 +196,12 @@ export {
   initialSignalStatusInputSchema,
   initialSignalStatusResultSchema,
   preserveRediscoveredSignalStatus,
+  rediscoveredReobservationInputSchema,
+  rediscoveredReobservationResultSchema,
   qualificationAssessmentSchema,
   rediscoveredSignalStatusInputSchema,
   rediscoveredSignalStatusResultSchema,
+  resolveRediscoveredReobserveBy,
   signalTransitionActionSchema,
   signalTransitionInputSchema,
   signalTransitionResultSchema,
@@ -206,6 +212,8 @@ export type {
   InitialSignalStatusInput,
   InitialSignalStatusResult,
   QualificationAssessment,
+  RediscoveredReobservationInput,
+  RediscoveredReobservationResult,
   RediscoveredSignalStatusInput,
   RediscoveredSignalStatusResult,
   SignalTransitionAction,
@@ -225,6 +233,32 @@ export {
   normalizeLinkedInOrganizationUrl,
   normalizeOfficialWebsiteUrl,
 } from "./normalization";
+
+export {
+  GLOBAL_RADAR_DEDUPE_VERSION,
+  canonicalizeGlobalRadarPersistenceBatch,
+  createGlobalRadarPublicIdentityAnchor,
+  createGlobalRadarPersistenceHash,
+  createGlobalRadarSignalDedupeKey,
+  createGlobalRadarSignalDedupeKeyFromIdentityAnchors,
+  globalRadarExecutedQueriesMatchPlan,
+  persistableGlobalRadarBatchObjectSchema,
+  persistableRadarEntitySchema,
+  persistableRadarEvidenceSchema,
+  persistableRadarExecutedQuerySchema,
+  persistableRadarSignalSchema,
+} from "./persistence";
+
+export type {
+  CanonicalPersistableGlobalRadarBatch,
+  CanonicalPersistableRadarEntity,
+  CanonicalPersistenceBatchResult,
+  GlobalRadarSignalDedupeInput,
+  PersistableGlobalRadarBatch,
+  PersistableRadarEntity,
+  PersistableRadarExecutedQuery,
+  PersistableRadarSignal,
+} from "./persistence";
 
 export type {
   EntityIdentity,
@@ -261,6 +295,8 @@ export type { IndianExecutionArchetype } from "../taxonomies/indian-execution-ar
 export {
   GLOBAL_RADAR_PLAN_VERSION,
   GLOBAL_RADAR_QUERY_VERSION,
+  GLOBAL_RADAR_THRESHOLD_VERSION,
+  parseGlobalRadarPlanSnapshot,
   planGlobalRadarRun,
 } from "./planner";
 
@@ -271,6 +307,7 @@ export type {
   GlobalRadarSourceAdapter,
   GlobalRadarSourceFamily,
   GlobalRadarTheme,
+  GlobalRadarThresholds,
   PublicGlobalRadarPlanningConfig,
   RadarCoverageState,
   RadarPlan,

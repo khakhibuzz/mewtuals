@@ -4,6 +4,7 @@ import {
   GLOBAL_RADAR_SCORE_VERSION,
   determineInitialSignalStatus,
   preserveRediscoveredSignalStatus,
+  resolveRediscoveredReobserveBy,
   transitionSignal,
 } from "../app/domain/global-radar";
 
@@ -125,6 +126,64 @@ describe("Global Radar signal transitions", () => {
     ).toEqual({
       valid: false,
       reason: "invalid_rediscovery_status_input",
+    });
+  });
+
+  it("advances only a newer evergreen re-observation to a later deadline", () => {
+    expect(
+      resolveRediscoveredReobserveBy({
+        currentEvergreen: true,
+        currentReobserveBy: "2026-07-31T00:00:00.000Z",
+        proposedEvergreen: true,
+        proposedReobserveBy: "2026-08-07T00:00:00.000Z",
+        proposedObservedAt: "2026-07-30T00:00:00.000Z",
+        isNewerObservation: true,
+      }),
+    ).toEqual({
+      valid: true,
+      reobserveBy: "2026-08-07T00:00:00.000Z",
+      advanced: true,
+    });
+  });
+
+  it.each([
+    [false, true, "2026-08-07T00:00:00.000Z"],
+    [true, true, "2026-07-30T00:00:00.000Z"],
+    [true, false, null],
+  ] as const)(
+    "preserves the current re-observation deadline for newer=%s proposedEvergreen=%s proposed=%s",
+    (isNewerObservation, proposedEvergreen, proposedReobserveBy) => {
+      expect(
+        resolveRediscoveredReobserveBy({
+          currentEvergreen: true,
+          currentReobserveBy: "2026-07-31T00:00:00.000Z",
+          proposedEvergreen,
+          proposedReobserveBy,
+          proposedObservedAt: "2026-07-30T00:00:00.000Z",
+          isNewerObservation,
+        }),
+      ).toEqual({
+        valid: true,
+        reobserveBy: "2026-07-31T00:00:00.000Z",
+        advanced: false,
+      });
+    },
+  );
+
+  it("does not retroactively advance an overdue evergreen observation", () => {
+    expect(
+      resolveRediscoveredReobserveBy({
+        currentEvergreen: true,
+        currentReobserveBy: "2026-07-31T00:00:00.000Z",
+        proposedEvergreen: true,
+        proposedReobserveBy: "2026-08-07T00:00:00.000Z",
+        proposedObservedAt: "2026-08-01T00:00:00.000Z",
+        isNewerObservation: true,
+      }),
+    ).toEqual({
+      valid: true,
+      reobserveBy: "2026-07-31T00:00:00.000Z",
+      advanced: false,
     });
   });
 

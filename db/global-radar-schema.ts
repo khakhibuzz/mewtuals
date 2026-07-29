@@ -152,6 +152,7 @@ export const globalEntities = pgTable(
       .array()
       .default(sql`ARRAY[]::text[]`)
       .notNull(),
+    publicIdentityAnchor: text("public_identity_anchor").notNull(),
     headquartersCountry: text("headquarters_country").notNull(),
     headquartersCity: text("headquarters_city"),
     operatingCountries: text("operating_countries").array(),
@@ -183,6 +184,9 @@ export const globalEntities = pgTable(
     uniqueIndex("global_entities_linkedin_url_unique")
       .on(table.linkedinUrl)
       .where(sql`${table.linkedinUrl} IS NOT NULL`),
+    uniqueIndex("global_entities_public_identity_anchor_unique").on(
+      table.publicIdentityAnchor,
+    ),
     index("global_entities_stable_public_identifiers_idx").using(
       "gin",
       table.stablePublicIdentifiers,
@@ -233,6 +237,10 @@ export const globalEntities = pgTable(
               !~ '(^|\\n)[[:space:]]*($|\\n)'
           )
         )`,
+    ),
+    check(
+      "global_entities_public_identity_anchor_check",
+      sql`${table.publicIdentityAnchor} ~ '^[a-f0-9]{64}$'`,
     ),
     check("global_entities_revision_check", sql`${table.revision} >= 0`),
     check(
@@ -587,6 +595,9 @@ export const globalRadarSignals = pgTable(
     scoreCoverage: integer("score_coverage").notNull(),
     scorePolicyVersion: text("score_policy_version").notNull(),
     momentumPolicyVersion: text("momentum_policy_version"),
+    momentumQualificationGatesPassed: boolean(
+      "momentum_qualification_gates_passed",
+    ),
     announcedAt: timestamp("announced_at", { withTimezone: true }),
     effectiveFrom: timestamp("effective_from", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
@@ -809,6 +820,7 @@ export const globalRadarSignals = pgTable(
         AND ${table.momentumTaxonomyConsistency} IS NULL
         AND ${table.momentumEvidenceQuality} IS NULL
         AND ${table.momentumPolicyVersion} IS NULL
+        AND ${table.momentumQualificationGatesPassed} IS NULL
       ) OR (
         ${table.signalClass} = 'demand_precursor'
         AND ${table.globalEntityId} IS NOT NULL
@@ -836,6 +848,7 @@ export const globalRadarSignals = pgTable(
         AND ${table.momentumTaxonomyConsistency} IS NULL
         AND ${table.momentumEvidenceQuality} IS NULL
         AND ${table.momentumPolicyVersion} IS NULL
+        AND ${table.momentumQualificationGatesPassed} IS NULL
       ) OR (
         ${table.signalClass} = 'ecosystem_momentum'
         AND ${table.directDemandScore} IS NULL
@@ -871,6 +884,7 @@ export const globalRadarSignals = pgTable(
         AND ${table.momentumScore} IS NOT NULL
         AND ${table.scoreCoverage} = 100
         AND ${table.momentumPolicyVersion} IS NOT NULL
+        AND ${table.momentumQualificationGatesPassed} IS NOT NULL
       )`,
     ),
     check(

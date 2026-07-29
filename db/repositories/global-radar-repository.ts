@@ -1,8 +1,20 @@
 import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 
 import {
+  GLOBAL_RADAR_PROMPT_VERSION,
+  GLOBAL_RADAR_SCHEMA_VERSION,
+  canonicalizeGlobalRadarPersistenceBatch,
+  createGlobalRadarFingerprint,
+  createGlobalRadarMomentumPolicy,
+  generateGlobalRadarQueries,
+  globalRadarExecutedQueriesMatchPlan,
+  momentumPolicySchema,
+  parseGlobalRadarPlanSnapshot,
   radarRunTriggers,
   radarScanModes,
+  type PersistableGlobalRadarBatch,
+  type MomentumPolicy,
+  type RadarPlan,
   type RadarRunStatus,
   type RadarRunTrigger,
   type RadarScanMode,
@@ -11,6 +23,12 @@ import type { MewtualsDatabase } from "../client";
 import { globalRadarRuns } from "../global-radar-schema";
 import { users } from "../schema";
 import type { GlobalRadarRun } from "../types";
+import {
+  expireGlobalRadarDirectDemand,
+  GlobalRadarPersistenceConflict,
+  persistGlobalRadarBatch,
+  recomputeGlobalRadarMomentum,
+} from "./global-radar-persistence";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -129,29 +147,13 @@ export type AbandonGlobalRadarRunInput = {
   reason: string;
 };
 
-export type SafeRadarCounters = {
-  numberResultsExamined: number;
-  numberEntitiesObserved: number;
-  numberSignalsFound: number;
-  numberDirectDemands: number;
-  numberPrecursors: number;
-  numberMomentumRecords: number;
-  numberNew: number;
-  numberUpdated: number;
-  numberDuplicates: number;
-  numberRejectedForWeakEvidence: number;
-  numberSourceErrors: number;
-};
-
 export type CompleteGlobalRadarRunInput = {
   runId: string;
   leaseToken: string;
   planFingerprint: string;
   submissionHash: string;
-  batchFingerprint: string;
   now: Date;
-  counters: SafeRadarCounters;
-  sourceErrors: readonly SafeRadarSourceError[];
+  batch: PersistableGlobalRadarBatch;
 };
 
 export type RadarRunConflictReason =
@@ -161,7 +163,8 @@ export type RadarRunConflictReason =
   | "lease_mismatch"
   | "lease_expired"
   | "failure_mismatch"
-  | "completion_identity_mismatch";
+  | "completion_identity_mismatch"
+  | "entity_identity_conflict";
 
 export type RadarRunMutationResult =
   | {
@@ -188,6 +191,19 @@ export type GlobalRadarRepository = {
   abandonRun(input: AbandonGlobalRadarRunInput): Promise<RadarRunMutationResult>;
   getRun(runId: string): Promise<GetGlobalRadarRunResult>;
   listRuns(input: { limit: number }): Promise<ListGlobalRadarRunsResult>;
+  expireDirectDemand(input: {
+    now: Date;
+  }): Promise<
+    | { outcome: "completed"; expired: number }
+    | { outcome: "conflict"; reason: "invalid_input" }
+  >;
+  recomputeMomentum(input: {
+    now: Date;
+    policy: MomentumPolicy;
+  }): Promise<
+    | { outcome: "completed"; recomputed: number; unchanged: number }
+    | { outcome: "conflict"; reason: "invalid_input" }
+  >;
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -217,17 +233,37 @@ function boundedArray(values: readonly string[]): string[] | null {
     : null;
 }
 
-function planSnapshotIsValid(value: unknown): value is Record<string, unknown> {
-  if (!isPlainObject(value)) return false;
+function orderedUnique<Value>(values: readonly Value[]): Value[] {
+  return [...new Set(values)];
+}
+
+function sameOrderedValues<Value>(
+  actual: readonly Value[],
+  expected: readonly Value[],
+): boolean {
+  return (
+    actual.length === expected.length &&
+    actual.every((value, index) => value === expected[index])
+  );
+}
+
+function parseBoundedPlanSnapshot(
+  value: unknown,
+  expectedFingerprint: string,
+): RadarPlan | null {
+  if (!isPlainObject(value)) return null;
   try {
-    return Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_PLAN_BYTES;
+    if (Buffer.byteLength(JSON.stringify(value), "utf8") > MAX_PLAN_BYTES) {
+      return null;
+    }
   } catch {
-    return false;
+    return null;
   }
+  return parseGlobalRadarPlanSnapshot(value, expectedFingerprint);
 }
 
 function copyPlanSnapshot(
-  value: Record<string, unknown>,
+  value: unknown,
 ): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
@@ -300,8 +336,9 @@ function toSafeRun(run: GlobalRadarRun): SafeRadarRun {
   };
 }
 
-type ValidatedQueueInput = Omit<QueueGlobalRadarRunInput, "sourceCountries" | "sourceLanguages" | "targetDomains" | "targetSignalTypes" | "sourcesUsed"> & {
+type ValidatedQueueInput = Omit<QueueGlobalRadarRunInput, "planSnapshot" | "sourceCountries" | "sourceLanguages" | "targetDomains" | "targetSignalTypes" | "sourcesUsed"> & {
   externalRunKey: string;
+  planSnapshot: RadarPlan;
   sourceCountries: string[];
   sourceLanguages: string[];
   targetDomains: string[];
@@ -316,13 +353,15 @@ function validateQueueInput(input: QueueGlobalRadarRunInput): ValidatedQueueInpu
   const targetDomains = boundedArray(input.targetDomains);
   const targetSignalTypes = boundedArray(input.targetSignalTypes);
   const sourcesUsed = boundedArray(input.sourcesUsed);
+  const planSnapshot = SHA256_PATTERN.test(input.planFingerprint)
+    ? parseBoundedPlanSnapshot(input.planSnapshot, input.planFingerprint)
+    : null;
   if (
     !isBoundedString(input.externalRunKey, 500) ||
     !radarRunTriggers.includes(input.trigger) ||
     !radarScanModes.includes(input.scanMode) ||
     !SHA256_PATTERN.test(input.requestHash) ||
-    !SHA256_PATTERN.test(input.planFingerprint) ||
-    !planSnapshotIsValid(input.planSnapshot) ||
+    !planSnapshot ||
     !sourceCountries ||
     !sourceLanguages ||
     !targetDomains ||
@@ -337,6 +376,52 @@ function validateQueueInput(input: QueueGlobalRadarRunInput): ValidatedQueueInpu
   ) {
     return null;
   }
+  if (
+    planSnapshot.scanMode !== input.scanMode
+  ) {
+    return null;
+  }
+  let plannedQueries: ReturnType<typeof generateGlobalRadarQueries>;
+  try {
+    plannedQueries = generateGlobalRadarQueries(planSnapshot);
+  } catch {
+    return null;
+  }
+  const canonicalSourceCountries = orderedUnique(
+    plannedQueries.map(({ sourceCountry }) => sourceCountry),
+  );
+  const canonicalSourceLanguages = orderedUnique(
+    plannedQueries.map(({ language }) => language),
+  );
+  const canonicalTargetDomains = orderedUnique(
+    plannedQueries.map(({ theme }) => theme),
+  );
+  const canonicalTargetSignalTypes = orderedUnique(
+    plannedQueries.map(({ signalIntent }) => signalIntent),
+  );
+  const canonicalSourcesUsed = orderedUnique(
+    plannedQueries.map(({ sourceAdapter }) => sourceAdapter),
+  );
+  const canonicalRequestHash = createGlobalRadarFingerprint({
+    version: "global-radar-run-request-v1",
+    trigger: input.trigger,
+    planFingerprint: planSnapshot.fingerprint,
+  });
+  if (
+    input.externalRunKey.trim() !== planSnapshot.identityKey ||
+    input.requestHash !== canonicalRequestHash ||
+    input.promptVersion.trim() !== GLOBAL_RADAR_PROMPT_VERSION ||
+    input.schemaVersion.trim() !== GLOBAL_RADAR_SCHEMA_VERSION ||
+    input.taxonomyVersion.trim() !== planSnapshot.taxonomyVersion ||
+    input.scoringVersion.trim() !== planSnapshot.scoreVersion ||
+    !sameOrderedValues(sourceCountries, canonicalSourceCountries) ||
+    !sameOrderedValues(sourceLanguages, canonicalSourceLanguages) ||
+    !sameOrderedValues(targetDomains, canonicalTargetDomains) ||
+    !sameOrderedValues(targetSignalTypes, canonicalTargetSignalTypes) ||
+    !sameOrderedValues(sourcesUsed, canonicalSourcesUsed)
+  ) {
+    return null;
+  }
   const email = input.requestedByEmail?.trim() ?? null;
   const isManual = input.trigger === "manual";
   if (
@@ -344,6 +429,8 @@ function validateQueueInput(input: QueueGlobalRadarRunInput): ValidatedQueueInpu
       (input.scanMode !== "manual" ||
         !input.administratorRequestId ||
         !UUID_PATTERN.test(input.administratorRequestId) ||
+        planSnapshot.identityKey !==
+          `manual:${planSnapshot.version}:${input.administratorRequestId.toLowerCase()}` ||
         !input.requestedByUserId ||
         !UUID_PATTERN.test(input.requestedByUserId) ||
         !email ||
@@ -359,12 +446,19 @@ function validateQueueInput(input: QueueGlobalRadarRunInput): ValidatedQueueInpu
   }
   return {
     ...input,
-    externalRunKey: input.externalRunKey.trim(),
-    sourceCountries,
-    sourceLanguages,
-    targetDomains,
-    targetSignalTypes,
-    sourcesUsed,
+    externalRunKey: planSnapshot.identityKey,
+    requestHash: canonicalRequestHash,
+    scanMode: planSnapshot.scanMode,
+    planSnapshot,
+    sourceCountries: canonicalSourceCountries,
+    sourceLanguages: canonicalSourceLanguages,
+    targetDomains: canonicalTargetDomains,
+    targetSignalTypes: canonicalTargetSignalTypes,
+    sourcesUsed: canonicalSourcesUsed,
+    promptVersion: GLOBAL_RADAR_PROMPT_VERSION,
+    schemaVersion: GLOBAL_RADAR_SCHEMA_VERSION,
+    taxonomyVersion: planSnapshot.taxonomyVersion,
+    scoringVersion: planSnapshot.scoreVersion,
     requestedByEmail: email,
   };
 }
@@ -392,20 +486,6 @@ function canonicalReason(reason: unknown): string | null {
 
 function storedFailure(run: GlobalRadarRun): SafeRadarFailure | null {
   return safeErrorSummary(run).failure ?? null;
-}
-
-function validateCounters(counters: SafeRadarCounters): boolean {
-  const values = Object.values(counters);
-  return (
-    values.length === 11 &&
-    values.every(
-      (value) => Number.isSafeInteger(value) && value >= 0,
-    ) &&
-    counters.numberDirectDemands +
-      counters.numberPrecursors +
-      counters.numberMomentumRecords ===
-      counters.numberSignalsFound
-  );
 }
 
 function canonicalSourceErrors(
@@ -439,6 +519,7 @@ function canonicalSourceErrors(
 function completionSummary(
   numberSignalsFound: number,
   sourceErrors: SafeRadarSourceError[],
+  rejections: Readonly<Record<string, number>> = {},
 ): Record<string, unknown> | null {
   const summary: Record<string, unknown> = {
     ...(numberSignalsFound === 0 && sourceErrors.length > 0
@@ -450,6 +531,7 @@ function completionSummary(
         }
       : {}),
     sourceErrors,
+    ...(Object.keys(rejections).length > 0 ? { rejections } : {}),
   };
   return Buffer.byteLength(JSON.stringify(summary), "utf8") <= MAX_PLAN_BYTES
     ? summary
@@ -506,7 +588,7 @@ export function createGlobalRadarRepository(
           trigger: validated.trigger,
           scanMode: validated.scanMode,
           planFingerprint: validated.planFingerprint,
-          planSnapshot: validated.planSnapshot,
+          planSnapshot: copyPlanSnapshot(validated.planSnapshot),
           sourceCountries: validated.sourceCountries,
           sourceLanguages: validated.sourceLanguages,
           targetDomains: validated.targetDomains,
@@ -682,7 +764,6 @@ export function createGlobalRadarRepository(
         !SHA256_PATTERN.test(input.leaseToken) ||
         !SHA256_PATTERN.test(input.planFingerprint) ||
         !SHA256_PATTERN.test(input.submissionHash) ||
-        !SHA256_PATTERN.test(input.batchFingerprint) ||
         !(input.now instanceof Date) ||
         Number.isNaN(input.now.getTime())
       ) {
@@ -690,8 +771,9 @@ export function createGlobalRadarRepository(
       }
       const inputLeaseHash = requireLeaseHash(leaseCodec, input.leaseToken);
 
-      return database.transaction(async (transaction) => {
-        const [run] = await transaction
+      try {
+        return await database.transaction(async (transaction) => {
+          const [run] = await transaction
           .select()
           .from(globalRadarRuns)
           .where(eq(globalRadarRuns.id, input.runId))
@@ -711,7 +793,7 @@ export function createGlobalRadarRepository(
             run.leaseTokenHash === inputLeaseHash &&
             run.planFingerprint === input.planFingerprint &&
             run.submissionHash === input.submissionHash &&
-            run.batchFingerprint === input.batchFingerprint
+            run.batchFingerprint === input.submissionHash
           ) {
             return { outcome: "replayed" as const, run: toSafeRun(run) };
           }
@@ -728,6 +810,17 @@ export function createGlobalRadarRepository(
             run: toSafeRun(run),
           };
         }
+        if (
+          run.startedAt === null ||
+          input.now.getTime() < run.startedAt.getTime()
+        ) {
+          return {
+            outcome: "conflict" as const,
+            reason: "invalid_input" as const,
+            run: toSafeRun(run),
+          };
+        }
+        const startedAtMilliseconds = run.startedAt.getTime();
         if (!run.leaseExpiresAt || run.leaseExpiresAt <= input.now) {
           return {
             outcome: "conflict" as const,
@@ -743,26 +836,66 @@ export function createGlobalRadarRepository(
           };
         }
 
-        const sourceErrors = canonicalSourceErrors(input.sourceErrors);
+        const canonical = canonicalizeGlobalRadarPersistenceBatch(input.batch);
+        if (!canonical.valid) {
+          return {
+            outcome: "conflict" as const,
+            reason: "invalid_input" as const,
+            run: toSafeRun(run),
+          };
+        }
         if (
-          !validateCounters(input.counters) ||
-          !sourceErrors ||
-          input.counters.numberSourceErrors !== sourceErrors.length
+          canonical.batch.runId !== input.runId ||
+          canonical.batch.planFingerprint !== input.planFingerprint ||
+          canonical.batch.canonicalSubmissionHash !== input.submissionHash
         ) {
-          return { outcome: "conflict" as const, reason: "invalid_input" as const };
+          return {
+            outcome: "conflict" as const,
+            reason: "completion_identity_mismatch" as const,
+            run: toSafeRun(run),
+          };
+        }
+        if (
+          !globalRadarExecutedQueriesMatchPlan(
+            canonical.batch.executedQueries,
+            run.planSnapshot,
+            run.planFingerprint,
+          ) ||
+          canonical.batch.executedQueries.some(({ executedAt }) => {
+            const timestamp = Date.parse(executedAt);
+            return (
+              timestamp < startedAtMilliseconds ||
+              timestamp > input.now.getTime()
+            );
+          })
+        ) {
+          return {
+            outcome: "conflict" as const,
+            reason: "invalid_input" as const,
+            run: toSafeRun(run),
+          };
+        }
+        const persisted = await persistGlobalRadarBatch(
+          transaction,
+          canonical.batch,
+        );
+        const sourceErrors = canonicalSourceErrors(persisted.sourceErrors);
+        if (!sourceErrors) {
+          throw new Error("Canonical Radar source errors became invalid.");
         }
         const errorSummary = completionSummary(
-          input.counters.numberSignalsFound,
+          persisted.counters.numberSignalsFound,
           sourceErrors,
+          persisted.rejections,
         );
         if (!errorSummary) {
-          return { outcome: "conflict" as const, reason: "invalid_input" as const };
+          throw new GlobalRadarPersistenceConflict("invalid_input");
         }
-
         const status =
-          input.counters.numberSignalsFound === 0 && sourceErrors.length > 0
+          persisted.counters.numberSignalsFound === 0 && sourceErrors.length > 0
             ? "failed"
-            : input.counters.numberSignalsFound > 0 && sourceErrors.length > 0
+            : persisted.counters.numberSignalsFound > 0 &&
+                sourceErrors.length > 0
               ? "partial"
               : "succeeded";
         const [completed] = await transaction
@@ -772,15 +905,28 @@ export function createGlobalRadarRepository(
             completedAt: input.now,
             updatedAt: input.now,
             submissionHash: input.submissionHash,
-            batchFingerprint: input.batchFingerprint,
-            ...input.counters,
+            batchFingerprint: input.submissionHash,
+            ...persisted.counters,
             errorSummary,
           })
           .where(eq(globalRadarRuns.id, run.id))
           .returning();
         if (!completed) throw new Error("Global Radar run was not completed.");
         return { outcome: "completed" as const, run: toSafeRun(completed) };
-      });
+        });
+      } catch (error) {
+        if (!(error instanceof GlobalRadarPersistenceConflict)) throw error;
+        const [run] = await database
+          .select()
+          .from(globalRadarRuns)
+          .where(eq(globalRadarRuns.id, input.runId))
+          .limit(1);
+        return {
+          outcome: "conflict",
+          reason: error.reason,
+          ...(run ? { run: toSafeRun(run) } : {}),
+        };
+      }
     },
 
     async failRun(input) {
@@ -830,6 +976,16 @@ export function createGlobalRadarRepository(
           return {
             outcome: "conflict" as const,
             reason: "lease_mismatch" as const,
+            run: toSafeRun(run),
+          };
+        }
+        if (
+          run.startedAt === null ||
+          input.now.getTime() < run.startedAt.getTime()
+        ) {
+          return {
+            outcome: "conflict" as const,
+            reason: "invalid_input" as const,
             run: toSafeRun(run),
           };
         }
@@ -895,6 +1051,16 @@ export function createGlobalRadarRepository(
             run: toSafeRun(run),
           };
         }
+        if (
+          run.startedAt === null ||
+          input.now.getTime() < run.startedAt.getTime()
+        ) {
+          return {
+            outcome: "conflict" as const,
+            reason: "invalid_input" as const,
+            run: toSafeRun(run),
+          };
+        }
 
         const [abandoned] = await transaction
           .update(globalRadarRuns)
@@ -941,6 +1107,50 @@ export function createGlobalRadarRepository(
         .orderBy(desc(globalRadarRuns.createdAt), desc(globalRadarRuns.id))
         .limit(input.limit);
       return { outcome: "listed", runs: runs.map(toSafeRun) };
+    },
+
+    async expireDirectDemand(input) {
+      if (
+        !(input.now instanceof Date) ||
+        Number.isNaN(input.now.getTime())
+      ) {
+        return { outcome: "conflict", reason: "invalid_input" };
+      }
+      const expired = await database.transaction((transaction) =>
+        expireGlobalRadarDirectDemand(transaction, input.now),
+      );
+      return { outcome: "completed", expired };
+    },
+
+    async recomputeMomentum(input) {
+      if (
+        !(input.now instanceof Date) ||
+        Number.isNaN(input.now.getTime())
+      ) {
+        return { outcome: "conflict", reason: "invalid_input" };
+      }
+      const policy = momentumPolicySchema.safeParse(input.policy);
+      if (
+        !policy.success ||
+        JSON.stringify(policy.data) !==
+          JSON.stringify(createGlobalRadarMomentumPolicy(policy.data.taxonomy))
+      ) {
+        return { outcome: "conflict", reason: "invalid_input" };
+      }
+      try {
+        const result = await database.transaction((transaction) =>
+          recomputeGlobalRadarMomentum(transaction, {
+            now: input.now,
+            policy: policy.data,
+          }),
+        );
+        return { outcome: "completed", ...result };
+      } catch (error) {
+        if (error instanceof GlobalRadarPersistenceConflict) {
+          return { outcome: "conflict", reason: "invalid_input" };
+        }
+        throw error;
+      }
     },
   };
 }

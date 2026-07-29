@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
   GLOBAL_RADAR_SCORE_VERSION,
   assessDirectDemandActivity,
   calculateFreshness,
   calculateTimeHorizon,
+  createGlobalRadarMomentumPolicy,
   deriveEcosystemMomentum,
   scoreDemandPrecursor,
   scoreDirectDemand,
@@ -138,6 +140,22 @@ function momentumInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Global Radar scoring", () => {
+  it("publishes the immutable locked momentum policy for each taxonomy", () => {
+    const policy = createGlobalRadarMomentumPolicy(
+      "robot_learning_and_manipulation",
+    );
+
+    expect(policy).toEqual({
+      version: GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
+      taxonomy: "robot_learning_and_manipulation",
+      volumeTargets: { days7: 2, days30: 4, days90: 8 },
+      windowWeights: { days7: 50, days30: 30, days90: 20 },
+    });
+    expect(Object.isFrozen(policy)).toBe(true);
+    expect(Object.isFrozen(policy.volumeTargets)).toBe(true);
+    expect(Object.isFrozen(policy.windowWeights)).toBe(true);
+  });
+
   it("scores direct demand with the exact class-local weights", () => {
     expect(
       scoreDirectDemand({

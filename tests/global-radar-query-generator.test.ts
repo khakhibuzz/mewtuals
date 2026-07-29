@@ -24,6 +24,12 @@ const planningConfig: PublicGlobalRadarPlanningConfig = {
   sourceFamilies: ["official_company_material"],
   resultLimit: 20,
   scoreVersion: "global-radar-score-v1",
+  thresholds: {
+    version: "global-radar-thresholds-v1",
+    direct_demand: 70,
+    demand_precursor: 65,
+    ecosystem_momentum: 70,
+  },
 };
 
 const nonWatchlistScanModes = [

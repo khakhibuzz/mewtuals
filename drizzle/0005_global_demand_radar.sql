@@ -25,6 +25,7 @@ CREATE TABLE "global_entities" (
 	"linkedin_url" text,
 	"canonical_corporate_group_id" text,
 	"stable_public_identifiers" text[] DEFAULT ARRAY[]::text[] NOT NULL,
+	"public_identity_anchor" text NOT NULL,
 	"headquarters_country" text NOT NULL,
 	"headquarters_city" text,
 	"operating_countries" text[],
@@ -62,6 +63,7 @@ CREATE TABLE "global_entities" (
               !~ '(^|\n)[[:space:]]*($|\n)'
           )
         )),
+	CONSTRAINT "global_entities_public_identity_anchor_check" CHECK ("global_entities"."public_identity_anchor" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "global_entities_revision_check" CHECK ("global_entities"."revision" >= 0),
 	CONSTRAINT "global_entities_seen_order_check" CHECK ("global_entities"."first_seen_at" <= "global_entities"."last_seen_at")
 );
@@ -425,6 +427,7 @@ CREATE TABLE "global_radar_signals" (
 	"score_coverage" integer NOT NULL,
 	"score_policy_version" text NOT NULL,
 	"momentum_policy_version" text,
+	"momentum_qualification_gates_passed" boolean,
 	"announced_at" timestamp with time zone,
 	"effective_from" timestamp with time zone,
 	"expires_at" timestamp with time zone,
@@ -556,6 +559,7 @@ CREATE TABLE "global_radar_signals" (
         AND "global_radar_signals"."momentum_taxonomy_consistency" IS NULL
         AND "global_radar_signals"."momentum_evidence_quality" IS NULL
         AND "global_radar_signals"."momentum_policy_version" IS NULL
+        AND "global_radar_signals"."momentum_qualification_gates_passed" IS NULL
       ) OR (
         "global_radar_signals"."signal_class" = 'demand_precursor'
         AND "global_radar_signals"."global_entity_id" IS NOT NULL
@@ -583,6 +587,7 @@ CREATE TABLE "global_radar_signals" (
         AND "global_radar_signals"."momentum_taxonomy_consistency" IS NULL
         AND "global_radar_signals"."momentum_evidence_quality" IS NULL
         AND "global_radar_signals"."momentum_policy_version" IS NULL
+        AND "global_radar_signals"."momentum_qualification_gates_passed" IS NULL
       ) OR (
         "global_radar_signals"."signal_class" = 'ecosystem_momentum'
         AND "global_radar_signals"."direct_demand_score" IS NULL
@@ -618,6 +623,7 @@ CREATE TABLE "global_radar_signals" (
         AND "global_radar_signals"."momentum_score" IS NOT NULL
         AND "global_radar_signals"."score_coverage" = 100
         AND "global_radar_signals"."momentum_policy_version" IS NOT NULL
+        AND "global_radar_signals"."momentum_qualification_gates_passed" IS NOT NULL
       )),
 	CONSTRAINT "global_radar_signals_activity_check" CHECK ((
         "global_radar_signals"."signal_class" = 'direct_demand'
@@ -858,6 +864,7 @@ ALTER TABLE "global_signal_updates" ADD CONSTRAINT "global_signal_updates_signal
 ALTER TABLE "global_signal_updates" ADD CONSTRAINT "global_signal_updates_evidence_fk" FOREIGN KEY ("evidence_id") REFERENCES "public"."global_signal_evidence"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "global_entities_canonical_domain_unique" ON "global_entities" USING btree ("canonical_domain") WHERE "global_entities"."canonical_domain" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "global_entities_linkedin_url_unique" ON "global_entities" USING btree ("linkedin_url") WHERE "global_entities"."linkedin_url" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "global_entities_public_identity_anchor_unique" ON "global_entities" USING btree ("public_identity_anchor");--> statement-breakpoint
 CREATE INDEX "global_entities_stable_public_identifiers_idx" ON "global_entities" USING gin ("stable_public_identifiers");--> statement-breakpoint
 CREATE INDEX "global_entities_name_country_idx" ON "global_entities" USING btree ("normalized_name","headquarters_country");--> statement-breakpoint
 CREATE INDEX "global_entities_status_idx" ON "global_entities" USING btree ("entity_status");--> statement-breakpoint

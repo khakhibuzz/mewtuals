@@ -7,6 +7,8 @@ import {
 } from "../taxonomies/global-radar-v1";
 
 export const GLOBAL_RADAR_SCORE_VERSION = "global-radar-score-v1" as const;
+export const GLOBAL_RADAR_MOMENTUM_POLICY_VERSION =
+  "global-radar-momentum-v1" as const;
 
 const nullableScoreComponentSchema = scoreComponentSchema.nullable();
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -99,11 +101,15 @@ export const momentumObservationSchema = z.strictObject({
   observedAt: isoTimestampSchema,
 });
 
+export const MAX_GLOBAL_RADAR_MOMENTUM_OBSERVATIONS = 25_000;
+
 export const momentumDerivationInputSchema = z.strictObject({
   taxonomy: z.enum(globalRadarDemandFamilies),
   taxonomyConsistency: scoreComponentSchema,
   evidenceQuality: scoreComponentSchema,
-  observations: z.array(momentumObservationSchema).max(100),
+  observations: z
+    .array(momentumObservationSchema)
+    .max(MAX_GLOBAL_RADAR_MOMENTUM_OBSERVATIONS),
 });
 
 export const momentumPolicySchema = z
@@ -291,6 +297,20 @@ export type MomentumScoreResult = Readonly<
 export type MomentumDerivationResult = Readonly<
   DeepReadonly<z.output<typeof momentumDerivationResultSchema>>
 >;
+
+export function createGlobalRadarMomentumPolicy(
+  taxonomy: MomentumPolicy["taxonomy"],
+): MomentumPolicy {
+  const policy = momentumPolicySchema.parse({
+    version: GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
+    taxonomy,
+    volumeTargets: { days7: 2, days30: 4, days90: 8 },
+    windowWeights: { days7: 50, days30: 30, days90: 20 },
+  });
+  Object.freeze(policy.volumeTargets);
+  Object.freeze(policy.windowWeights);
+  return Object.freeze(policy);
+}
 
 const directDemandWeights = {
   explicitness: 18,

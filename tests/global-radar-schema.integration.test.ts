@@ -58,6 +58,7 @@ async function insertGlobalEntity() {
     insert into global_entities (
       canonical_name,
       normalized_name,
+      public_identity_anchor,
       headquarters_country,
       organisation_type,
       sector,
@@ -65,6 +66,7 @@ async function insertGlobalEntity() {
     ) values (
       'Schema Fixture Robotics',
       'schema fixture robotics',
+      ${hash},
       'India',
       'company',
       'robotics',
@@ -175,6 +177,7 @@ describe("Global Radar PostgreSQL constraints", () => {
           canonical_name,
           normalized_name,
           stable_public_identifiers,
+          public_identity_anchor,
           headquarters_country,
           organisation_type,
           sector,
@@ -183,6 +186,7 @@ describe("Global Radar PostgreSQL constraints", () => {
           'Null Identifier Robotics',
           'null identifier robotics',
           array['public:lei:abc', null]::text[],
+          ${hash},
           'India',
           'company',
           'robotics',
@@ -191,6 +195,33 @@ describe("Global Radar PostgreSQL constraints", () => {
       `).rejects.toMatchObject({
         code: "23514",
         constraint_name: "global_entities_stable_identifiers_count_check",
+      });
+    });
+  });
+
+  it("rejects a malformed durable public identity anchor", async () => {
+    await withinRollback(async () => {
+      await expect(sql`
+        insert into global_entities (
+          canonical_name,
+          normalized_name,
+          public_identity_anchor,
+          headquarters_country,
+          organisation_type,
+          sector,
+          short_description
+        ) values (
+          'Malformed Anchor Robotics',
+          'malformed anchor robotics',
+          'not-a-sha256-anchor',
+          'India',
+          'company',
+          'robotics',
+          'A database constraint fixture.'
+        )
+      `).rejects.toMatchObject({
+        code: "23514",
+        constraint_name: "global_entities_public_identity_anchor_check",
       });
     });
   });

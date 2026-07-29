@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   indiaRelevanceTypes,
+  isoTimestampSchema,
   scoreComponentSchema,
   signalClasses,
   signalStatuses,
@@ -41,6 +42,47 @@ export const rediscoveredSignalStatusResultSchema = z.discriminatedUnion(
     z.strictObject({
       valid: z.literal(false),
       reason: z.literal("invalid_rediscovery_status_input"),
+    }),
+  ],
+);
+
+export const rediscoveredReobservationInputSchema = z
+  .strictObject({
+    currentEvergreen: z.boolean(),
+    currentReobserveBy: isoTimestampSchema.nullable(),
+    proposedEvergreen: z.boolean(),
+    proposedReobserveBy: isoTimestampSchema.nullable(),
+    proposedObservedAt: isoTimestampSchema,
+    isNewerObservation: z.boolean(),
+  })
+  .superRefine((input, context) => {
+    if (input.currentEvergreen !== (input.currentReobserveBy !== null)) {
+      context.addIssue({
+        code: "custom",
+        message: "Current evergreen classification and deadline disagree.",
+        path: ["currentReobserveBy"],
+      });
+    }
+    if (input.proposedEvergreen !== (input.proposedReobserveBy !== null)) {
+      context.addIssue({
+        code: "custom",
+        message: "Proposed evergreen classification and deadline disagree.",
+        path: ["proposedReobserveBy"],
+      });
+    }
+  });
+
+export const rediscoveredReobservationResultSchema = z.discriminatedUnion(
+  "valid",
+  [
+    z.strictObject({
+      valid: z.literal(true),
+      reobserveBy: isoTimestampSchema.nullable(),
+      advanced: z.boolean(),
+    }),
+    z.strictObject({
+      valid: z.literal(false),
+      reason: z.literal("invalid_rediscovery_reobservation_input"),
     }),
   ],
 );
@@ -106,6 +148,12 @@ export type RediscoveredSignalStatusInput = Readonly<
 >;
 export type RediscoveredSignalStatusResult = Readonly<
   z.output<typeof rediscoveredSignalStatusResultSchema>
+>;
+export type RediscoveredReobservationInput = Readonly<
+  z.input<typeof rediscoveredReobservationInputSchema>
+>;
+export type RediscoveredReobservationResult = Readonly<
+  z.output<typeof rediscoveredReobservationResultSchema>
 >;
 export type QualificationAssessment = Readonly<
   z.input<typeof qualificationAssessmentSchema>
@@ -202,6 +250,34 @@ export function preserveRediscoveredSignalStatus(
     });
   }
   return Object.freeze({ valid: true, status: parsed.data.currentStatus });
+}
+
+export function resolveRediscoveredReobserveBy(
+  input: RediscoveredReobservationInput | unknown,
+): RediscoveredReobservationResult {
+  const parsed = rediscoveredReobservationInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return Object.freeze({
+      valid: false,
+      reason: "invalid_rediscovery_reobservation_input",
+    });
+  }
+  const current = parsed.data.currentReobserveBy;
+  const proposed = parsed.data.proposedReobserveBy;
+  const advanced =
+    parsed.data.currentEvergreen &&
+    parsed.data.proposedEvergreen &&
+    parsed.data.isNewerObservation &&
+    proposed !== null &&
+    current !== null &&
+    Date.parse(parsed.data.proposedObservedAt) <= Date.parse(current) &&
+    Date.parse(proposed) > Date.parse(parsed.data.proposedObservedAt) &&
+    Date.parse(proposed) > Date.parse(current);
+  return Object.freeze({
+    valid: true,
+    reobserveBy: advanced ? proposed : current,
+    advanced,
+  });
 }
 
 function invalidTransition(

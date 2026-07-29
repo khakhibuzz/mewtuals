@@ -4,6 +4,7 @@ import * as globalRadarDomain from "../app/domain/global-radar";
 import {
   GLOBAL_RADAR_PLAN_VERSION,
   GLOBAL_RADAR_QUERY_VERSION,
+  parseGlobalRadarPlanSnapshot,
   planGlobalRadarRun,
   type GlobalRadarPlannerInput,
   type GlobalRadarLanguage,
@@ -23,6 +24,12 @@ const planningConfig: PublicGlobalRadarPlanningConfig = {
   sourceFamilies: globalRadarSourceFamilies,
   resultLimit: 20,
   scoreVersion: "global-radar-score-v1",
+  thresholds: {
+    version: "global-radar-thresholds-v1",
+    direct_demand: 70,
+    demand_precursor: 65,
+    ecosystem_momentum: 70,
+  },
 };
 
 function plannerInput(
@@ -43,6 +50,46 @@ function plannerInput(
 }
 
 describe("Global Radar planner", () => {
+  it("locks versioned class thresholds into the config and plan fingerprints", () => {
+    const baseline = planGlobalRadarRun(plannerInput());
+    const changed = planGlobalRadarRun(
+      plannerInput({
+        config: {
+          ...planningConfig,
+          thresholds: {
+            ...planningConfig.thresholds,
+            direct_demand: 71,
+          },
+        },
+      }),
+    );
+
+    expect(baseline.thresholds).toEqual(planningConfig.thresholds);
+    expect(Object.isFrozen(baseline.thresholds)).toBe(true);
+    expect(changed.configHash).not.toBe(baseline.configHash);
+    expect(changed.fingerprint).not.toBe(baseline.fingerprint);
+  });
+
+  it("exports one strict fingerprint-verifying plan snapshot parser", () => {
+    const plan = planGlobalRadarRun(plannerInput());
+
+    expect(parseGlobalRadarPlanSnapshot(plan, plan.fingerprint)).toEqual(plan);
+    expect(
+      parseGlobalRadarPlanSnapshot(
+        {
+          ...plan,
+          thresholds: { ...plan.thresholds, direct_demand: 71 },
+        },
+        plan.fingerprint,
+      ),
+    ).toBeNull();
+    expect(
+      parseGlobalRadarPlanSnapshot(
+        { ...plan, privateWorkerValue: "forbidden" },
+        plan.fingerprint,
+      ),
+    ).toBeNull();
+  });
   it("exposes the deliberate Task 2 public domain API", () => {
     expect({
       generate: globalRadarDomain.generateGlobalRadarQueries,
@@ -502,6 +549,7 @@ describe("Global Radar planner", () => {
       plan.themes,
       plan.sourceAdapters,
       plan.sourceFamilies,
+      plan.thresholds,
       plan.dateWindow,
       plan.watchlist,
       plan.watchlist[0],
@@ -524,6 +572,7 @@ describe("Global Radar planner", () => {
       themes: planningConfig.themes,
       languages: planningConfig.languages,
       countries: planningConfig.countries,
+      thresholds: planningConfig.thresholds,
     };
     const first = planGlobalRadarRun(plannerInput({ config: firstConfig }));
     const second = planGlobalRadarRun(plannerInput({ config: secondConfig }));

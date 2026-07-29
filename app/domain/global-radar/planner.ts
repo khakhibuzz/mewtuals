@@ -1,4 +1,10 @@
-import type { RadarScanMode } from "./contracts";
+import { z } from "zod";
+
+import {
+  fingerprintSchema,
+  type RadarScanMode,
+  type SignalClass,
+} from "./contracts";
 import {
   GLOBAL_RADAR_TAXONOMY_VERSION,
   globalRadarSourceFamilies,
@@ -7,6 +13,8 @@ import {
 
 export const GLOBAL_RADAR_PLAN_VERSION = "global-radar-plan-v1" as const;
 export const GLOBAL_RADAR_QUERY_VERSION = "global-radar-query-v1" as const;
+export const GLOBAL_RADAR_THRESHOLD_VERSION =
+  "global-radar-thresholds-v1" as const;
 
 export type GlobalRadarTheme = (typeof globalRadarThemes)[number];
 export type GlobalRadarSourceFamily = (typeof globalRadarSourceFamilies)[number];
@@ -14,6 +22,11 @@ export type GlobalRadarSourceAdapter = "codex_public_web";
 export type GlobalRadarLanguage = "en" | "zh-CN";
 export type GlobalRadarCategorySearchTerms = Readonly<
   Partial<Record<GlobalRadarLanguage, string>>
+>;
+export type GlobalRadarThresholds = Readonly<
+  Record<SignalClass, number> & {
+    version: typeof GLOBAL_RADAR_THRESHOLD_VERSION;
+  }
 >;
 
 export type PublicGlobalRadarPlanningConfig = {
@@ -24,6 +37,7 @@ export type PublicGlobalRadarPlanningConfig = {
   sourceFamilies: readonly GlobalRadarSourceFamily[];
   resultLimit: number;
   scoreVersion: string;
+  thresholds: GlobalRadarThresholds;
 };
 
 export type RadarCoverageState = {
@@ -71,8 +85,63 @@ export type RadarPlan = Readonly<{
   resultLimit: number;
   taxonomyVersion: typeof GLOBAL_RADAR_TAXONOMY_VERSION;
   scoreVersion: string;
+  thresholds: GlobalRadarThresholds;
   watchlist: readonly Readonly<WatchlistPlanningInput>[];
 }>;
+
+const planBoundedText = (maximum: number) =>
+  z.string().trim().min(1).max(maximum);
+const planApplicationRefSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(/^[a-z0-9][a-z0-9._:-]*$/);
+const planScoreComponentSchema = z.number().int().min(0).max(100);
+
+const radarPlanSnapshotSchema = z.strictObject({
+  version: z.literal(GLOBAL_RADAR_PLAN_VERSION),
+  queryVersion: z.literal(GLOBAL_RADAR_QUERY_VERSION),
+  identityKey: planBoundedText(500),
+  fingerprint: fingerprintSchema,
+  configHash: fingerprintSchema,
+  scanMode: z.enum(["daily", "thematic", "watchlist_refresh", "manual"]),
+  countries: z.array(planBoundedText(100)).max(50),
+  languages: z.array(z.enum(["en", "zh-CN"])).max(2),
+  themes: z.array(z.enum(globalRadarThemes)).max(globalRadarThemes.length),
+  sourceAdapters: z.array(z.literal("codex_public_web")).max(1),
+  sourceFamilies: z
+    .array(z.enum(globalRadarSourceFamilies))
+    .max(globalRadarSourceFamilies.length),
+  dateWindow: z.strictObject({
+    startInclusive: planBoundedText(100),
+    endExclusive: planBoundedText(100),
+  }),
+  resultLimit: z.number().int().min(1).max(20),
+  taxonomyVersion: z.literal(GLOBAL_RADAR_TAXONOMY_VERSION),
+  scoreVersion: planApplicationRefSchema,
+  thresholds: z.strictObject({
+    version: z.literal(GLOBAL_RADAR_THRESHOLD_VERSION),
+    direct_demand: planScoreComponentSchema,
+    demand_precursor: planScoreComponentSchema,
+    ecosystem_momentum: planScoreComponentSchema,
+  }),
+  watchlist: z
+    .array(
+      z.strictObject({
+        category: planBoundedText(200),
+        categorySearchTerms: z.strictObject({
+          en: planBoundedText(500).optional(),
+          "zh-CN": planBoundedText(500).optional(),
+        }),
+        theme: z.enum(globalRadarThemes),
+        countries: z.array(planBoundedText(100)).max(50),
+        languages: z.array(z.enum(["en", "zh-CN"])).max(2),
+        cadenceDays: z.number().int().min(1).max(3_650),
+        priority: z.number().int(),
+      }),
+    )
+    .max(100),
+});
 
 const KOLKATA_OFFSET_MILLISECONDS = 5.5 * 60 * 60 * 1_000;
 const DAILY_RECENCY_DAYS = 30;
@@ -249,6 +318,23 @@ function canonicalConfig(config: PublicGlobalRadarPlanningConfig) {
     throw new Error("Global Radar configuration contains an unknown source family.");
   }
   const selectedSourceFamilies = new Set(config.sourceFamilies);
+  const thresholds = config.thresholds;
+  if (
+    !thresholds ||
+    thresholds.version !== GLOBAL_RADAR_THRESHOLD_VERSION ||
+    [
+      thresholds.direct_demand,
+      thresholds.demand_precursor,
+      thresholds.ecosystem_momentum,
+    ].some(
+      (threshold) =>
+        !Number.isInteger(threshold) || threshold < 0 || threshold > 100,
+    )
+  ) {
+    throw new Error(
+      "Global Radar thresholds require the supported version and integer class values from 0 to 100.",
+    );
+  }
   return {
     countries,
     languages,
@@ -259,6 +345,7 @@ function canonicalConfig(config: PublicGlobalRadarPlanningConfig) {
     ),
     resultLimit: config.resultLimit,
     scoreVersion,
+    thresholds: Object.freeze({ ...thresholds }),
   };
 }
 
@@ -389,6 +476,7 @@ function freezePlan(plan: Omit<RadarPlan, "fingerprint">): RadarPlan {
     sourceAdapters: Object.freeze([...plan.sourceAdapters]),
     sourceFamilies: Object.freeze([...plan.sourceFamilies]),
     dateWindow: Object.freeze({ ...plan.dateWindow }),
+    thresholds: Object.freeze({ ...plan.thresholds }),
     watchlist: Object.freeze(
       plan.watchlist.map((entry) =>
         Object.freeze({
@@ -404,6 +492,23 @@ function freezePlan(plan: Omit<RadarPlan, "fingerprint">): RadarPlan {
     ...immutablePlan,
     fingerprint: stableGlobalRadarFingerprint(immutablePlan),
   });
+}
+
+export function parseGlobalRadarPlanSnapshot(
+  value: unknown,
+  expectedFingerprint?: string,
+): RadarPlan | null {
+  const parsed = radarPlanSnapshotSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const { fingerprint, ...immutablePlan } = parsed.data;
+  if (
+    (expectedFingerprint !== undefined &&
+      fingerprint !== expectedFingerprint) ||
+    stableGlobalRadarFingerprint(immutablePlan) !== fingerprint
+  ) {
+    return null;
+  }
+  return freezePlan(immutablePlan);
 }
 
 export function planGlobalRadarRun(input: GlobalRadarPlannerInput): RadarPlan {
@@ -508,6 +613,7 @@ export function planGlobalRadarRun(input: GlobalRadarPlannerInput): RadarPlan {
     resultLimit: config.resultLimit,
     taxonomyVersion: GLOBAL_RADAR_TAXONOMY_VERSION,
     scoreVersion: config.scoreVersion,
+    thresholds: config.thresholds,
     watchlist: plannedWatchlist,
   });
 }
