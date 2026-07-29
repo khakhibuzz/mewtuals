@@ -166,6 +166,16 @@ describe("Global Radar India relevance", () => {
       "distribution",
       "We considered expanding distribution into India but cancelled the plan.",
     ],
+    [
+      "India_expansion",
+      "distribution",
+      "We decided against expanding distribution into India.",
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "We no longer operate manufacturing in India.",
+    ],
   ] as const)(
     "rejects negated or abandoned original evidence mislabeled as %s",
     (proposedType, factKind, originalText) => {
@@ -185,6 +195,106 @@ describe("Global Radar India relevance", () => {
       ).toEqual({
         assessed: false,
         reason: "missing_exact_original_evidence",
+      });
+    },
+  );
+
+  it.each([
+    [
+      "explicit_India",
+      "suppliers",
+      "We don’t accept suppliers from India.",
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "The company isn’t operating manufacturing in India.",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We aren’t expanding distribution into India.",
+    ],
+  ] as const)(
+    "rejects contracted negative original evidence mislabeled as %s",
+    (proposedType, factKind, originalText) => {
+      const fieldPath = `indiaRelevance.${proposedType}.${factKind}`;
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType,
+            evidence: [
+              evidence(fieldPath, "original", {
+                originalText,
+                englishSummary: originalText,
+              }),
+            ],
+          }),
+        ),
+      ).toEqual({
+        assessed: false,
+        reason: "missing_exact_original_evidence",
+      });
+    },
+  );
+
+  it.each([
+    [
+      "explicit_India",
+      "suppliers",
+      "en",
+      "We accept suppliers only from India.",
+      null,
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "zh-CN",
+      "我们仅在印度制造机器人。",
+      90,
+    ],
+    [
+      "explicit_India",
+      "suppliers",
+      "en",
+      "Indian suppliers are eligible for this programme.",
+      null,
+    ],
+    [
+      "explicit_India",
+      "suppliers",
+      "en",
+      "Indian suppliers are eligible and certification is not required.",
+      null,
+    ],
+  ] as const)(
+    "accepts clause-scoped positive evidence for %s: %s",
+    (
+      proposedType,
+      factKind,
+      sourceLanguage,
+      originalText,
+      translationConfidence,
+    ) => {
+      const fieldPath = `indiaRelevance.${proposedType}.${factKind}`;
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType,
+            evidence: [
+              evidence(fieldPath, "original", {
+                sourceLanguage,
+                originalText,
+                englishSummary: originalText,
+                translationConfidence,
+              }),
+            ],
+          }),
+        ),
+      ).toMatchObject({
+        assessed: true,
+        relevanceType: proposedType,
+        supportedEvidencePaths: [fieldPath],
       });
     },
   );
@@ -210,6 +320,50 @@ describe("Global Radar India relevance", () => {
       });
     },
   );
+
+  it("rejects contracted negative globally-open evidence", () => {
+    const originalText = "Applications aren’t open worldwide.";
+    expect(
+      assessIndiaRelevance(
+        assessmentInput({
+          proposedType: "globally_open",
+          evidence: [
+            evidence(
+              "indiaRelevance.globally_open.requirement_access",
+              "original",
+              { originalText, englishSummary: originalText },
+            ),
+          ],
+        }),
+      ),
+    ).toEqual({
+      assessed: false,
+      reason: "missing_global_openness_evidence",
+    });
+  });
+
+  it("allows non-geographic eligibility qualifiers beside a positive global-open clause", () => {
+    const originalText =
+      "Applications are open worldwide; only registered companies are eligible.";
+    expect(
+      assessIndiaRelevance(
+        assessmentInput({
+          proposedType: "globally_open",
+          evidence: [
+            evidence(
+              "indiaRelevance.globally_open.requirement_access",
+              "original",
+              { originalText, englishSummary: originalText },
+            ),
+          ],
+        }),
+      ),
+    ).toMatchObject({
+      assessed: true,
+      relevanceType: "globally_open",
+      basis: "globally_open",
+    });
+  });
 
   it.each([
     ["explicit_India", "suppliers"],
@@ -499,6 +653,8 @@ describe("Global Radar India relevance", () => {
   it.each([
     "The organisation published supplier application information.",
     "Applications are closed and limited to domestic suppliers.",
+    "Applications are open worldwide but restricted to Brazil.",
+    "Applications are open worldwide except Brazil.",
   ])(
     "rejects globally-open worker paths without positive original openness: %s",
     (originalText) => {
