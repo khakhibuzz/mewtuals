@@ -113,12 +113,6 @@ export function createGlobalRadarFingerprint(value: unknown): string {
   ).join("");
 }
 
-function forceHttps(value: string): string {
-  const url = new URL(value);
-  url.protocol = "https:";
-  return url.toString().replace(/\/$/, "");
-}
-
 export function normalizeEntityDomain(value: string): string {
   const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(value.trim())
     ? value.trim()
@@ -156,7 +150,7 @@ export function normalizeLinkedInOrganizationUrl(value: string): string {
 }
 
 export function canonicalizeEvidenceUrl(value: string): string {
-  return forceHttps(normalizePublicHttpUrl(value, "Evidence URL"));
+  return normalizePublicHttpUrl(value, "Evidence URL");
 }
 
 function normalizePublicIdentifier(

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  candidateEvidenceSchema,
+  classificationResultSchema,
   classifySignal,
+  evidenceCandidateSchema,
+  signalGateFactsSchema,
   type CandidateEvidence,
   type DirectDemandAskType,
   type EvidenceCandidate,
@@ -31,7 +35,10 @@ function evidence(
     isSyndicated: false,
     organizationId: "domain:example.com",
     corporateGroupId: "group:example",
-    supportedFieldPaths: ["directDemandAsk", "responsePath"],
+    supportedFieldPaths: [
+      "directDemandAsk.supplier_registration",
+      "responsePath",
+    ],
     ...overrides,
   };
 }
@@ -83,12 +90,128 @@ const precursorTypes: readonly PrecursorDevelopmentType[] = [
 ];
 
 describe("Global Radar signal classification", () => {
+  it("exports strict complete runtime schemas for classification boundaries", () => {
+    const validCandidate = candidate();
+    const validResult = classifySignal(validCandidate);
+
+    expect(candidateEvidenceSchema.safeParse(evidence()).success).toBe(true);
+    expect(evidenceCandidateSchema.safeParse(validCandidate).success).toBe(true);
+    expect(classificationResultSchema.safeParse(validResult).success).toBe(true);
+    expect(
+      validResult.accepted &&
+        signalGateFactsSchema.safeParse(validResult.gateFacts).success,
+    ).toBe(true);
+
+    expect(
+      candidateEvidenceSchema.safeParse({
+        ...evidence(),
+        unknownField: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      signalGateFactsSchema.safeParse({
+        ...(validResult.accepted ? validResult.gateFacts : {}),
+        responsePathVerified: "true",
+      }).success,
+    ).toBe(false);
+    expect(
+      classificationResultSchema.safeParse({
+        accepted: false,
+        reason: "invalid_evidence",
+        signalClass: "direct_demand",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects malformed, oversized, and non-canonical classification inputs without throwing", () => {
+    const invalidInputs: unknown[] = [
+      {},
+      null,
+      "direct_demand",
+      { ...candidate(), unknownField: true },
+      { ...candidate(), evidence: Array.from({ length: 101 }, () => evidence()) },
+      {
+        ...candidate(),
+        evidence: [evidence({ originalText: "x".repeat(1_001) })],
+      },
+      {
+        ...candidate(),
+        evidence: [evidence({ isPrimarySource: "true" as never })],
+      },
+      {
+        ...candidate(),
+        evidence: [evidence({ organizationId: "Domain:Example.com" })],
+      },
+      {
+        ...candidate(),
+        evidence: [evidence({ corporateGroupId: " group:example" })],
+      },
+    ];
+
+    for (const input of invalidInputs) {
+      expect(() => classifySignal(input)).not.toThrow();
+      const result = classifySignal(input);
+      expect(result).toEqual({ accepted: false, reason: "invalid_evidence" });
+      expect(Object.isFrozen(result)).toBe(true);
+      expect(classificationResultSchema.safeParse(result).success).toBe(true);
+    }
+  });
+
+  it("enforces class-discriminated candidate fields and freezes validated accepted output", () => {
+    expect(
+      evidenceCandidateSchema.safeParse({
+        ...candidate(),
+        precursorDevelopmentType: "funding",
+      }).success,
+    ).toBe(false);
+    expect(
+      evidenceCandidateSchema.safeParse({
+        ...candidate({
+          proposedSignalClass: "demand_precursor",
+          directDemandAsk: null,
+          precursorDevelopmentType: "funding",
+        }),
+        momentumMetrics: { taxonomyConsistency: 90, evidenceQuality: 90 },
+      }).success,
+    ).toBe(false);
+    expect(
+      evidenceCandidateSchema.safeParse(
+        candidate({
+          proposedSignalClass: "ecosystem_momentum",
+          directDemandAsk: null,
+          precursorDevelopmentType: null,
+          momentumMetrics: { taxonomyConsistency: 90, evidenceQuality: 90 },
+          evidence: [
+            evidence({
+              organizationId: "org:alpha",
+              corporateGroupId: "group:alpha",
+            }),
+            evidence({
+              sourceUrl: "https://beta.example/source",
+              organizationId: "org:beta",
+              corporateGroupId: "group:beta",
+            }),
+          ],
+        }),
+      ).success,
+    ).toBe(true);
+
+    const result = classifySignal(candidate());
+    expect(result.accepted).toBe(true);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(result.accepted && Object.isFrozen(result.gateFacts)).toBe(true);
+    expect(classificationResultSchema.safeParse(result).success).toBe(true);
+  });
+
   it.each(acceptedAskTypes)(
     "accepts an explicit current %s ask with first-party support",
     (type) => {
       const result = classifySignal(
         candidate({
           directDemandAsk: { type, isExplicit: true, expiresAt: null },
+          evidence: [
+            evidence({ supportedFieldPaths: [`directDemandAsk.${type}`] }),
+          ],
         }),
       );
 
@@ -104,16 +227,16 @@ describe("Global Radar signal classification", () => {
   );
 
   it.each([
-    ["funding-only", "funding"],
-    ["hiring-only", "hiring"],
-    ["launch-only", "platform_launch"],
-    ["generic marketing", null],
-  ] as const)("rejects %s as direct demand", (_label, precursorType) => {
+    "funding-only",
+    "hiring-only",
+    "launch-only",
+    "generic marketing",
+  ] as const)("rejects %s as direct demand", () => {
     expect(
       rejectionReason(
         candidate({
           directDemandAsk: null,
-          precursorDevelopmentType: precursorType,
+          precursorDevelopmentType: null,
         }),
       ),
     ).toBe("missing_explicit_current_ask");
@@ -193,6 +316,24 @@ describe("Global Radar signal classification", () => {
     ).toBe("missing_official_direct_demand_evidence");
   });
 
+  it.each([
+    ["rfp", "directDemandAsk.supplier_registration"],
+    ["rfp", "directDemandAsk.rfpFake"],
+    ["rfp", "directDemandAsk.Bogus"],
+  ] as const)(
+    "rejects %s direct demand with mismatched provenance %s",
+    (type, supportedFieldPath) => {
+      expect(
+        rejectionReason(
+          candidate({
+            directDemandAsk: { type, isExplicit: true, expiresAt: null },
+            evidence: [evidence({ supportedFieldPaths: [supportedFieldPath] })],
+          }),
+        ),
+      ).toBe("missing_official_direct_demand_evidence");
+    },
+  );
+
   it.each(precursorTypes)(
     "accepts a dated %s development only as a precursor",
     (precursorDevelopmentType) => {
@@ -204,7 +345,9 @@ describe("Global Radar signal classification", () => {
           evidence: [
             evidence({
               supportsDirectDemand: false,
-              supportedFieldPaths: ["precursorDevelopmentType"],
+              supportedFieldPaths: [
+                `precursorDevelopment.${precursorDevelopmentType}`,
+              ],
             }),
           ],
         }),
@@ -216,6 +359,31 @@ describe("Global Radar signal classification", () => {
         gateFacts: { datedDevelopment: true },
       });
       expect(result.accepted && result.signalClass).not.toBe("direct_demand");
+    },
+  );
+
+  it.each([
+    ["funding", "precursorDevelopment.expansion"],
+    ["funding", "precursorDevelopment.fundingFake"],
+    ["funding", "precursorDevelopment.Bogus"],
+  ] as const)(
+    "rejects %s precursor with mismatched provenance %s",
+    (precursorDevelopmentType, supportedFieldPath) => {
+      expect(
+        rejectionReason(
+          candidate({
+            proposedSignalClass: "demand_precursor",
+            directDemandAsk: null,
+            precursorDevelopmentType,
+            evidence: [
+              evidence({
+                supportsDirectDemand: false,
+                supportedFieldPaths: [supportedFieldPath],
+              }),
+            ],
+          }),
+        ),
+      ).toBe("missing_dated_precursor_evidence");
     },
   );
 
@@ -316,7 +484,7 @@ describe("Global Radar signal classification", () => {
     ).toBe("insufficient_independent_organizations");
   });
 
-  it("rejects repeated evidence from one organisation despite inconsistent group labels", () => {
+  it("rejects one organisation mapped to inconsistent corporate groups", () => {
     expect(
       rejectionReason(
         candidate({
@@ -330,6 +498,71 @@ describe("Global Radar signal classification", () => {
             evidence({
               sourceUrl: "https://example.com/two",
               corporateGroupId: "group:two",
+            }),
+          ],
+          momentumMetrics: {
+            taxonomyConsistency: 90,
+            evidenceQuality: 90,
+          },
+        }),
+      ),
+    ).toBe("invalid_evidence");
+  });
+
+  it.each([
+    ["organizationId", "Org:alpha"],
+    ["organizationId", " org:alpha"],
+    ["corporateGroupId", "Group:alpha"],
+    ["corporateGroupId", "group:alpha "],
+  ] as const)("rejects non-canonical momentum %s %s", (field, value) => {
+    expect(
+      rejectionReason(
+        candidate({
+          proposedSignalClass: "ecosystem_momentum",
+          directDemandAsk: null,
+          evidence: [
+            evidence({ [field]: value }),
+            evidence({
+              sourceUrl: "https://beta.example/source",
+              organizationId: "org:beta",
+              corporateGroupId: "group:beta",
+            }),
+          ],
+          momentumMetrics: {
+            taxonomyConsistency: 90,
+            evidenceQuality: 90,
+          },
+        }),
+      ),
+    ).toBe("invalid_evidence");
+  });
+
+  it("anchors a deduplicated mirror to its primary contributor", () => {
+    expect(
+      rejectionReason(
+        candidate({
+          proposedSignalClass: "ecosystem_momentum",
+          directDemandAsk: null,
+          evidence: [
+            evidence({
+              sourceUrl: "https://alpha.example/first",
+              organizationId: "org:alpha",
+              corporateGroupId: "group:alpha",
+              supportsDirectDemand: false,
+            }),
+            evidence({
+              sourceUrl: "https://mirror.example/alpha",
+              canonicalSourceUrl: "https://alpha.example/first",
+              isPrimarySource: false,
+              organizationId: "org:beta",
+              corporateGroupId: "group:beta",
+              supportsDirectDemand: false,
+            }),
+            evidence({
+              sourceUrl: "https://alpha.example/second",
+              organizationId: "org:alpha",
+              corporateGroupId: "group:alpha",
+              supportsDirectDemand: false,
             }),
           ],
           momentumMetrics: {
@@ -730,6 +963,38 @@ describe("Global Radar signal classification", () => {
     ).toBe("search_result_is_not_evidence");
   });
 
+  it.each([
+    ["Sogou", "https://www.sogou.com/web?query=robotics+rfp"],
+    ["360 Search", "https://www.so.com/s?q=robotics+rfp"],
+    [
+      "Naver",
+      "https://search.naver.com/search.naver?query=robotics+rfp",
+    ],
+    [
+      "Google Scholar",
+      "https://scholar.google.com/scholar?q=robotics+rfp",
+    ],
+    ["Shenma", "https://m.sm.cn/s?q=robotics+rfp"],
+  ])("rejects %s results on source and canonical evidence URLs", (_name, resultUrl) => {
+    expect(
+      rejectionReason(
+        candidate({ evidence: [evidence({ sourceUrl: resultUrl })] }),
+      ),
+    ).toBe("search_result_is_not_evidence");
+    expect(
+      rejectionReason(
+        candidate({
+          evidence: [
+            evidence({
+              sourceUrl: "https://example.com/robotics-rfp",
+              canonicalSourceUrl: resultUrl,
+            }),
+          ],
+        }),
+      ),
+    ).toBe("search_result_is_not_evidence");
+  });
+
   it("rejects a search-result canonical URL behind an ordinary source URL", () => {
     expect(
       rejectionReason(
@@ -840,8 +1105,8 @@ describe("Global Radar signal classification", () => {
 
   it.each([
     "https://example.com/application",
-    "http://www.example.com/application/?utm_source=radar#apply",
-  ])("accepts exact canonical response URL token %s", (publishedUrl) => {
+    "https://www.example.com/application/?utm_source=radar#apply",
+  ])("accepts exact same-scheme canonical response URL token %s", (publishedUrl) => {
     const result = classifySignal(
       candidate({
         evidence: [
@@ -864,6 +1129,80 @@ describe("Global Radar signal classification", () => {
       gateFacts: { responsePathVerified: true },
     });
   });
+
+  it("accepts same-scheme tracking normalization without collapsing HTTP into HTTPS", () => {
+    const result = classifySignal(
+      candidate({
+        evidence: [
+          evidence({
+            sourceUrl: "http://example.com/announcement",
+            originalText:
+              "Apply through http://www.example.com/application/?utm_source=radar#apply.",
+          }),
+        ],
+        responsePath: {
+          type: "supplier_or_partner_registration",
+          url: "http://example.com/application",
+          businessEmail: null,
+          evidenceUrl: "http://example.com/announcement",
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      gateFacts: { responsePathVerified: true },
+    });
+  });
+
+  it("rejects a response URL when only a different-scheme token is cited", () => {
+    expect(
+      rejectionReason(
+        candidate({
+          evidence: [
+            evidence({
+              sourceUrl: "https://example.com/announcement",
+              originalText: "Apply through http://example.com/application.",
+            }),
+          ],
+          responsePath: {
+            type: "supplier_or_partner_registration",
+            url: "https://example.com/application",
+            businessEmail: null,
+            evidenceUrl: "https://example.com/announcement",
+          },
+        }),
+      ),
+    ).toBe("response_path_not_cited");
+  });
+
+  it.each([
+    [
+      "https://example.com/actual-source",
+      "https://unrelated.example/canonical-source",
+    ],
+    [
+      "https://example.com:8443/actual-source",
+      "https://example.com/actual-source",
+    ],
+  ])(
+    "rejects canonical evidence provenance unrelated to actual source %s",
+    (sourceUrl, canonicalSourceUrl) => {
+      expect(
+        rejectionReason(
+          candidate({
+            evidence: [evidence({ sourceUrl, canonicalSourceUrl })],
+            responsePath: {
+              type: "supplier_or_partner_registration",
+              url: canonicalSourceUrl,
+              businessEmail: null,
+              evidenceUrl: canonicalSourceUrl,
+            },
+          }),
+        ),
+      ).toBe("response_path_not_cited");
+    },
+  );
 
   it("rejects guessed business emails absent from the cited evidence", () => {
     expect(

@@ -19,6 +19,7 @@ const MAX_BOUNDED_STRING_ARRAY_ITEMS = 50;
 const MAX_BUSINESS_EMAIL_LENGTH = 254;
 const MAX_COUNTRY_LENGTH = 100;
 const MAX_LANGUAGE_LENGTH = 35;
+const MAX_APPLICATION_ID_LENGTH = 200;
 const MAX_ENTITY_NAME_LENGTH = 200;
 const MAX_EVIDENCE_CLAIM_LENGTH = 1_000;
 const MAX_EVIDENCE_EXCERPT_LENGTH = 500;
@@ -467,6 +468,154 @@ export const professionalResponsePathSchema = z
     }
   });
 
+export const applicationIdSchema = z
+  .string()
+  .min(1)
+  .max(MAX_APPLICATION_ID_LENGTH)
+  .regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "Application IDs must use canonical lowercase characters.",
+  });
+
+const supportedFieldPathSchema = z
+  .string()
+  .min(1)
+  .max(MAX_SUPPORTED_FIELD_PATH_LENGTH)
+  .regex(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$/, {
+    message: "Supported field paths must use dot-separated field segments.",
+  });
+
+export const directDemandAskSchema = z.strictObject({
+  type: z.enum(directDemandAskTypes),
+  isExplicit: z.boolean(),
+  expiresAt: isoTimestampSchema.nullable(),
+});
+
+export const momentumGateMetricsSchema = z.strictObject({
+  taxonomyConsistency: confidenceSchema,
+  evidenceQuality: confidenceSchema,
+});
+
+export const candidateEvidenceSchema = z.strictObject({
+  sourceUrl: publicHttpUrlSchema,
+  canonicalSourceUrl: publicHttpUrlSchema.nullable(),
+  sourceKind: z.enum(candidateEvidenceSourceKinds),
+  sourceLanguage: boundedRequiredString(MAX_LANGUAGE_LENGTH),
+  originalText: conciseRequiredString(MAX_EVIDENCE_CLAIM_LENGTH),
+  englishSummary: conciseRequiredString(MAX_EVIDENCE_SUMMARY_LENGTH),
+  publishedAt: isoTimestampSchema.nullable(),
+  observedAt: isoTimestampSchema,
+  evidenceConfidence: confidenceSchema,
+  translationConfidence: confidenceSchema.nullable(),
+  isPrimarySource: z.boolean(),
+  isOfficialProcurementSource: z.boolean(),
+  supportsDirectDemand: z.boolean(),
+  isSyndicated: z.boolean(),
+  organizationId: applicationIdSchema,
+  corporateGroupId: applicationIdSchema,
+  supportedFieldPaths: z
+    .array(supportedFieldPathSchema)
+    .min(1)
+    .max(MAX_SUPPORTED_FIELD_PATHS),
+});
+
+const evidenceCandidateObjectSchema = z.strictObject({
+  proposedSignalClass: z.enum(signalClasses),
+  observedAt: isoTimestampSchema,
+  directDemandAsk: directDemandAskSchema.nullable(),
+  precursorDevelopmentType: z.enum(precursorDevelopmentTypes).nullable(),
+  evidence: z
+    .array(candidateEvidenceSchema)
+    .min(1)
+    .max(MAX_BATCH_EVIDENCE_ITEMS),
+  momentumMetrics: momentumGateMetricsSchema.nullable(),
+  responsePath: professionalResponsePathSchema.nullable(),
+});
+
+export const evidenceCandidateSchema = evidenceCandidateObjectSchema.superRefine(
+  (candidate, context) => {
+    if (
+      candidate.proposedSignalClass === "direct_demand" &&
+      (candidate.precursorDevelopmentType !== null ||
+        candidate.momentumMetrics !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Direct demand cannot contain precursor or momentum fields.",
+      });
+    }
+    if (
+      candidate.proposedSignalClass === "demand_precursor" &&
+      (candidate.directDemandAsk !== null || candidate.momentumMetrics !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Demand precursor cannot contain direct-demand or momentum fields.",
+      });
+    }
+    if (
+      candidate.proposedSignalClass === "ecosystem_momentum" &&
+      (candidate.directDemandAsk !== null ||
+        candidate.precursorDevelopmentType !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Ecosystem momentum cannot contain direct-demand or precursor fields.",
+      });
+    }
+
+    const organizationGroups = new Map<string, string>();
+    candidate.evidence.forEach((item, index) => {
+      const knownGroup = organizationGroups.get(item.organizationId);
+      if (knownGroup === undefined) {
+        organizationGroups.set(item.organizationId, item.corporateGroupId);
+        return;
+      }
+      if (knownGroup !== item.corporateGroupId) {
+        context.addIssue({
+          code: "custom",
+          message: "One organisation must map to one canonical corporate group.",
+          path: ["evidence", index, "corporateGroupId"],
+        });
+      }
+    });
+  },
+);
+
+export const signalGateFactsSchema = z.strictObject({
+  explicitCurrentAsk: z.boolean(),
+  officialDirectDemandEvidence: z.boolean(),
+  datedDevelopment: z.boolean(),
+  evidenceItemCount: z.number().int().min(0).max(MAX_BATCH_EVIDENCE_ITEMS),
+  independentOrganizationCount: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_BATCH_EVIDENCE_ITEMS),
+  primarySourceCount: z.number().int().min(0).max(MAX_BATCH_EVIDENCE_ITEMS),
+  nonSyndicatedEvidenceCount: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_BATCH_EVIDENCE_ITEMS),
+  taxonomyConsistency: confidenceSchema.nullable(),
+  evidenceQuality: confidenceSchema.nullable(),
+  evidenceConfidence: confidenceSchema,
+  translationConfidence: confidenceSchema.nullable(),
+  responsePathVerified: z.boolean(),
+});
+
+export const classificationResultSchema = z.discriminatedUnion("accepted", [
+  z.strictObject({
+    accepted: z.literal(true),
+    signalClass: z.enum(signalClasses),
+    gateFacts: signalGateFactsSchema,
+  }),
+  z.strictObject({
+    accepted: z.literal(false),
+    reason: z.enum(radarRejectionReasons),
+  }),
+]);
+
 export const fingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
 function boundedRequiredString(maximumLength: number) {
@@ -664,64 +813,20 @@ export type PrecursorDevelopmentType =
 export type CandidateEvidenceSourceKind =
   (typeof candidateEvidenceSourceKinds)[number];
 export type RadarRejectionReason = (typeof radarRejectionReasons)[number];
-export type DirectDemandAsk = Readonly<{
-  type: DirectDemandAskType;
-  isExplicit: boolean;
-  expiresAt: string | null;
-}>;
-export type CandidateEvidence = Readonly<{
-  sourceUrl: string;
-  canonicalSourceUrl: string | null;
-  sourceKind: CandidateEvidenceSourceKind;
-  sourceLanguage: string;
-  originalText: string;
-  englishSummary: string;
-  publishedAt: string | null;
-  observedAt: string;
-  evidenceConfidence: number;
-  translationConfidence: number | null;
-  isPrimarySource: boolean;
-  isOfficialProcurementSource: boolean;
-  supportsDirectDemand: boolean;
-  isSyndicated: boolean;
-  organizationId: string;
-  corporateGroupId: string;
-  supportedFieldPaths: readonly string[];
-}>;
-export type MomentumGateMetrics = Readonly<{
-  taxonomyConsistency: number;
-  evidenceQuality: number;
-}>;
-export type EvidenceCandidate = Readonly<{
-  proposedSignalClass: SignalClass;
-  observedAt: string;
-  directDemandAsk: DirectDemandAsk | null;
-  precursorDevelopmentType: PrecursorDevelopmentType | null;
-  evidence: readonly CandidateEvidence[];
-  momentumMetrics: MomentumGateMetrics | null;
-  responsePath: ProfessionalResponsePath | null;
-}>;
-export type SignalGateFacts = Readonly<{
-  explicitCurrentAsk: boolean;
-  officialDirectDemandEvidence: boolean;
-  datedDevelopment: boolean;
-  evidenceItemCount: number;
-  independentOrganizationCount: number;
-  primarySourceCount: number;
-  nonSyndicatedEvidenceCount: number;
-  taxonomyConsistency: number | null;
-  evidenceQuality: number | null;
-  evidenceConfidence: number;
-  translationConfidence: number | null;
-  responsePathVerified: boolean;
-}>;
-export type ClassificationResult =
-  | Readonly<{
-      accepted: true;
-      signalClass: SignalClass;
-      gateFacts: SignalGateFacts;
-    }>
-  | Readonly<{ accepted: false; reason: RadarRejectionReason }>;
+export type DirectDemandAsk = Readonly<z.infer<typeof directDemandAskSchema>>;
+export type CandidateEvidence = Readonly<
+  z.infer<typeof candidateEvidenceSchema>
+>;
+export type MomentumGateMetrics = Readonly<
+  z.infer<typeof momentumGateMetricsSchema>
+>;
+export type EvidenceCandidate = Readonly<
+  z.infer<typeof evidenceCandidateSchema>
+>;
+export type SignalGateFacts = Readonly<z.infer<typeof signalGateFactsSchema>>;
+export type ClassificationResult = Readonly<
+  z.infer<typeof classificationResultSchema>
+>;
 export type ExecutedQuery = z.infer<typeof executedQuerySchema>;
 export type ObservedEntity = z.infer<typeof observedEntitySchema>;
 export type Evidence = z.infer<typeof evidenceSchema>;

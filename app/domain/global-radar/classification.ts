@@ -1,7 +1,9 @@
 import {
   candidateEvidenceSourceKindLookup,
+  classificationResultSchema,
   confidenceSchema,
   directDemandAskTypeLookup,
+  evidenceCandidateSchema,
   isoTimestampSchema,
   precursorDevelopmentTypeLookup,
   professionalResponsePathSchema,
@@ -66,20 +68,30 @@ type EvidenceAggregate = {
   nonSyndicated: boolean;
   organizationId: string;
   corporateGroupId: string;
+  contributorIsPrimary: boolean;
 };
 
 function reject(reason: RadarRejectionReason): ClassificationResult {
-  return Object.freeze({ accepted: false, reason });
+  return Object.freeze(
+    classificationResultSchema.parse({ accepted: false, reason }),
+  );
 }
 
 function accept(
   signalClass: SignalClass,
   gateFacts: SignalGateFacts,
 ): ClassificationResult {
-  return Object.freeze({
+  const result = classificationResultSchema.parse({
     accepted: true,
     signalClass,
-    gateFacts: Object.freeze(gateFacts),
+    gateFacts,
+  });
+  if (!result.accepted) {
+    throw new Error("Accepted classification output failed validation.");
+  }
+  return Object.freeze({
+    ...result,
+    gateFacts: Object.freeze(result.gateFacts),
   });
 }
 
@@ -146,6 +158,30 @@ function isSearchResultUrl(value: string): boolean {
     return true;
   }
   if (hasEngineDomain(host, "ecosia") && path.startsWith("/search")) {
+    return true;
+  }
+  if (hasEngineDomain(host, "sogou") && path.startsWith("/web")) {
+    return true;
+  }
+  if (
+    hasEngineDomain(host, "so") &&
+    (path === "/s" || path.startsWith("/s/"))
+  ) {
+    return true;
+  }
+  if (
+    host === "search.naver.com" &&
+    path.startsWith("/search.naver")
+  ) {
+    return true;
+  }
+  if (hasEngineDomain(host, "google") && host.split(".").includes("scholar")) {
+    return true;
+  }
+  if (
+    hasEngineDomain(host, "sm") &&
+    (path === "/s" || path.startsWith("/s/"))
+  ) {
     return true;
   }
   return (
@@ -278,14 +314,16 @@ function evidenceAggregates(
         nonSyndicated: !item.isSyndicated,
         organizationId: item.organizationId,
         corporateGroupId: item.corporateGroupId,
+        contributorIsPrimary: item.isPrimarySource,
       });
       continue;
     }
     aggregate.primary ||= item.isPrimarySource && !item.isSyndicated;
-    if (!item.isSyndicated) {
-      aggregate.nonSyndicated = true;
+    aggregate.nonSyndicated ||= !item.isSyndicated;
+    if (item.isPrimarySource && !aggregate.contributorIsPrimary) {
       aggregate.organizationId = item.organizationId;
       aggregate.corporateGroupId = item.corporateGroupId;
+      aggregate.contributorIsPrimary = true;
     }
   }
   return aggregates;
@@ -297,14 +335,12 @@ function average(values: readonly number[]): number {
   );
 }
 
-function supportsField(
+function supportsSubtypeProvenance(
   item: CandidateEvidence,
-  fieldPrefix: string,
+  field: "directDemandAsk" | "precursorDevelopment",
+  subtype: string,
 ): boolean {
-  const normalizedPrefix = normalizedFieldPath(fieldPrefix);
-  return item.supportedFieldPaths.some((fieldPath) =>
-    normalizedFieldPath(fieldPath).startsWith(normalizedPrefix),
-  );
+  return item.supportedFieldPaths.includes(`${field}.${subtype}`);
 }
 
 function baseGateFacts(
@@ -314,6 +350,12 @@ function baseGateFacts(
 ): SignalGateFacts {
   const aggregates = evidenceAggregates(evidence);
   const aggregateValues = [...aggregates.values()];
+  const contributorPairs = aggregateValues
+    .filter((item) => item.nonSyndicated)
+    .map((item) => `${item.organizationId}\u0000${item.corporateGroupId}`);
+  const contributorGroups = aggregateValues
+    .filter((item) => item.nonSyndicated)
+    .map((item) => item.corporateGroupId);
   const translationConfidences = evidence.flatMap(({ item }) =>
     item.translationConfidence === null ? [] : [item.translationConfidence],
   );
@@ -331,28 +373,30 @@ function baseGateFacts(
     explicitCurrentAsk,
     officialDirectDemandEvidence: evidence.some(
       ({ item }) =>
+        input.directDemandAsk !== null &&
         item.supportsDirectDemand &&
-        supportsField(item, "directDemandAsk") &&
+        supportsSubtypeProvenance(
+          item,
+          "directDemandAsk",
+          input.directDemandAsk.type,
+        ) &&
         (item.isPrimarySource || item.isOfficialProcurementSource),
     ),
     datedDevelopment: evidence.some(
       ({ item }) =>
+        input.precursorDevelopmentType !== null &&
         item.publishedAt !== null &&
         Date.parse(item.publishedAt) <= Date.parse(input.observedAt) &&
-        supportsField(item, "precursorDevelopment"),
+        supportsSubtypeProvenance(
+          item,
+          "precursorDevelopment",
+          input.precursorDevelopmentType,
+        ),
     ),
     evidenceItemCount: aggregates.size,
     independentOrganizationCount: Math.min(
-      new Set(
-        aggregateValues
-          .filter((item) => item.nonSyndicated)
-          .map((item) => item.organizationId),
-      ).size,
-      new Set(
-        aggregateValues
-          .filter((item) => item.nonSyndicated)
-          .map((item) => item.corporateGroupId),
-      ).size,
+      new Set(contributorPairs).size,
+      new Set(contributorGroups).size,
     ),
     primarySourceCount: aggregateValues.filter((item) => item.primary).length,
     nonSyndicatedEvidenceCount: aggregateValues.filter(
@@ -398,12 +442,8 @@ function publishedPublicUrls(value: string): ReadonlySet<string> {
   return urls;
 }
 
-function canonicalEvidenceUrls(item: CandidateEvidence): readonly string[] {
-  const urls = [canonicalizeEvidenceUrl(item.sourceUrl)];
-  if (item.canonicalSourceUrl) {
-    urls.push(canonicalizeEvidenceUrl(item.canonicalSourceUrl));
-  }
-  return urls;
+function actualEvidenceUrl(item: CandidateEvidence): string {
+  return canonicalizeEvidenceUrl(item.sourceUrl);
 }
 
 function citedResponseEvidence(
@@ -416,7 +456,7 @@ function citedResponseEvidence(
       ({ item }) =>
         item.isPrimarySource &&
         item.sourceKind === "original" &&
-        canonicalEvidenceUrls(item).includes(citedUrl) &&
+        actualEvidenceUrl(item) === citedUrl &&
         item.supportedFieldPaths.some((fieldPath) =>
           responseFieldNames.has(normalizedFieldPath(fieldPath)),
         ),
@@ -464,9 +504,8 @@ function validateResponsePath(
     return { valid: false, reason: "unsupported_response_path" };
   }
   const canonicalResponseUrl = canonicalizeEvidenceUrl(responseUrl);
-  const targetIsEvidence = canonicalEvidenceUrls(citedEvidence).includes(
-    canonicalResponseUrl,
-  );
+  const targetIsEvidence =
+    actualEvidenceUrl(citedEvidence) === canonicalResponseUrl;
   if (
     !targetIsEvidence &&
     !publishedPublicUrls(citedEvidence.originalText).has(canonicalResponseUrl)
@@ -550,29 +589,53 @@ function classifyMomentum(
   return accept("ecosystem_momentum", gateFacts);
 }
 
-export function classifySignal(input: EvidenceCandidate): ClassificationResult {
-  const evidenceResult = validateEvidence(input);
+function hasOnlyUnsupportedResponsePath(input: unknown): boolean {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    return false;
+  }
+  const record = input as Record<string, unknown>;
+  if (record.responsePath === null || record.responsePath === undefined) {
+    return false;
+  }
+  return evidenceCandidateSchema.safeParse({
+    ...record,
+    responsePath: null,
+  }).success;
+}
+
+export function classifySignal(input: unknown): ClassificationResult {
+  const parsedInput = evidenceCandidateSchema.safeParse(input);
+  if (!parsedInput.success) {
+    return reject(
+      hasOnlyUnsupportedResponsePath(input)
+        ? "unsupported_response_path"
+        : "invalid_evidence",
+    );
+  }
+  const candidate = parsedInput.data;
+
+  const evidenceResult = validateEvidence(candidate);
   if (!evidenceResult.valid) return reject(evidenceResult.reason);
 
   const responseResult = validateResponsePath(
-    input.responsePath,
+    candidate.responsePath,
     evidenceResult.evidence,
   );
   if (!responseResult.valid) return reject(responseResult.reason);
 
   const gateFacts = baseGateFacts(
-    input,
+    candidate,
     evidenceResult.evidence,
     responseResult.verified,
   );
-  if (input.proposedSignalClass === "direct_demand") {
-    return classifyDirectDemand(input, gateFacts);
+  if (candidate.proposedSignalClass === "direct_demand") {
+    return classifyDirectDemand(candidate, gateFacts);
   }
-  if (input.proposedSignalClass === "demand_precursor") {
-    return classifyPrecursor(input, gateFacts);
+  if (candidate.proposedSignalClass === "demand_precursor") {
+    return classifyPrecursor(candidate, gateFacts);
   }
-  if (input.proposedSignalClass === "ecosystem_momentum") {
-    return classifyMomentum(input, gateFacts);
+  if (candidate.proposedSignalClass === "ecosystem_momentum") {
+    return classifyMomentum(candidate, gateFacts);
   }
   return reject("invalid_evidence");
 }

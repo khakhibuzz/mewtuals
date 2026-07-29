@@ -35,7 +35,18 @@ describe("Global Radar normalization", () => {
       canonicalizeEvidenceUrl(
         "http://www.Example.com/rfp?id=7&utm_campaign=radar#scope",
       ),
-    ).toBe("https://example.com/rfp?id=7");
+    ).toBe("http://example.com/rfp?id=7");
+    expect(
+      canonicalizeEvidenceUrl(
+        "https://www.Example.com:8443/rfp?utm_source=radar#scope",
+      ),
+    ).toBe("https://example.com:8443/rfp");
+    expect(canonicalizeEvidenceUrl("http://example.com/rfp")).not.toBe(
+      canonicalizeEvidenceUrl("https://example.com/rfp"),
+    );
+    expect(canonicalizeEvidenceUrl("https://example.com:8443/rfp")).not.toBe(
+      canonicalizeEvidenceUrl("https://example.com/rfp"),
+    );
     expect(
       canonicalizeEvidenceUrl("https://example.com/rfp?id=8"),
     ).not.toBe(canonicalizeEvidenceUrl("https://example.com/rfp?id=7"));
@@ -168,5 +179,18 @@ describe("Global Radar normalization", () => {
     expect(mirror).toBe(original);
     expect(independentPrimary).not.toBe(original);
     expect(uncitedMirror).not.toBe(original);
+    expect(
+      createEvidenceFingerprint({
+        sourceUrl: "http://example.com/suppliers",
+        canonicalSourceUrl: null,
+        isPrimarySource: true,
+      }),
+    ).not.toBe(
+      createEvidenceFingerprint({
+        sourceUrl: "https://example.com/suppliers",
+        canonicalSourceUrl: null,
+        isPrimarySource: true,
+      }),
+    );
   });
 });
