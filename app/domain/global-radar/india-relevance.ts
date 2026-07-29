@@ -20,6 +20,11 @@ export const indiaEvidenceFactKinds = [
   "installation",
   "service",
 ] as const;
+type IndiaEvidenceFactKind = (typeof indiaEvidenceFactKinds)[number];
+type ExactIndiaRelevanceType =
+  | "explicit_India"
+  | "existing_India_presence"
+  | "India_expansion";
 const exactEvidenceRelevanceTypes = new Set([
   "explicit_India",
   "existing_India_presence",
@@ -28,6 +33,90 @@ const exactEvidenceRelevanceTypes = new Set([
 const latinIndiaMarkerPattern =
   /(?:^|[^\p{L}\p{N}])(?:India|Indian|Indians)(?=$|[^\p{L}\p{N}])/iu;
 const originalLanguageIndiaMarkers = ["भारत", "भारतीय", "印度"] as const;
+const excludingClaimPatterns = [
+  /\b(?:no|not|never|cannot|can't|won't|without)\b/iu,
+  /\b(?:abandon|abandoned|against|ban|banned|cancelled|canceled|ceased|closed|except|exclude|excluded|excludes|excluding|only|outside|prohibit|prohibited|unavailable|withdraw|withdrawn)\b/iu,
+  /नहीं|नही|बहिष्कृत|बंद|प्रतिबंधित/u,
+  /不|无|未|仅|排除|关闭|禁止/u,
+] as const;
+const positiveActionPatterns = [
+  /\b(?:accept|accepts|accepted|accepting|collect|collects|collecting|deploy|deploys|deploying|distribute|distributes|distributing|establish|established|expand|expands|expanding|has|have|install|installs|installing|invite|invites|inviting|launch|launches|launching|maintain|maintains|manufacture|manufactures|manufacturing|offer|offers|offering|operate|operates|operating|produce|produces|producing|provide|provides|providing|recruit|recruits|recruiting|seek|seeks|seeking|service|services|servicing|support|supports|supporting|use|uses|using)\b/iu,
+  /स्वीकार|तलाश|भर्ती|चालू|संचालित|विस्तार|प्रदान|संग्रह|संकलन|स्थापना|सेवा|विनिर्माण/u,
+  /接受|寻找|招募|运营|设有|扩大|扩张|拓展|提供|收集|采集|安装|部署|服务|维护|制造|分销/u,
+] as const;
+const existingPresencePatterns = [
+  /\b(?:active|current|currently|established|existing|has|have|maintain|maintains|operate|operates|operating|present)\b/iu,
+  /वर्तमान|चालू|संचालित|मौजूद|स्थापित/u,
+  /目前|现有|已有|运营|设有|已建立/u,
+] as const;
+const expansionPatterns = [
+  /\b(?:enter|entering|expand|expands|expanding|expansion|grow|growing|launch|launches|launching|new)\b/iu,
+  /विस्तार|प्रवेश|शुरू|नया/u,
+  /扩大|扩张|拓展|进入|新增|启动|正在/u,
+] as const;
+const globalScopePatterns = [
+  /\b(?:global|globally|international|internationally|worldwide)\b/iu,
+  /\b(?:all|any)\s+(?:countries|country)\b/iu,
+  /\baround\s+the\s+world\b/iu,
+  /全球|国际|世界各地|任何国家|各国/u,
+] as const;
+const opennessActionPatterns = [
+  /\b(?:accept|accepts|accepted|accepting|available|eligible|invite|invites|inviting|open|opened|opens|welcome|welcomes|welcoming)\b/iu,
+  /开放|接受|欢迎|可申请|面向/u,
+] as const;
+const restrictingOpennessPatterns = [
+  /\b(?:domestic|domestic-only|limited\s+to|local-only|restricted\s+to)\b/iu,
+  /仅限|只限|限于|国内/u,
+] as const;
+const factSupportPatterns: Readonly<
+  Record<IndiaEvidenceFactKind, readonly RegExp[]>
+> = {
+  suppliers: [
+    /\b(?:procurement|sourcing|supplier|suppliers|vendor|vendors)\b/iu,
+    /आपूर्तिकर्त/u,
+    /供应商|供货商|采购/u,
+  ],
+  participants: [
+    /\b(?:participant|participants|recruit|recruitment)\b/iu,
+    /प्रतिभाग|भर्ती/u,
+    /参与者|参与人员|招募/u,
+  ],
+  languages: [
+    /\b(?:language|languages|linguistic)\b/iu,
+    /भाष/u,
+    /语言/u,
+  ],
+  roads_or_environments: [
+    /\b(?:environment|environments|field|road|roads|site|sites)\b/iu,
+    /सड़क|परिवेश|वातावरण|स्थल/u,
+    /道路|环境|场地/u,
+  ],
+  manufacturing: [
+    /\b(?:factories|factory|manufacture|manufactures|manufacturing|plant|plants|produce|produces|production)\b/iu,
+    /विनिर्माण|निर्माण|उत्पादन/u,
+    /制造|工厂|生产/u,
+  ],
+  distribution: [
+    /\b(?:distribute|distributes|distributing|distribution|distributor|distributors)\b/iu,
+    /वितरण/u,
+    /分销|经销|配送/u,
+  ],
+  collection: [
+    /\b(?:capture|collect|collecting|collection)\b/iu,
+    /संग्रह|संकलन/u,
+    /收集|采集/u,
+  ],
+  installation: [
+    /\b(?:deploy|deploying|deployment|install|installation|installs|installing)\b/iu,
+    /स्थापना|इंस्टॉल/u,
+    /安装|部署/u,
+  ],
+  service: [
+    /\b(?:maintain|maintains|maintenance|service|services|servicing|support|supports)\b/iu,
+    /सेवा|रखरखाव/u,
+    /服务|维护/u,
+  ],
+};
 
 const assessedRequirementSchema = z.strictObject({
   requirement: normalizedRequirementSchema,
@@ -118,6 +207,48 @@ function deepFreezeJson(value: unknown): void {
   Object.freeze(value);
 }
 
+function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(value));
+}
+
+function hasIndiaMarker(value: string): boolean {
+  return (
+    latinIndiaMarkerPattern.test(value) ||
+    originalLanguageIndiaMarkers.some((marker) => value.includes(marker))
+  );
+}
+
+function positivelySupportsExactIndiaFact(
+  value: string,
+  relevanceType: ExactIndiaRelevanceType,
+  factKind: IndiaEvidenceFactKind,
+): boolean {
+  if (
+    !hasIndiaMarker(value) ||
+    matchesAny(value, excludingClaimPatterns) ||
+    !matchesAny(value, factSupportPatterns[factKind]) ||
+    !matchesAny(value, positiveActionPatterns)
+  ) {
+    return false;
+  }
+  if (relevanceType === "existing_India_presence") {
+    return matchesAny(value, existingPresencePatterns);
+  }
+  if (relevanceType === "India_expansion") {
+    return matchesAny(value, expansionPatterns);
+  }
+  return true;
+}
+
+function positivelySupportsGlobalOpenness(value: string): boolean {
+  return (
+    !matchesAny(value, excludingClaimPatterns) &&
+    !matchesAny(value, restrictingOpennessPatterns) &&
+    matchesAny(value, globalScopePatterns) &&
+    matchesAny(value, opennessActionPatterns)
+  );
+}
+
 function acceptIndiaAssessment(
   assessment: z.output<typeof indiaRelevanceInputSchema>,
   basis:
@@ -155,20 +286,33 @@ function acceptIndiaAssessment(
 function exactEvidencePaths(
   input: z.output<typeof indiaRelevanceInputSchema>,
 ): readonly string[] {
-  const allowedPaths = new Set(
+  if (!exactEvidenceRelevanceTypes.has(input.proposedType)) {
+    return Object.freeze([]);
+  }
+  const relevanceType = input.proposedType as ExactIndiaRelevanceType;
+  const allowedPathFacts: ReadonlyMap<string, IndiaEvidenceFactKind> = new Map(
     indiaEvidenceFactKinds.map(
-      (factKind) => `indiaRelevance.${input.proposedType}.${factKind}`,
+      (factKind) => [
+        `indiaRelevance.${relevanceType}.${factKind}`,
+        factKind,
+      ] as const,
     ),
   );
   return Object.freeze([
     ...new Set(
       input.evidence.flatMap((item) =>
-        item.sourceKind === "original" &&
-        (latinIndiaMarkerPattern.test(item.originalText) ||
-          originalLanguageIndiaMarkers.some((marker) =>
-            item.originalText.includes(marker),
-          ))
-          ? item.supportedFieldPaths.filter((path) => allowedPaths.has(path))
+        item.sourceKind === "original"
+          ? item.supportedFieldPaths.filter((path) => {
+              const factKind = allowedPathFacts.get(path);
+              return (
+                factKind !== undefined &&
+                positivelySupportsExactIndiaFact(
+                  item.originalText,
+                  relevanceType,
+                  factKind,
+                )
+              );
+            })
           : [],
       ),
     ),
@@ -201,7 +345,8 @@ export function assessIndiaRelevance(
     const hasOriginalOpennessEvidence = assessment.evidence.some(
       (item) =>
         item.sourceKind === "original" &&
-        item.supportedFieldPaths.includes(opennessPath),
+        item.supportedFieldPaths.includes(opennessPath) &&
+        positivelySupportsGlobalOpenness(item.originalText),
     );
     if (!hasOriginalOpennessEvidence) {
       return rejectIndiaAssessment("missing_global_openness_evidence");

@@ -32,18 +32,48 @@ function normalizedRequirement(overrides: Record<string, unknown> = {}) {
   return result.requirements[0]!;
 }
 
+const positiveIndiaFactClaims: Readonly<Record<string, string>> = {
+  collection: "We collect physical data in India.",
+  distribution: "We distribute robotics systems in India.",
+  installation: "We install robotics systems in India.",
+  languages: "We provide language services in India.",
+  manufacturing: "We manufacture robotics hardware in India.",
+  participants: "We recruit participants in India.",
+  roads_or_environments: "We operate on roads and environments in India.",
+  service: "We service robotics systems in India.",
+  suppliers: "We accept suppliers from India.",
+};
+
+function positiveOriginalClaim(supportedFieldPath: string): string {
+  if (supportedFieldPath === "indiaRelevance.globally_open.requirement_access") {
+    return "Applications are open to suppliers worldwide.";
+  }
+  if (supportedFieldPath.startsWith("indiaRelevance.no_current_India_fit.")) {
+    return "India is excluded from this opportunity.";
+  }
+  if (supportedFieldPath.includes(".existing_India_presence.")) {
+    return "We currently operate a manufacturing facility in India.";
+  }
+  if (supportedFieldPath.includes(".India_expansion.")) {
+    return "We are expanding distribution into India.";
+  }
+  const factKind = supportedFieldPath.split(".").at(-1) ?? "";
+  return positiveIndiaFactClaims[factKind] ?? "We operate in India.";
+}
+
 function evidence(
   supportedFieldPath: string,
   sourceKind = "original",
   overrides: Record<string, unknown> = {},
 ) {
+  const originalText = positiveOriginalClaim(supportedFieldPath);
   return {
     sourceUrl: "https://example.com/india",
     canonicalSourceUrl: null,
     sourceKind,
     sourceLanguage: "en",
-    originalText: "The organisation published this India-specific fact.",
-    englishSummary: "The organisation published this India-specific fact.",
+    originalText,
+    englishSummary: originalText,
     publishedAt: "2026-07-28T00:00:00.000Z",
     observedAt: "2026-07-29T00:00:00.000Z",
     evidenceConfidence: 90,
@@ -106,6 +136,55 @@ describe("Global Radar India relevance", () => {
         assessed: true,
         relevanceType: "explicit_India",
         supportedEvidencePaths: [fieldPath],
+      });
+    },
+  );
+
+  it.each([
+    [
+      "explicit_India",
+      "suppliers",
+      "We do not accept suppliers from India and India is excluded.",
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "We do not operate manufacturing in India; India is excluded from our footprint.",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are not expanding distribution into India; India is excluded.",
+    ],
+    [
+      "explicit_India",
+      "suppliers",
+      "We accept suppliers worldwide except India.",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We considered expanding distribution into India but cancelled the plan.",
+    ],
+  ] as const)(
+    "rejects negated or abandoned original evidence mislabeled as %s",
+    (proposedType, factKind, originalText) => {
+      const fieldPath = `indiaRelevance.${proposedType}.${factKind}`;
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType,
+            evidence: [
+              evidence(fieldPath, "original", {
+                originalText,
+                englishSummary: originalText,
+              }),
+            ],
+          }),
+        ),
+      ).toEqual({
+        assessed: false,
+        reason: "missing_exact_original_evidence",
       });
     },
   );
@@ -416,6 +495,73 @@ describe("Global Radar India relevance", () => {
       },
     });
   });
+
+  it.each([
+    "The organisation published supplier application information.",
+    "Applications are closed and limited to domestic suppliers.",
+  ])(
+    "rejects globally-open worker paths without positive original openness: %s",
+    (originalText) => {
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType: "globally_open",
+            evidence: [
+              evidence(
+                "indiaRelevance.globally_open.requirement_access",
+                "original",
+                { originalText, englishSummary: originalText },
+              ),
+            ],
+          }),
+        ),
+      ).toEqual({
+        assessed: false,
+        reason: "missing_global_openness_evidence",
+      });
+    },
+  );
+
+  it.each([
+    [
+      "en",
+      "Applications are open to suppliers worldwide.",
+      null,
+    ],
+    [
+      "zh-CN",
+      "我们接受来自全球供应商的申请。",
+      91,
+    ],
+  ] as const)(
+    "accepts positively stated %s global openness from an original source",
+    (sourceLanguage, originalText, translationConfidence) => {
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType: "globally_open",
+            evidence: [
+              evidence(
+                "indiaRelevance.globally_open.requirement_access",
+                "original",
+                {
+                  sourceLanguage,
+                  originalText,
+                  englishSummary:
+                    "Applications are open to suppliers worldwide.",
+                  translationConfidence,
+                },
+              ),
+            ],
+          }),
+        ),
+      ).toMatchObject({
+        assessed: true,
+        relevanceType: "globally_open",
+        basis: "globally_open",
+      });
+    },
+  );
 
   it("returns detached, deeply immutable successful assessments", () => {
     const regulatoryFacts = { residency: { known: false } };
