@@ -548,6 +548,251 @@ export const candidateResearchVersions = pgTable(
   ],
 );
 
+export const candidateEcosystemClassifications = pgTable(
+  "candidate_ecosystem_classifications",
+  {
+    id: id(),
+    candidateId: uuid("candidate_id").notNull(),
+    kind: text("kind").notNull(),
+    termKey: text("term_key").notNull(),
+    evidenceState: text("evidence_state").notNull(),
+    confidence: integer("confidence").notNull(),
+    basis: text("basis").notNull(),
+    sourceUrls: jsonb("source_urls").$type<string[]>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    unique(
+      "candidate_ecosystem_classifications_candidate_kind_term_unique",
+    ).on(table.candidateId, table.kind, table.termKey),
+    foreignKey({
+      name: "candidate_ecosystem_classifications_candidate_fk",
+      columns: [table.candidateId],
+      foreignColumns: [discoveryCandidates.id],
+    }).onDelete("cascade"),
+    index("candidate_ecosystem_classifications_candidate_idx").on(
+      table.candidateId,
+    ),
+    index("candidate_ecosystem_classifications_kind_term_idx").on(
+      table.kind,
+      table.termKey,
+    ),
+    index("candidate_ecosystem_classifications_evidence_state_idx").on(
+      table.evidenceState,
+    ),
+    index("candidate_ecosystem_classifications_confidence_idx").on(
+      table.confidence,
+    ),
+    check(
+      "candidate_ecosystem_classifications_kind_term_check",
+      sql`length(btrim(${table.kind})) > 0 AND length(btrim(${table.termKey})) > 0`,
+    ),
+    check(
+      "candidate_ecosystem_classifications_evidence_state_check",
+      sql`${table.evidenceState} IN ('evidence_backed', 'inferred')`,
+    ),
+    check(
+      "candidate_ecosystem_classifications_confidence_check",
+      sql`${table.confidence} >= 0 AND ${table.confidence} <= 100`,
+    ),
+    check(
+      "candidate_ecosystem_classifications_basis_check",
+      sql`length(btrim(${table.basis})) between 1 and 1000`,
+    ),
+    check(
+      "candidate_ecosystem_classifications_sources_check",
+      sql`jsonb_typeof(${table.sourceUrls}) = 'array' and jsonb_array_length(${table.sourceUrls}) between 1 and 12`,
+    ),
+  ],
+);
+
+export const candidateHeadquarters = pgTable(
+  "candidate_headquarters",
+  {
+    id: id(),
+    candidateId: uuid("candidate_id")
+      .notNull()
+      .unique("candidate_headquarters_candidate_unique"),
+    countryCode: text("country_code").default("IN").notNull(),
+    stateKey: text("state_key").notNull(),
+    stateLabel: text("state_label").notNull(),
+    cityKey: text("city_key").notNull(),
+    cityLabel: text("city_label").notNull(),
+    latitudeMicrodegrees: integer("latitude_microdegrees"),
+    longitudeMicrodegrees: integer("longitude_microdegrees"),
+    evidenceState: text("evidence_state").notNull(),
+    confidence: integer("confidence").notNull(),
+    sourceUrls: jsonb("source_urls").$type<string[]>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    foreignKey({
+      name: "candidate_headquarters_candidate_fk",
+      columns: [table.candidateId],
+      foreignColumns: [discoveryCandidates.id],
+    }).onDelete("cascade"),
+    index("candidate_headquarters_state_idx").on(table.stateKey),
+    index("candidate_headquarters_city_idx").on(table.cityKey),
+    index("candidate_headquarters_evidence_state_idx").on(
+      table.evidenceState,
+    ),
+    index("candidate_headquarters_confidence_idx").on(table.confidence),
+    check(
+      "candidate_headquarters_country_check",
+      sql`${table.countryCode} ~ '^[A-Z]{2}$'`,
+    ),
+    check(
+      "candidate_headquarters_location_check",
+      sql`length(btrim(${table.stateKey})) > 0 AND length(btrim(${table.stateLabel})) > 0 AND length(btrim(${table.cityKey})) > 0 AND length(btrim(${table.cityLabel})) > 0`,
+    ),
+    check(
+      "candidate_headquarters_coordinates_check",
+      sql`(${table.latitudeMicrodegrees} IS NULL AND ${table.longitudeMicrodegrees} IS NULL) OR (${table.latitudeMicrodegrees} IS NOT NULL AND ${table.longitudeMicrodegrees} IS NOT NULL)`,
+    ),
+    check(
+      "candidate_headquarters_latitude_check",
+      sql`${table.latitudeMicrodegrees} IS NULL OR (${table.latitudeMicrodegrees} >= -90000000 AND ${table.latitudeMicrodegrees} <= 90000000)`,
+    ),
+    check(
+      "candidate_headquarters_longitude_check",
+      sql`${table.longitudeMicrodegrees} IS NULL OR (${table.longitudeMicrodegrees} >= -180000000 AND ${table.longitudeMicrodegrees} <= 180000000)`,
+    ),
+    check(
+      "candidate_headquarters_evidence_state_check",
+      sql`${table.evidenceState} IN ('evidence_backed', 'inferred')`,
+    ),
+    check(
+      "candidate_headquarters_confidence_check",
+      sql`${table.confidence} >= 0 AND ${table.confidence} <= 100`,
+    ),
+    check(
+      "candidate_headquarters_sources_check",
+      sql`jsonb_typeof(${table.sourceUrls}) = 'array' and jsonb_array_length(${table.sourceUrls}) between 1 and 12`,
+    ),
+  ],
+);
+
+export const candidatePublicSignals = pgTable(
+  "candidate_public_signals",
+  {
+    id: id(),
+    candidateId: uuid("candidate_id").notNull(),
+    signalType: text("signal_type").notNull(),
+    title: text("title").notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    sourceUrl: text("source_url").notNull(),
+    confidence: integer("confidence").notNull(),
+    evidenceKey: text("evidence_key").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    foreignKey({
+      name: "candidate_public_signals_candidate_fk",
+      columns: [table.candidateId],
+      foreignColumns: [discoveryCandidates.id],
+    }).onDelete("cascade"),
+    uniqueIndex("candidate_public_signals_evidence_key_idx").on(
+      table.evidenceKey,
+    ),
+    index("candidate_public_signals_candidate_idx").on(table.candidateId),
+    index("candidate_public_signals_type_idx").on(table.signalType),
+    index("candidate_public_signals_occurred_at_idx").on(table.occurredAt),
+    index("candidate_public_signals_expires_at_idx").on(table.expiresAt),
+    check(
+      "candidate_public_signals_signal_type_check",
+      sql`length(btrim(${table.signalType})) between 1 and 100`,
+    ),
+    check(
+      "candidate_public_signals_title_check",
+      sql`length(btrim(${table.title})) between 1 and 300`,
+    ),
+    check(
+      "candidate_public_signals_source_url_check",
+      sql`length(btrim(${table.sourceUrl})) > 0 AND ${table.sourceUrl} ~ '^https?://'`,
+    ),
+    check(
+      "candidate_public_signals_confidence_check",
+      sql`${table.confidence} >= 0 AND ${table.confidence} <= 100`,
+    ),
+    check(
+      "candidate_public_signals_evidence_key_check",
+      sql`length(btrim(${table.evidenceKey})) > 0`,
+    ),
+    check(
+      "candidate_public_signals_expiry_check",
+      sql`${table.expiresAt} IS NULL OR ${table.expiresAt} >= ${table.occurredAt}`,
+    ),
+  ],
+);
+
+export const candidateRelationships = pgTable(
+  "candidate_relationships",
+  {
+    id: id(),
+    sourceCandidateId: uuid("source_candidate_id").notNull(),
+    targetCandidateId: uuid("target_candidate_id"),
+    targetPublicName: text("target_public_name"),
+    relationshipType: text("relationship_type").notNull(),
+    evidenceUrl: text("evidence_url").notNull(),
+    confidence: integer("confidence").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }),
+    evidenceKey: text("evidence_key").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    foreignKey({
+      name: "candidate_relationships_source_candidate_fk",
+      columns: [table.sourceCandidateId],
+      foreignColumns: [discoveryCandidates.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "candidate_relationships_target_candidate_fk",
+      columns: [table.targetCandidateId],
+      foreignColumns: [discoveryCandidates.id],
+    }).onDelete("no action"),
+    uniqueIndex("candidate_relationships_evidence_key_idx").on(
+      table.evidenceKey,
+    ),
+    index("candidate_relationships_source_candidate_idx").on(
+      table.sourceCandidateId,
+    ),
+    index("candidate_relationships_target_candidate_idx").on(
+      table.targetCandidateId,
+    ),
+    index("candidate_relationships_type_idx").on(table.relationshipType),
+    index("candidate_relationships_observed_at_idx").on(table.observedAt),
+    check(
+      "candidate_relationships_target_check",
+      sql`${table.targetCandidateId} IS NOT NULL OR (${table.targetPublicName} IS NOT NULL AND length(btrim(${table.targetPublicName})) > 0)`,
+    ),
+    check(
+      "candidate_relationships_self_link_check",
+      sql`${table.targetCandidateId} IS NULL OR ${table.sourceCandidateId} <> ${table.targetCandidateId}`,
+    ),
+    check(
+      "candidate_relationships_type_check",
+      sql`length(btrim(${table.relationshipType})) between 1 and 100`,
+    ),
+    check(
+      "candidate_relationships_evidence_url_check",
+      sql`length(btrim(${table.evidenceUrl})) > 0 AND ${table.evidenceUrl} ~ '^https?://'`,
+    ),
+    check(
+      "candidate_relationships_confidence_check",
+      sql`${table.confidence} >= 0 AND ${table.confidence} <= 100`,
+    ),
+    check(
+      "candidate_relationships_evidence_key_check",
+      sql`length(btrim(${table.evidenceKey})) > 0`,
+    ),
+  ],
+);
+
 export const discoveryCandidateIdentifiers = pgTable(
   "discovery_candidate_identifiers",
   {

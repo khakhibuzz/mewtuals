@@ -235,7 +235,90 @@ async function insertUpgradeFixtures(sql) {
     )
     returning id, external_run_key as "externalRunKey", status
   `;
-  return { user, profile, review, discoveryRun };
+  const [candidate] = await sql`
+    insert into discovery_candidates (
+      type,
+      name,
+      normalized_name,
+      canonical_identity_key,
+      canonical_url,
+      website_url,
+      discovered_description,
+      category,
+      geography,
+      first_source_name,
+      first_source_url,
+      most_recent_run_id,
+      discovery_score
+    ) values (
+      'company',
+      'Migration Robotics',
+      'migration robotics',
+      'website:migration-robotics.example.test',
+      'https://migration-robotics.example.test',
+      'https://migration-robotics.example.test',
+      'Public migration fixture for a robotics systems company.',
+      'Robotics OEMs and Integrators',
+      'India',
+      'Migration Source',
+      'https://migration-robotics.example.test/about',
+      ${discoveryRun.id},
+      92
+    )
+    returning id, name, canonical_identity_key as "canonicalIdentityKey"
+  `;
+  const [research] = await sql`
+    insert into candidate_research_versions (
+      candidate_id,
+      discovery_run_id,
+      summary,
+      findings,
+      source_urls,
+      analysis_version
+    ) values (
+      ${candidate.id},
+      ${discoveryRun.id},
+      ${"Migration fixture summary describes public robotics systems evidence, manufacturing scope, and verified India market context."},
+      ${"Migration fixture findings preserve a sufficiently detailed public-evidence systems context covering company identity, robotics products, technical layers, component dependencies, manufacturing model, customer applications, ecosystem relationships, and explicitly bounded confidence. ".repeat(4)},
+      ${JSON.stringify(["https://migration-robotics.example.test/about"])}::jsonb,
+      'physical-ai-v1'
+    )
+    returning id, candidate_id as "candidateId", discovery_run_id as "discoveryRunId"
+  `;
+  const [source] = await sql`
+    insert into discovery_candidate_sources (
+      candidate_id,
+      discovery_run_id,
+      source_name,
+      source_url,
+      first_seen_at,
+      last_seen_at
+    ) values (
+      ${candidate.id},
+      ${discoveryRun.id},
+      'Migration Source',
+      'https://migration-robotics.example.test/about',
+      '2026-07-21T10:00:00.000Z',
+      '2026-07-21T10:00:00.000Z'
+    )
+    returning id, candidate_id as "candidateId", discovery_run_id as "discoveryRunId", source_url as "sourceUrl"
+  `;
+  const [discoveryCounts] = await sql`
+    select
+      (select count(*)::integer from discovery_candidates) as "candidateCount",
+      (select count(*)::integer from candidate_research_versions) as "researchCount",
+      (select count(*)::integer from discovery_candidate_sources) as "sourceCount"
+  `;
+  return {
+    user,
+    profile,
+    review,
+    discoveryRun,
+    candidate,
+    research,
+    source,
+    discoveryCounts,
+  };
 }
 
 function assert(condition, message) {
@@ -620,6 +703,703 @@ async function assertOpportunityBriefMigration(sql) {
         "CREATE INDEX opportunity_brief_submission_attempts_requester_created_at_idx ON public.opportunity_brief_submission_attempts USING btree (requester_hash, created_at)",
     },
     "opportunity brief filter index",
+  );
+}
+
+async function assertEcosystemIntelligenceMigration(sql) {
+  const expectedTables = [
+    "candidate_ecosystem_classifications",
+    "candidate_headquarters",
+    "candidate_public_signals",
+    "candidate_relationships",
+  ];
+  const tables = await sql`
+    select table_name as "tableName"
+    from information_schema.tables
+    where table_schema = 'public'
+      and table_name in ${sql(expectedTables)}
+    order by table_name
+  `;
+  assert(
+    JSON.stringify(tables.map(({ tableName }) => tableName)) ===
+      JSON.stringify(expectedTables),
+    `Expected ecosystem intelligence tables, found ${JSON.stringify(tables)}.`,
+  );
+
+  const columns = await sql`
+    select
+      table_name as "tableName",
+      column_name as "columnName",
+      data_type as "dataType",
+      is_nullable as "isNullable",
+      column_default as "columnDefault"
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ${sql(expectedTables)}
+    order by table_name, ordinal_position
+  `;
+  const columnsByTable = Object.fromEntries(
+    expectedTables.map((tableName) => [
+      tableName,
+      columns
+        .filter((column) => column.tableName === tableName)
+        .map((column) => column.columnName),
+    ]),
+  );
+  assert(
+    JSON.stringify(columnsByTable) ===
+      JSON.stringify({
+        candidate_ecosystem_classifications: [
+          "id",
+          "candidate_id",
+          "kind",
+          "term_key",
+          "evidence_state",
+          "confidence",
+          "basis",
+          "source_urls",
+          "created_at",
+          "updated_at",
+        ],
+        candidate_headquarters: [
+          "id",
+          "candidate_id",
+          "country_code",
+          "state_key",
+          "state_label",
+          "city_key",
+          "city_label",
+          "latitude_microdegrees",
+          "longitude_microdegrees",
+          "evidence_state",
+          "confidence",
+          "source_urls",
+          "created_at",
+          "updated_at",
+        ],
+        candidate_public_signals: [
+          "id",
+          "candidate_id",
+          "signal_type",
+          "title",
+          "occurred_at",
+          "expires_at",
+          "source_url",
+          "confidence",
+          "evidence_key",
+          "created_at",
+          "updated_at",
+        ],
+        candidate_relationships: [
+          "id",
+          "source_candidate_id",
+          "target_candidate_id",
+          "target_public_name",
+          "relationship_type",
+          "evidence_url",
+          "confidence",
+          "observed_at",
+          "evidence_key",
+          "created_at",
+          "updated_at",
+        ],
+      }),
+    `Expected exact ecosystem intelligence columns, found ${JSON.stringify(columnsByTable)}.`,
+  );
+  const nullableColumns = Object.fromEntries(
+    expectedTables.map((tableName) => [
+      tableName,
+      columns
+        .filter(
+          (column) =>
+            column.tableName === tableName && column.isNullable === "YES",
+        )
+        .map((column) => column.columnName),
+    ]),
+  );
+  assert(
+    JSON.stringify(nullableColumns) ===
+      JSON.stringify({
+        candidate_ecosystem_classifications: [],
+        candidate_headquarters: [
+          "latitude_microdegrees",
+          "longitude_microdegrees",
+        ],
+        candidate_public_signals: ["expires_at"],
+        candidate_relationships: [
+          "target_candidate_id",
+          "target_public_name",
+          "observed_at",
+        ],
+      }),
+    `Expected exact ecosystem intelligence nullability, found ${JSON.stringify(nullableColumns)}.`,
+  );
+  const typeByColumn = Object.fromEntries(
+    columns.map(({ tableName, columnName, dataType }) => [
+      `${tableName}.${columnName}`,
+      dataType,
+    ]),
+  );
+  assert(
+    typeByColumn["candidate_ecosystem_classifications.source_urls"] ===
+      "jsonb" &&
+      typeByColumn["candidate_headquarters.source_urls"] === "jsonb" &&
+      typeByColumn["candidate_headquarters.latitude_microdegrees"] ===
+        "integer" &&
+      typeByColumn["candidate_headquarters.longitude_microdegrees"] ===
+        "integer",
+    `Expected JSONB sources and integer microdegrees, found ${JSON.stringify(typeByColumn)}.`,
+  );
+  const columnDefaults = Object.fromEntries(
+    columns
+      .filter(({ columnDefault }) => columnDefault !== null)
+      .map(({ tableName, columnName, columnDefault }) => [
+        `${tableName}.${columnName}`,
+        columnDefault,
+      ]),
+  );
+  assert(
+    columnDefaults["candidate_headquarters.country_code"] === "'IN'::text",
+    `Expected headquarters country default IN, found ${JSON.stringify(columnDefaults)}.`,
+  );
+
+  const requiredConstraintNames = [
+    "candidate_ecosystem_classifications_basis_check",
+    "candidate_ecosystem_classifications_candidate_fk",
+    "candidate_ecosystem_classifications_candidate_kind_term_unique",
+    "candidate_ecosystem_classifications_confidence_check",
+    "candidate_ecosystem_classifications_evidence_state_check",
+    "candidate_ecosystem_classifications_kind_term_check",
+    "candidate_ecosystem_classifications_sources_check",
+    "candidate_headquarters_candidate_fk",
+    "candidate_headquarters_candidate_unique",
+    "candidate_headquarters_confidence_check",
+    "candidate_headquarters_coordinates_check",
+    "candidate_headquarters_country_check",
+    "candidate_headquarters_evidence_state_check",
+    "candidate_headquarters_latitude_check",
+    "candidate_headquarters_location_check",
+    "candidate_headquarters_longitude_check",
+    "candidate_headquarters_sources_check",
+    "candidate_public_signals_candidate_fk",
+    "candidate_public_signals_confidence_check",
+    "candidate_public_signals_evidence_key_check",
+    "candidate_public_signals_expiry_check",
+    "candidate_public_signals_signal_type_check",
+    "candidate_public_signals_source_url_check",
+    "candidate_public_signals_title_check",
+    "candidate_relationships_confidence_check",
+    "candidate_relationships_evidence_key_check",
+    "candidate_relationships_evidence_url_check",
+    "candidate_relationships_self_link_check",
+    "candidate_relationships_source_candidate_fk",
+    "candidate_relationships_target_candidate_fk",
+    "candidate_relationships_target_check",
+    "candidate_relationships_type_check",
+  ];
+  const constraints = await sql`
+    select conname as name
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and conname in ${sql(requiredConstraintNames)}
+    order by conname
+  `;
+  assert(
+    constraints.length === requiredConstraintNames.length,
+    `Expected ecosystem intelligence constraints, found ${JSON.stringify(constraints)}.`,
+  );
+
+  const foreignKeyNames = [
+    "candidate_ecosystem_classifications_candidate_fk",
+    "candidate_headquarters_candidate_fk",
+    "candidate_public_signals_candidate_fk",
+    "candidate_relationships_source_candidate_fk",
+    "candidate_relationships_target_candidate_fk",
+  ];
+  const foreignKeyDefinitions = await sql`
+    select conname as name, pg_get_constraintdef(oid, true) as definition
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and contype = 'f'
+      and conname in ${sql(foreignKeyNames)}
+    order by conname
+  `;
+  assertExactDefinitions(
+    foreignKeyDefinitions,
+    {
+      candidate_ecosystem_classifications_candidate_fk:
+        "FOREIGN KEY (candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
+      candidate_headquarters_candidate_fk:
+        "FOREIGN KEY (candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
+      candidate_public_signals_candidate_fk:
+        "FOREIGN KEY (candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
+      candidate_relationships_source_candidate_fk:
+        "FOREIGN KEY (source_candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
+      candidate_relationships_target_candidate_fk:
+        "FOREIGN KEY (target_candidate_id) REFERENCES discovery_candidates(id)",
+    },
+    "ecosystem intelligence foreign key",
+  );
+
+  const uniqueDefinitions = await sql`
+    select conname as name, pg_get_constraintdef(oid, true) as definition
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and contype = 'u'
+      and conname in (
+        'candidate_ecosystem_classifications_candidate_kind_term_unique',
+        'candidate_headquarters_candidate_unique'
+      )
+    order by conname
+  `;
+  assertExactDefinitions(
+    uniqueDefinitions,
+    {
+      candidate_ecosystem_classifications_candidate_kind_term_unique:
+        "UNIQUE (candidate_id, kind, term_key)",
+      candidate_headquarters_candidate_unique: "UNIQUE (candidate_id)",
+    },
+    "ecosystem intelligence unique constraint",
+  );
+
+  const indexNames = [
+    "candidate_ecosystem_classifications_candidate_idx",
+    "candidate_ecosystem_classifications_confidence_idx",
+    "candidate_ecosystem_classifications_evidence_state_idx",
+    "candidate_ecosystem_classifications_kind_term_idx",
+    "candidate_headquarters_city_idx",
+    "candidate_headquarters_confidence_idx",
+    "candidate_headquarters_evidence_state_idx",
+    "candidate_headquarters_state_idx",
+    "candidate_public_signals_candidate_idx",
+    "candidate_public_signals_evidence_key_idx",
+    "candidate_public_signals_expires_at_idx",
+    "candidate_public_signals_occurred_at_idx",
+    "candidate_public_signals_type_idx",
+    "candidate_relationships_evidence_key_idx",
+    "candidate_relationships_observed_at_idx",
+    "candidate_relationships_source_candidate_idx",
+    "candidate_relationships_target_candidate_idx",
+    "candidate_relationships_type_idx",
+  ];
+  const indexes = await sql`
+    select
+      index_definition.indexname as name,
+      index_definition.indexdef as definition,
+      index_catalog.indisunique as "isUnique"
+    from pg_indexes index_definition
+    join pg_class index_class on index_class.relname = index_definition.indexname
+    join pg_index index_catalog on index_catalog.indexrelid = index_class.oid
+    where index_definition.schemaname = 'public'
+      and index_definition.indexname in ${sql(indexNames)}
+    order by index_definition.indexname
+  `;
+  assert(
+    indexes.length === indexNames.length,
+    `Expected ecosystem intelligence query indexes, found ${JSON.stringify(indexes)}.`,
+  );
+  assertExactDefinitions(
+    indexes,
+    {
+      candidate_ecosystem_classifications_candidate_idx:
+        "CREATE INDEX candidate_ecosystem_classifications_candidate_idx ON public.candidate_ecosystem_classifications USING btree (candidate_id)",
+      candidate_ecosystem_classifications_confidence_idx:
+        "CREATE INDEX candidate_ecosystem_classifications_confidence_idx ON public.candidate_ecosystem_classifications USING btree (confidence)",
+      candidate_ecosystem_classifications_evidence_state_idx:
+        "CREATE INDEX candidate_ecosystem_classifications_evidence_state_idx ON public.candidate_ecosystem_classifications USING btree (evidence_state)",
+      candidate_ecosystem_classifications_kind_term_idx:
+        "CREATE INDEX candidate_ecosystem_classifications_kind_term_idx ON public.candidate_ecosystem_classifications USING btree (kind, term_key)",
+      candidate_headquarters_city_idx:
+        "CREATE INDEX candidate_headquarters_city_idx ON public.candidate_headquarters USING btree (city_key)",
+      candidate_headquarters_confidence_idx:
+        "CREATE INDEX candidate_headquarters_confidence_idx ON public.candidate_headquarters USING btree (confidence)",
+      candidate_headquarters_evidence_state_idx:
+        "CREATE INDEX candidate_headquarters_evidence_state_idx ON public.candidate_headquarters USING btree (evidence_state)",
+      candidate_headquarters_state_idx:
+        "CREATE INDEX candidate_headquarters_state_idx ON public.candidate_headquarters USING btree (state_key)",
+      candidate_public_signals_candidate_idx:
+        "CREATE INDEX candidate_public_signals_candidate_idx ON public.candidate_public_signals USING btree (candidate_id)",
+      candidate_public_signals_evidence_key_idx:
+        "CREATE UNIQUE INDEX candidate_public_signals_evidence_key_idx ON public.candidate_public_signals USING btree (evidence_key)",
+      candidate_public_signals_expires_at_idx:
+        "CREATE INDEX candidate_public_signals_expires_at_idx ON public.candidate_public_signals USING btree (expires_at)",
+      candidate_public_signals_occurred_at_idx:
+        "CREATE INDEX candidate_public_signals_occurred_at_idx ON public.candidate_public_signals USING btree (occurred_at)",
+      candidate_public_signals_type_idx:
+        "CREATE INDEX candidate_public_signals_type_idx ON public.candidate_public_signals USING btree (signal_type)",
+      candidate_relationships_evidence_key_idx:
+        "CREATE UNIQUE INDEX candidate_relationships_evidence_key_idx ON public.candidate_relationships USING btree (evidence_key)",
+      candidate_relationships_observed_at_idx:
+        "CREATE INDEX candidate_relationships_observed_at_idx ON public.candidate_relationships USING btree (observed_at)",
+      candidate_relationships_source_candidate_idx:
+        "CREATE INDEX candidate_relationships_source_candidate_idx ON public.candidate_relationships USING btree (source_candidate_id)",
+      candidate_relationships_target_candidate_idx:
+        "CREATE INDEX candidate_relationships_target_candidate_idx ON public.candidate_relationships USING btree (target_candidate_id)",
+      candidate_relationships_type_idx:
+        "CREATE INDEX candidate_relationships_type_idx ON public.candidate_relationships USING btree (relationship_type)",
+    },
+    "ecosystem intelligence query index",
+  );
+  const uniqueIndexNames = indexes
+    .filter(({ isUnique }) => isUnique)
+    .map(({ name }) => name);
+  assert(
+    JSON.stringify(uniqueIndexNames) ===
+      JSON.stringify([
+        "candidate_public_signals_evidence_key_idx",
+        "candidate_relationships_evidence_key_idx",
+      ]),
+    `Expected only evidence-key query indexes to be unique, found ${JSON.stringify(indexes)}.`,
+  );
+}
+
+async function assertConstraintFailure(label, constraintName, operation) {
+  try {
+    await operation();
+  } catch (error) {
+    assert(
+      error?.constraint_name === constraintName,
+      `${label} failed with ${error?.constraint_name ?? error?.message ?? "unknown error"}, expected ${constraintName}.`,
+    );
+    return;
+  }
+  throw new Error(`${label} unexpectedly succeeded.`);
+}
+
+async function assertEcosystemConstraintBehavior(sql, candidateId) {
+  const sourceUrls = JSON.stringify([
+    "https://migration-robotics.example.test/evidence",
+  ]);
+  const tooManySourceUrls = JSON.stringify(
+    Array.from(
+      { length: 13 },
+      (_, index) =>
+        `https://migration-robotics.example.test/evidence/${index + 1}`,
+    ),
+  );
+  await sql`
+    insert into candidate_ecosystem_classifications (
+      candidate_id, kind, term_key, evidence_state, confidence, basis, source_urls
+    ) values (
+      ${candidateId},
+      'ecosystem_domain',
+      'robotics',
+      'evidence_backed',
+      90,
+      'Public product and company evidence.',
+      ${sourceUrls}::jsonb
+    )
+  `;
+  await sql`
+    insert into candidate_headquarters (
+      candidate_id,
+      state_key,
+      state_label,
+      city_key,
+      city_label,
+      latitude_microdegrees,
+      longitude_microdegrees,
+      evidence_state,
+      confidence,
+      source_urls
+    ) values (
+      ${candidateId},
+      'karnataka',
+      'Karnataka',
+      'bengaluru',
+      'Bengaluru',
+      12971600,
+      77594600,
+      'evidence_backed',
+      95,
+      ${sourceUrls}::jsonb
+    )
+  `;
+  await sql`
+    insert into candidate_public_signals (
+      candidate_id,
+      signal_type,
+      title,
+      occurred_at,
+      source_url,
+      confidence,
+      evidence_key
+    ) values (
+      ${candidateId},
+      'product_launch',
+      'Introduced a public robotics platform',
+      '2026-07-20T00:00:00.000Z',
+      'https://migration-robotics.example.test/launch',
+      88,
+      'migration-signal-evidence-key'
+    )
+  `;
+  await sql`
+    insert into candidate_relationships (
+      source_candidate_id,
+      target_public_name,
+      relationship_type,
+      evidence_url,
+      confidence,
+      observed_at,
+      evidence_key
+    ) values (
+      ${candidateId},
+      'Public Manufacturing Partner',
+      'manufacturing_partner',
+      'https://migration-robotics.example.test/partner',
+      85,
+      '2026-07-19T00:00:00.000Z',
+      'migration-relationship-evidence-key'
+    )
+  `;
+
+  await assertConstraintFailure(
+    "Duplicate classification",
+    "candidate_ecosystem_classifications_candidate_kind_term_unique",
+    () => sql`
+      insert into candidate_ecosystem_classifications (
+        candidate_id, kind, term_key, evidence_state, confidence, basis, source_urls
+      ) values (
+        ${candidateId}, 'ecosystem_domain', 'robotics', 'evidence_backed', 90,
+        'Duplicate public evidence.', ${sourceUrls}::jsonb
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid classification confidence",
+    "candidate_ecosystem_classifications_confidence_check",
+    () => sql`
+      insert into candidate_ecosystem_classifications (
+        candidate_id, kind, term_key, evidence_state, confidence, basis, source_urls
+      ) values (
+        ${candidateId}, 'ecosystem_role', 'integrator', 'evidence_backed', 101,
+        'Invalid confidence evidence.', ${sourceUrls}::jsonb
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid classification evidence state",
+    "candidate_ecosystem_classifications_evidence_state_check",
+    () => sql`
+      insert into candidate_ecosystem_classifications (
+        candidate_id, kind, term_key, evidence_state, confidence, basis, source_urls
+      ) values (
+        ${candidateId}, 'ecosystem_role', 'integrator', 'unverified', 90,
+        'Invalid evidence state.', ${sourceUrls}::jsonb
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid classification source array",
+    "candidate_ecosystem_classifications_sources_check",
+    () => sql`
+      insert into candidate_ecosystem_classifications (
+        candidate_id, kind, term_key, evidence_state, confidence, basis, source_urls
+      ) values (
+        ${candidateId}, 'ecosystem_role', 'integrator', 'evidence_backed', 90,
+        'Invalid source array.', '{}'::jsonb
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Oversized classification source array",
+    "candidate_ecosystem_classifications_sources_check",
+    () => sql`
+      insert into candidate_ecosystem_classifications (
+        candidate_id, kind, term_key, evidence_state, confidence, basis, source_urls
+      ) values (
+        ${candidateId}, 'ecosystem_role', 'integrator', 'evidence_backed', 90,
+        'Too many public sources.', ${tooManySourceUrls}::jsonb
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Duplicate headquarters",
+    "candidate_headquarters_candidate_unique",
+    () => sql`
+      insert into candidate_headquarters (
+        candidate_id, state_key, state_label, city_key, city_label,
+        evidence_state, confidence, source_urls
+      ) values (
+        ${candidateId}, 'karnataka', 'Karnataka', 'bengaluru', 'Bengaluru',
+        'evidence_backed', 95, ${sourceUrls}::jsonb
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid headquarters coordinates",
+    "candidate_headquarters_latitude_check",
+    () => sql`
+      update candidate_headquarters
+      set latitude_microdegrees = 90000001
+      where candidate_id = ${candidateId}
+    `,
+  );
+  await assertConstraintFailure(
+    "Unpaired headquarters coordinates",
+    "candidate_headquarters_coordinates_check",
+    () => sql`
+      update candidate_headquarters
+      set longitude_microdegrees = null
+      where candidate_id = ${candidateId}
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid headquarters longitude",
+    "candidate_headquarters_longitude_check",
+    () => sql`
+      update candidate_headquarters
+      set longitude_microdegrees = 180000001
+      where candidate_id = ${candidateId}
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid headquarters confidence",
+    "candidate_headquarters_confidence_check",
+    () => sql`
+      update candidate_headquarters
+      set confidence = -1
+      where candidate_id = ${candidateId}
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid headquarters source array",
+    "candidate_headquarters_sources_check",
+    () => sql`
+      update candidate_headquarters
+      set source_urls = '[]'::jsonb
+      where candidate_id = ${candidateId}
+    `,
+  );
+  await assertConstraintFailure(
+    "Duplicate public signal evidence",
+    "candidate_public_signals_evidence_key_idx",
+    () => sql`
+      insert into candidate_public_signals (
+        candidate_id, signal_type, title, occurred_at, source_url, confidence, evidence_key
+      ) values (
+        ${candidateId}, 'product_launch', 'Duplicate launch',
+        '2026-07-20T00:00:00.000Z',
+        'https://migration-robotics.example.test/launch', 88,
+        'migration-signal-evidence-key'
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid public signal URL",
+    "candidate_public_signals_source_url_check",
+    () => sql`
+      insert into candidate_public_signals (
+        candidate_id, signal_type, title, occurred_at, source_url, confidence, evidence_key
+      ) values (
+        ${candidateId}, 'product_launch', 'Invalid URL signal',
+        '2026-07-20T00:00:00.000Z', 'private-source', 88,
+        'invalid-signal-url-key'
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid public signal confidence",
+    "candidate_public_signals_confidence_check",
+    () => sql`
+      insert into candidate_public_signals (
+        candidate_id, signal_type, title, occurred_at, source_url, confidence, evidence_key
+      ) values (
+        ${candidateId}, 'product_launch', 'Invalid confidence signal',
+        '2026-07-20T00:00:00.000Z',
+        'https://migration-robotics.example.test/invalid-confidence', 101,
+        'invalid-signal-confidence-key'
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid public signal expiry",
+    "candidate_public_signals_expiry_check",
+    () => sql`
+      insert into candidate_public_signals (
+        candidate_id, signal_type, title, occurred_at, expires_at,
+        source_url, confidence, evidence_key
+      ) values (
+        ${candidateId}, 'product_launch', 'Invalid expiry signal',
+        '2026-07-20T00:00:00.000Z', '2026-07-19T00:00:00.000Z',
+        'https://migration-robotics.example.test/invalid-expiry', 80,
+        'invalid-signal-expiry-key'
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Duplicate relationship evidence",
+    "candidate_relationships_evidence_key_idx",
+    () => sql`
+      insert into candidate_relationships (
+        source_candidate_id, target_public_name, relationship_type,
+        evidence_url, confidence, evidence_key
+      ) values (
+        ${candidateId}, 'Another Partner', 'manufacturing_partner',
+        'https://migration-robotics.example.test/partner', 85,
+        'migration-relationship-evidence-key'
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Relationship without a target",
+    "candidate_relationships_target_check",
+    () => sql`
+      insert into candidate_relationships (
+        source_candidate_id, relationship_type, evidence_url, confidence, evidence_key
+      ) values (
+        ${candidateId}, 'manufacturing_partner',
+        'https://migration-robotics.example.test/missing-target', 85,
+        'missing-target-evidence-key'
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Relationship self-link",
+    "candidate_relationships_self_link_check",
+    () => sql`
+      insert into candidate_relationships (
+        source_candidate_id, target_candidate_id, relationship_type,
+        evidence_url, confidence, evidence_key
+      ) values (
+        ${candidateId}, ${candidateId}, 'manufacturing_partner',
+        'https://migration-robotics.example.test/self-link', 85,
+        'self-link-evidence-key'
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Invalid relationship confidence",
+    "candidate_relationships_confidence_check",
+    () => sql`
+      insert into candidate_relationships (
+        source_candidate_id, target_public_name, relationship_type,
+        evidence_url, confidence, evidence_key
+      ) values (
+        ${candidateId}, 'Invalid Confidence Partner', 'manufacturing_partner',
+        'https://migration-robotics.example.test/invalid-relationship-confidence',
+        -1, 'invalid-relationship-confidence-key'
+      )
+    `,
+  );
+
+  const [counts] = await sql`
+    select
+      (select count(*)::integer from candidate_ecosystem_classifications) as "classificationCount",
+      (select count(*)::integer from candidate_headquarters) as "headquartersCount",
+      (select count(*)::integer from candidate_public_signals) as "signalCount",
+      (select count(*)::integer from candidate_relationships) as "relationshipCount"
+  `;
+  assert(
+    JSON.stringify(counts) ===
+      JSON.stringify({
+        classificationCount: 1,
+        headquartersCount: 1,
+        signalCount: 1,
+        relationshipCount: 1,
+      }),
+    `Expected one valid row in each ecosystem intelligence table, found ${JSON.stringify(counts)}.`,
   );
 }
 
@@ -1174,6 +1954,34 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
       from discovery_runs
       where id = ${expectedFixtures.discoveryRun.id}
     `;
+    const [candidate] = await sql`
+      select id, name, canonical_identity_key as "canonicalIdentityKey"
+      from discovery_candidates
+      where id = ${expectedFixtures.candidate.id}
+    `;
+    const [research] = await sql`
+      select
+        id,
+        candidate_id as "candidateId",
+        discovery_run_id as "discoveryRunId"
+      from candidate_research_versions
+      where id = ${expectedFixtures.research.id}
+    `;
+    const [source] = await sql`
+      select
+        id,
+        candidate_id as "candidateId",
+        discovery_run_id as "discoveryRunId",
+        source_url as "sourceUrl"
+      from discovery_candidate_sources
+      where id = ${expectedFixtures.source.id}
+    `;
+    const [discoveryCounts] = await sql`
+      select
+        (select count(*)::integer from discovery_candidates) as "candidateCount",
+        (select count(*)::integer from candidate_research_versions) as "researchCount",
+        (select count(*)::integer from discovery_candidate_sources) as "sourceCount"
+    `;
     assert(JSON.stringify(user) === JSON.stringify(expectedFixtures.user), "User fixture changed.");
     assert(
       JSON.stringify(profile) === JSON.stringify(expectedFixtures.profile),
@@ -1191,12 +1999,30 @@ async function assertDiscoveryMigration(sql, expectedFixtures = null) {
         }),
       "Existing V1 discovery run was not backfilled to general_discovery.",
     );
+    assert(
+      JSON.stringify(candidate) === JSON.stringify(expectedFixtures.candidate),
+      "Discovery candidate fixture changed.",
+    );
+    assert(
+      JSON.stringify(research) === JSON.stringify(expectedFixtures.research),
+      "Candidate research fixture changed.",
+    );
+    assert(
+      JSON.stringify(source) === JSON.stringify(expectedFixtures.source),
+      "Discovery source fixture changed.",
+    );
+    assert(
+      JSON.stringify(discoveryCounts) ===
+        JSON.stringify(expectedFixtures.discoveryCounts),
+      "Discovery candidate, research, or source row counts changed.",
+    );
   }
 }
 
 async function assertMigrationState(sql, expectedFixtures = null) {
   await assertDiscoveryMigration(sql, expectedFixtures);
   await assertOpportunityBriefMigration(sql);
+  await assertEcosystemIntelligenceMigration(sql);
   await assertAppliedMigrations(sql);
 }
 
@@ -1224,8 +2050,9 @@ try {
   const fixtures = await insertUpgradeFixtures(upgradeClient);
   await migrate(drizzle(upgradeClient), { migrationsFolder });
   await assertMigrationState(upgradeClient, fixtures);
+  await assertEcosystemConstraintBehavior(upgradeClient, fixtures.candidate.id);
   console.log(
-    `Upgrade migration ${newestMigration.tag} passed with unchanged product and Discovery fixtures.`,
+    `Upgrade migration ${newestMigration.tag} passed with unchanged product and Discovery fixtures and enforced ecosystem constraints.`,
   );
 } catch (error) {
   executionError = error;

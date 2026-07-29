@@ -4,6 +4,14 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import type { OpportunityBriefSourceMetadata } from "../app/domain/opportunity-brief";
 import { openToInterests } from "../app/domain/signal";
 import type {
+  CandidateEcosystemClassification,
+  CandidateHeadquarters,
+  CandidatePublicSignal,
+  CandidateRelationship,
+  NewCandidateEcosystemClassification,
+  NewCandidateHeadquarters,
+  NewCandidatePublicSignal,
+  NewCandidateRelationship,
   NewOpportunityBriefRequest,
   NewOpportunityBriefSubmissionAttempt,
   OpportunityBriefRequest,
@@ -13,6 +21,10 @@ import * as schema from "../db/schema";
 
 import {
   availabilityEnum,
+  candidateEcosystemClassifications,
+  candidateHeadquarters,
+  candidatePublicSignals,
+  candidateRelationships,
   candidateResearchVersions,
   creatorSubtypeEnum,
   discoveryCandidates,
@@ -376,6 +388,215 @@ describe("Mewtuals PostgreSQL schema", () => {
         (foreignKey) => foreignKey.onDelete === "cascade",
       ),
     ).toBe(true);
+  });
+
+  it("models normalized candidate ecosystem classifications", () => {
+    expect(configFor(candidateEcosystemClassifications).name).toBe(
+      "candidate_ecosystem_classifications",
+    );
+    expect(columnNames(candidateEcosystemClassifications)).toEqual([
+      "id",
+      "candidate_id",
+      "kind",
+      "term_key",
+      "evidence_state",
+      "confidence",
+      "basis",
+      "source_urls",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(uniqueConstraintNames(candidateEcosystemClassifications)).toContain(
+      "candidate_ecosystem_classifications_candidate_kind_term_unique",
+    );
+    expect(foreignKeyNames(candidateEcosystemClassifications)).toEqual([
+      "candidate_ecosystem_classifications_candidate_fk",
+    ]);
+    expect(
+      configFor(candidateEcosystemClassifications).foreignKeys[0]?.onDelete,
+    ).toBe("cascade");
+    expect(indexNames(candidateEcosystemClassifications)).toEqual(
+      expect.arrayContaining([
+        "candidate_ecosystem_classifications_candidate_idx",
+        "candidate_ecosystem_classifications_kind_term_idx",
+        "candidate_ecosystem_classifications_evidence_state_idx",
+        "candidate_ecosystem_classifications_confidence_idx",
+      ]),
+    );
+    expect(checkNames(candidateEcosystemClassifications)).toEqual(
+      expect.arrayContaining([
+        "candidate_ecosystem_classifications_evidence_state_check",
+        "candidate_ecosystem_classifications_confidence_check",
+        "candidate_ecosystem_classifications_basis_check",
+        "candidate_ecosystem_classifications_sources_check",
+      ]),
+    );
+  });
+
+  it("stores at most one resolved headquarters row per candidate", () => {
+    expect(configFor(candidateHeadquarters).name).toBe(
+      "candidate_headquarters",
+    );
+    expect(columnNames(candidateHeadquarters)).toEqual([
+      "id",
+      "candidate_id",
+      "country_code",
+      "state_key",
+      "state_label",
+      "city_key",
+      "city_label",
+      "latitude_microdegrees",
+      "longitude_microdegrees",
+      "evidence_state",
+      "confidence",
+      "source_urls",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(candidateHeadquarters.candidateId.isUnique).toBe(true);
+    expect(candidateHeadquarters.countryCode.hasDefault).toBe(true);
+    expect(foreignKeyNames(candidateHeadquarters)).toEqual([
+      "candidate_headquarters_candidate_fk",
+    ]);
+    expect(configFor(candidateHeadquarters).foreignKeys[0]?.onDelete).toBe(
+      "cascade",
+    );
+    expect(indexNames(candidateHeadquarters)).toEqual(
+      expect.arrayContaining([
+        "candidate_headquarters_state_idx",
+        "candidate_headquarters_city_idx",
+        "candidate_headquarters_evidence_state_idx",
+        "candidate_headquarters_confidence_idx",
+      ]),
+    );
+    expect(checkNames(candidateHeadquarters)).toEqual(
+      expect.arrayContaining([
+        "candidate_headquarters_country_check",
+        "candidate_headquarters_location_check",
+        "candidate_headquarters_coordinates_check",
+        "candidate_headquarters_latitude_check",
+        "candidate_headquarters_longitude_check",
+        "candidate_headquarters_evidence_state_check",
+        "candidate_headquarters_confidence_check",
+        "candidate_headquarters_sources_check",
+      ]),
+    );
+  });
+
+  it("models dated public signals with replay-safe evidence identity", () => {
+    expect(configFor(candidatePublicSignals).name).toBe(
+      "candidate_public_signals",
+    );
+    expect(columnNames(candidatePublicSignals)).toEqual([
+      "id",
+      "candidate_id",
+      "signal_type",
+      "title",
+      "occurred_at",
+      "expires_at",
+      "source_url",
+      "confidence",
+      "evidence_key",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(foreignKeyNames(candidatePublicSignals)).toEqual([
+      "candidate_public_signals_candidate_fk",
+    ]);
+    expect(configFor(candidatePublicSignals).foreignKeys[0]?.onDelete).toBe(
+      "cascade",
+    );
+    expect(
+      hasUniqueIndex(
+        candidatePublicSignals,
+        "candidate_public_signals_evidence_key_idx",
+      ),
+    ).toBe(true);
+    expect(indexNames(candidatePublicSignals)).toEqual(
+      expect.arrayContaining([
+        "candidate_public_signals_candidate_idx",
+        "candidate_public_signals_type_idx",
+        "candidate_public_signals_occurred_at_idx",
+        "candidate_public_signals_expires_at_idx",
+      ]),
+    );
+    expect(checkNames(candidatePublicSignals)).toEqual(
+      expect.arrayContaining([
+        "candidate_public_signals_title_check",
+        "candidate_public_signals_source_url_check",
+        "candidate_public_signals_confidence_check",
+        "candidate_public_signals_expiry_check",
+      ]),
+    );
+  });
+
+  it("models directed evidence-backed candidate relationships", () => {
+    expect(configFor(candidateRelationships).name).toBe(
+      "candidate_relationships",
+    );
+    expect(columnNames(candidateRelationships)).toEqual([
+      "id",
+      "source_candidate_id",
+      "target_candidate_id",
+      "target_public_name",
+      "relationship_type",
+      "evidence_url",
+      "confidence",
+      "observed_at",
+      "evidence_key",
+      "created_at",
+      "updated_at",
+    ]);
+    expect(foreignKeyNames(candidateRelationships)).toEqual([
+      "candidate_relationships_source_candidate_fk",
+      "candidate_relationships_target_candidate_fk",
+    ]);
+    const [sourceForeignKey, targetForeignKey] = configFor(
+      candidateRelationships,
+    ).foreignKeys;
+    expect(sourceForeignKey?.onDelete).toBe("cascade");
+    expect(targetForeignKey?.onDelete).toBe("no action");
+    expect(
+      hasUniqueIndex(
+        candidateRelationships,
+        "candidate_relationships_evidence_key_idx",
+      ),
+    ).toBe(true);
+    expect(indexNames(candidateRelationships)).toEqual(
+      expect.arrayContaining([
+        "candidate_relationships_source_candidate_idx",
+        "candidate_relationships_target_candidate_idx",
+        "candidate_relationships_type_idx",
+        "candidate_relationships_observed_at_idx",
+      ]),
+    );
+    expect(checkNames(candidateRelationships)).toEqual(
+      expect.arrayContaining([
+        "candidate_relationships_target_check",
+        "candidate_relationships_self_link_check",
+        "candidate_relationships_evidence_url_check",
+        "candidate_relationships_confidence_check",
+      ]),
+    );
+  });
+
+  it("exports inferred ecosystem evidence persistence types", () => {
+    expectTypeOf<CandidateEcosystemClassification["sourceUrls"]>().toEqualTypeOf<
+      string[]
+    >();
+    expectTypeOf<NewCandidateEcosystemClassification>().toHaveProperty(
+      "candidateId",
+    );
+    expectTypeOf<
+      CandidateHeadquarters["latitudeMicrodegrees"]
+    >().toEqualTypeOf<number | null>();
+    expectTypeOf<NewCandidateHeadquarters>().toHaveProperty("countryCode");
+    expectTypeOf<CandidatePublicSignal["occurredAt"]>().toEqualTypeOf<Date>();
+    expectTypeOf<NewCandidatePublicSignal>().toHaveProperty("evidenceKey");
+    expectTypeOf<
+      CandidateRelationship["targetCandidateId"]
+    >().toEqualTypeOf<string | null>();
+    expectTypeOf<NewCandidateRelationship>().toHaveProperty("sourceCandidateId");
   });
 
   it("models discovery candidates with immutable identity and review indexes", () => {

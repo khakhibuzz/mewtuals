@@ -57,6 +57,13 @@
       "when": 1785252007511,
       "tag": "0007_physical_ai_discovery_v1",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785340057910,
+      "tag": "0008_ecosystem_intelligence_v1",
+      "breakpoints": true
     }
   ]
 }
