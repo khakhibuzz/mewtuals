@@ -529,12 +529,21 @@ the following eleven tables. Arrays are nullable when the distinction between
 unknown and known-empty matters. JSONB is bounded and reserved for irregular
 specification details, not primary filter fields.
 
+Implementation clarification (2026-07-29): the fields called out below make
+already-approved planning, scoring, replay, identity, and momentum rules
+durable. They do not add a table, signal class, route, or cross-context write.
+They close storage omissions discovered while implementing Tasks 2, 5, 8, and
+9 so those policies are not hidden in `raw_metadata` or recomputed from mutable
+configuration.
+
 ### `global_entities`
 
 Stores lightweight identity:
 
 - `id`, `canonical_name`, `normalized_name`, nullable `canonical_domain`,
-  nullable `website_url`, nullable `linkedin_url`;
+  nullable `website_url`, nullable `linkedin_url`, nullable
+  `canonical_corporate_group_id`, and canonical
+  `stable_public_identifiers` as a bounded text array;
 - `headquarters_country`, nullable `headquarters_city`, nullable
   `operating_countries`;
 - `organisation_type`, `sector`, `short_description`;
@@ -545,7 +554,9 @@ Stores lightweight identity:
 
 Partial unique indexes protect normalized canonical domain and normalized
 LinkedIn identity. `(normalized_name, headquarters_country)` is a collision
-candidate, not an automatic merge rule. Automatically discovered entities
+candidate, not an automatic merge rule. A GIN index makes canonical stable
+public identifiers directly queryable rather than hiding them in metadata.
+Automatically discovered entities
 require at least one attached valid signal; administrator watchlist entries are
 the only signal-free creation path.
 
@@ -555,7 +566,8 @@ Stores:
 
 - `id`, unique `external_run_key`, `request_hash`, `trigger` (`scheduled |
   manual | trial`), `scan_mode` (`daily | thematic | watchlist_refresh |
-  manual`), and run `status`;
+  manual`), run `status`, `plan_fingerprint`, and a bounded immutable
+  `plan_snapshot`;
 - `started_at`, `completed_at`, `created_at`, `updated_at`;
 - source countries/languages, target domains/signal types, and sources used;
 - `number_results_examined`, `number_entities_observed`,
@@ -574,10 +586,11 @@ request hash is a conflict. Manual queued runs sort before scheduled work.
 ### `global_radar_search_queries`
 
 Stores one planned/executed query per run: `id`, run ID, query text and
-fingerprint, language, source country, target market/theme/class intent,
-adapter, ordinal, status, executed timestamp, results examined, bounded error,
-and created timestamp. Unique `(run_id, fingerprint)` prevents duplicated plan
-work.
+fingerprint, language, source country, theme, class intent, adapter,
+`recency_days`, ordinal, status, executed timestamp, results examined, bounded
+error, and created timestamp. There is no separate `target_market` field; the
+locked public query contract uses source country, theme, and intent. Unique
+`(run_id, fingerprint)` prevents duplicated plan work.
 
 ### `global_radar_signals`
 
@@ -586,7 +599,8 @@ Stores the primary signal contract:
 - `id`, `global_entity_id` (required for direct/precursor, nullable for
   multi-entity momentum), and exactly one `signal_class`;
 - `demand_domain`, `signal_type`, `title`, `factual_summary`,
-  `interpretation_summary`, and nullable `systems_context_summary`;
+  `interpretation_summary`, required `theme`, and nullable
+  `systems_context_summary`;
 - `source_country`, nullable target/collection/manufacturing/delivery
   geographies, `industry`, nullable `target_model_or_system`, nullable target
   capability tags, and nullable required counterparty archetypes;
@@ -603,8 +617,8 @@ Stores the primary signal contract:
   taxonomy consistency, and evidence quality;
 - nullable `direct_demand_score`, `precursor_score`, `momentum_score`, score
   coverage, and score-policy version;
-- nullable `announced_at`, `effective_from`, `expires_at`, plus required
-  `observed_at`;
+- nullable `announced_at`, `effective_from`, `expires_at`, direct-only
+  `evergreen` and nullable `reobserve_by`, plus required `observed_at`;
 - status: `newly_discovered | needs_review | monitoring | qualified |
   dismissed | expired | promoted`;
 - nullable public response path type/URL/business email and partner application
@@ -617,13 +631,15 @@ Stores the primary signal contract:
 It additionally stores:
 
 - stable `dedupe_key`, revision, first/most-recent run IDs, and optional
-  `merged_into_signal_id`;
+  `merged_into_signal_id`; `dedupe_version` and nullable
+  `momentum_policy_version` make the applicable derivation policies explicit;
 - first/last seen timestamps and created/updated timestamps.
 
 Class checks require only the fields appropriate to the discriminator. There is
 no generic opportunity score. Non-applicable class-specific component and
 composite columns must be null, enforced in both the domain schema and database
-checks.
+checks. Active signal identity is unique on `(dedupe_version, dedupe_key)`;
+merged historical versions remain inspectable.
 
 ### `global_radar_signal_entities`
 
@@ -640,7 +656,8 @@ count.
 
 Stores `id`, signal ID, requirement kind (`physical_data | robotics_hardware |
 manufacturing | deployment | market_access | research | operational_service`),
-capability tag, nullable data families, sensor modalities, environments, task
+capability tag, required concise `summary`, nullable data families, sensor
+modalities, environments, task
 families, collection methods, human roles, robot embodiments, Indian execution
 archetypes, bounded scale/technical/quality/rights-and-compliance JSONB,
 confidence, requirement fingerprint, and timestamps. A normalized requirement
@@ -648,10 +665,11 @@ fingerprint prevents duplicates within a signal.
 
 ### `global_signal_evidence`
 
-Stores `id`, signal and run IDs, source URL/name/type/language/country,
+Stores `id`, signal and run IDs, nullable contributor `global_entity_id`, source
+URL/name/type/language/country, `source_family`,
 evidence claim, permitted concise source excerpt, separate English summary,
 nullable published date, observed date, evidence confidence, translation
-confidence, primary-source flag, direct-demand support flag, India-relevance
+confidence, primary-source flag, `is_syndicated`, direct-demand support flag, India-relevance
 support flag, bounded raw metadata, and created timestamp. It also stores the
 canonical URL, evidence fingerprint, and `supported_field_paths`.
 Those field paths provide field-level provenance. Unique
@@ -669,9 +687,12 @@ state.
 ### `global_radar_watchlist_entries`
 
 Stores configurable entity monitoring: entity ID, enabled/paused state,
-priority, themes, countries, languages, cadence, next scan, reason, creator,
-revision, and timestamps. No watchlist values are hard-coded into workflow
-logic. Disabling an entry preserves the row and history.
+priority, one `theme`, `category`, required English category search term,
+nullable Chinese category search term, countries, languages, cadence, next
+scan, reason, creator, revision, and timestamps. The domain/repository boundary
+requires the Chinese term whenever China is effective work. No watchlist values
+are hard-coded into workflow logic. Disabling an entry preserves the row and
+history.
 
 ### `global_radar_promotions`
 

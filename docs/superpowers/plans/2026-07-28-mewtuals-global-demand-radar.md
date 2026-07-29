@@ -472,6 +472,15 @@ Drive one table and its constraints at a time:
 10. `global_radar_promotions`
 11. `global_radar_admin_events`
 
+The implementation-complete storage contract also asserts: canonical corporate
+group and queryable stable public identifiers on entities; immutable plan
+fingerprint/snapshot on runs; query recency without a separate target-market
+column; signal theme, dedupe/policy versions, evergreen and re-observation;
+required requirement summaries; evidence contributor/source-family/syndication;
+and the watchlist category plus localized search terms. These are additive
+fields required by the already-approved Tasks 2, 5, 8, and 9 and do not change
+the eleven-table boundary.
+
 Run `npx vitest run tests/schema.test.ts -t 'defines global entities'` for the first table, then use the corresponding concrete test name for each subsequent table. Assert UUID identities, timestamp defaults, named FKs, cascade/restrict behavior, filter indexes, one-running Radar partial unique index, manual claim index, normalized domain/LinkedIn partial uniqueness, `(run_id, fingerprint)`, `(signal_id, entity_id, role)`, `(signal_id, requirement_fingerprint)`, `(signal_id, evidence_fingerprint)`, update/admin idempotency, and one active promotion per entity.
 
 - [ ] **Step 3: Mirror class and bound invariants in SQL**
@@ -479,6 +488,15 @@ Run `npx vitest run tests/schema.test.ts -t 'defines global entities'` for the f
 Add named checks for integer scores/confidences 0–100, `score_coverage` as integer percent 0–100 (80 is the domain coverage boundary), nonnegative counters, valid running leases, entity revisions, and nonempty bounded-text surrogates where PostgreSQL can enforce them. Encode the domain-tested class nullability matrix: only the discriminator's composite/components may be populated and non-applicable composites/components must be null. Keep bounded JSONB validation at the Zod/repository boundary with an 8 KiB per-object limit.
 
 Canonicalize the stored LinkedIn organisation URL before persistence and index that stored value; do not add a second denormalized identity column. Primary direct/precursor ownership remains `global_entity_id`; association roles are only supporting/contributor.
+
+Use a GIN-indexed bounded canonical `stable_public_identifiers` text array and a
+nullable canonical corporate-group identifier on entities. Persist a bounded
+immutable run plan snapshot with its fingerprint. Enforce the active
+`(dedupe_version, dedupe_key)` signal identity, direct-only evergreen fields,
+and non-applicable policy/version nullability. A momentum evidence contributor
+may reference its entity directly; the repository requires contributor binding
+for momentum. A China-effective watchlist configuration requires its Chinese
+category term at the domain/repository boundary.
 
 - [ ] **Step 4: Generate and inspect the migration**
 
