@@ -96,7 +96,7 @@ export type MatrixCell = {
 export type EcosystemSnapshot = {
   generatedAt: Date;
   filters: EcosystemFilters;
-  population: { candidateIds: string[]; total: number };
+  population: { total: number; fingerprint: string };
   summary: {
     organisations: CountMetric;
     companies: RatioMetric;
@@ -109,13 +109,14 @@ export type EcosystemSnapshot = {
     documentedRelationships: { count: number; organisations: RatioMetric };
   };
   dataQuality: {
-    candidateSources: RatioMetric;
-    systemsContext: RatioMetric;
-    classifications: RatioMetric;
-    resolvedHeadquarters: RatioMetric;
-    publicContacts: RatioMetric;
-    evidenceCoverage: RatioMetric;
+    resolvedState: RatioMetric;
+    resolvedCity: RatioMetric;
+    ecosystemRole: RatioMetric;
+    capability: RatioMetric;
     strongEvidence: RatioMetric;
+    publicContact: RatioMetric;
+    organisationsWithActiveSignal: RatioMetric;
+    systemsContext: RatioMetric;
     unknownCounts: Record<string, number>;
   };
   geography: {

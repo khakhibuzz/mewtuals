@@ -1,5 +1,6 @@
 import { sql, type SQL } from "drizzle-orm";
 
+import { normalizePublicDiscoveryUrl } from "../../app/domain/discovery";
 import type { EcosystemFilters } from "../../app/domain/ecosystem-intelligence";
 import {
   CATEGORY_CLASSIFICATION_INFERENCES,
@@ -11,6 +12,7 @@ import {
   candidateEcosystemClassifications,
   candidateHeadquarters,
   candidatePublicSignals,
+  candidateRelationships,
   candidateResearchVersions,
   discoveryCandidateSources,
   discoveryCandidates,
@@ -47,6 +49,25 @@ export function sqlList(values: readonly string[]): SQL {
 
 export function timestamp(value: Date): SQL {
   return sql`${value.toISOString()}::timestamptz`;
+}
+
+export function publicHttpUrlPredicate(expression: SQL): SQL {
+  return sql`coalesce(
+    btrim(${expression}) ~* '^https?://((([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?[.]?)|((25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})[.]){3}(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})|\\[[0-9a-f:.]+\\])(:[0-9]{1,5})?([/?#][^[:space:]]*)?$'
+      and btrim(${expression}) !~* '^https?://[^/?#]*@'
+      and btrim(${expression}) !~* '^https?://(10[.]|127[.]|169[.]254[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])'
+      and btrim(${expression}) !~* '^https?://\\[(::1|f[cd][0-9a-f:]*|fe[89ab][0-9a-f:]*)\\]',
+    false
+  )`;
+}
+
+export function publicHttpUrlOrNull(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    return normalizePublicDiscoveryUrl(value);
+  } catch {
+    return null;
+  }
 }
 
 export function activeSignalPredicate(alias: string, now: Date): SQL {
@@ -195,14 +216,14 @@ function filteredCandidateConditions(filters: EcosystemFilters, now: Date): SQL 
 }
 
 function filteredCandidatesCte(filters: EcosystemFilters, now: Date): SQL {
+  const publicWebsite = publicHttpUrlPredicate(sql`candidate.website_url`);
+  const publicLinkedIn = publicHttpUrlPredicate(sql`candidate.linkedin_url`);
+  const publicPrimarySocial = publicHttpUrlPredicate(sql`candidate.primary_social_url`);
   const hasPublicContact = sql`case
     when candidate.type = 'creator' then
-      nullif(btrim(candidate.website_url), '') is not null
-      or nullif(btrim(candidate.linkedin_url), '') is not null
-      or nullif(btrim(candidate.primary_social_url), '') is not null
+      (${publicWebsite}) or (${publicLinkedIn}) or (${publicPrimarySocial})
     else
-      nullif(btrim(candidate.website_url), '') is not null
-      or nullif(btrim(candidate.linkedin_url), '') is not null
+      (${publicWebsite}) or (${publicLinkedIn})
     end`;
   const classificationState = sql`case
     when exists (
@@ -242,7 +263,8 @@ function filteredCandidatesCte(filters: EcosystemFilters, now: Date): SQL {
         '[]'::jsonb,
         false
       from ${discoveryCandidates} candidate
-      join inferred_rules inference on lower(btrim(candidate.category)) = inference.category
+      join inferred_rules inference
+        on regexp_replace(lower(btrim(candidate.category)), '[[:space:]]+', ' ', 'g') = inference.category
       where not exists (
         select 1 from ${candidateEcosystemClassifications} explicit_classification
         where explicit_classification.candidate_id = candidate.id
@@ -284,7 +306,7 @@ function filteredCandidatesCte(filters: EcosystemFilters, now: Date): SQL {
         (${classificationState}) as classification_state,
         greatest(
           (select max(candidate_source.last_seen_at) from ${discoveryCandidateSources} candidate_source where candidate_source.candidate_id = candidate.id),
-          (select max(research.created_at) from ${candidateResearchVersions} research where research.candidate_id = candidate.id and research.analysis_version = ${filters.analysisVersion})
+          (select max(research.created_at) from ${candidateResearchVersions} research where research.candidate_id = candidate.id)
         ) as latest_evidence_at,
         (
           case when exists (select 1 from ${discoveryCandidateSources} candidate_source where candidate_source.candidate_id = candidate.id) then 20 else 0 end
@@ -304,6 +326,25 @@ function filteredCandidatesCte(filters: EcosystemFilters, now: Date): SQL {
     filtered_candidates as (
       select * from candidate_rollup
       where ${filteredCandidateConditions(filters, now)}
+    ),
+    documented_relationships as (
+      select relationship.*
+      from ${candidateRelationships} relationship
+      join filtered_candidates source_candidate
+        on source_candidate.id = relationship.source_candidate_id
+      where ${publicHttpUrlPredicate(sql`relationship.evidence_url`)}
+        and (
+          relationship.target_candidate_id is null
+          or exists (
+            select 1 from filtered_candidates target_candidate
+            where target_candidate.id = relationship.target_candidate_id
+          )
+        )
+    ),
+    drawable_relationships as (
+      select relationship.*
+      from documented_relationships relationship
+      where relationship.target_candidate_id is not null
     )
   `;
 }

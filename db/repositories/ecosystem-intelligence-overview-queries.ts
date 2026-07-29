@@ -10,10 +10,7 @@ import {
   indiaStateAndUnionTerritoryKeys,
 } from "../../app/domain/ecosystem-intelligence-taxonomy";
 import type { MewtualsDatabase } from "../client";
-import {
-  candidatePublicSignals,
-  candidateRelationships,
-} from "../schema";
+import { candidatePublicSignals } from "../schema";
 import {
   activeSignalPredicate,
   sqlList,
@@ -30,7 +27,6 @@ import type {
 type ReadTransaction = Parameters<MewtualsDatabase["transaction"]>[0] extends
   (transaction: infer Transaction) => unknown ? Transaction : never;
 
-const MAX_POPULATION_IDS = 100;
 const MAX_REPRESENTATIVES = 5;
 
 function number(value: unknown): number {
@@ -46,6 +42,7 @@ function ratio(numerator: number, denominator: number): RatioMetric {
 }
 
 type SummaryRow = {
+  fingerprint: string;
   total: number;
   companies: number;
   rolesRepresented: number;
@@ -59,11 +56,11 @@ type SummaryRow = {
   dependencySignalOrganisations: number;
   relationships: number;
   relationshipOrganisations: number;
-  candidateSources: number;
   systemsContext: number;
-  classifications: number;
-  resolvedHeadquarters: number;
-  evidenceScoreTotal: number;
+  ecosystemRoleOrganisations: number;
+  capabilityOrganisations: number;
+  resolvedStates: number;
+  resolvedCities: number;
   strongEvidence: number;
   staleEvidence: number;
   unknownDomain: number;
@@ -85,33 +82,34 @@ async function loadPopulationAndSummary(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
-): Promise<{ candidateIds: string[]; summary: SummaryRow }> {
-  const candidateIds = await transaction.execute<{ id: string }>(
-    withFilteredCandidates(filters, now, sql`
-      select id from filtered_candidates order by id limit ${MAX_POPULATION_IDS}
-    `),
-  );
+): Promise<SummaryRow> {
   const [summary] = await transaction.execute<SummaryRow>(
     withFilteredCandidates(filters, now, sql`
       select
+        md5(coalesce(string_agg(filtered.id::text, ',' order by filtered.id), '')) as "fingerprint",
         count(*)::integer as "total",
         count(*) filter (where filtered.type = 'company')::integer as "companies",
         (select count(distinct role.term_key)::integer from effective_classifications role join filtered_candidates candidate on candidate.id = role.candidate_id where role.kind = 'ecosystem_role') as "rolesRepresented",
         (select count(distinct layer.term_key)::integer from effective_classifications layer join filtered_candidates candidate on candidate.id = layer.candidate_id where layer.kind = 'technical_layer') as "layersRepresented",
         count(distinct filtered.state_key) filter (where filtered.state_key is not null)::integer as "statesRepresented",
-        count(distinct filtered.city_key) filter (where filtered.city_key is not null)::integer as "citiesRepresented",
+        count(distinct (filtered.state_key, filtered.city_key)) filter (where filtered.city_key is not null)::integer as "citiesRepresented",
         count(*) filter (where filtered.has_public_contact)::integer as "publicContacts",
         (select count(*)::integer from ${candidatePublicSignals} signal join filtered_candidates candidate on candidate.id = signal.candidate_id join signal_freshness on signal_freshness.signal_type = signal.signal_type where ${activeSignalPredicate("signal", now)}) as "activeSignals",
         (select count(distinct signal.candidate_id)::integer from ${candidatePublicSignals} signal join filtered_candidates candidate on candidate.id = signal.candidate_id join signal_freshness on signal_freshness.signal_type = signal.signal_type where ${activeSignalPredicate("signal", now)}) as "activeSignalOrganisations",
         (select count(*)::integer from ${candidatePublicSignals} signal join filtered_candidates candidate on candidate.id = signal.candidate_id join signal_freshness on signal_freshness.signal_type = signal.signal_type where signal.signal_type in (${sqlList(ECOSYSTEM_TAXONOMY.dependencyRelatedSignalTypes)}) and ${activeSignalPredicate("signal", now)}) as "dependencySignals",
         (select count(distinct signal.candidate_id)::integer from ${candidatePublicSignals} signal join filtered_candidates candidate on candidate.id = signal.candidate_id join signal_freshness on signal_freshness.signal_type = signal.signal_type where signal.signal_type in (${sqlList(ECOSYSTEM_TAXONOMY.dependencyRelatedSignalTypes)}) and ${activeSignalPredicate("signal", now)}) as "dependencySignalOrganisations",
-        (select count(*)::integer from ${candidateRelationships} relationship join filtered_candidates candidate on candidate.id = relationship.source_candidate_id where relationship.evidence_url ~ '^https?://') as "relationships",
-        (select count(distinct relationship.source_candidate_id)::integer from ${candidateRelationships} relationship join filtered_candidates candidate on candidate.id = relationship.source_candidate_id where relationship.evidence_url ~ '^https?://') as "relationshipOrganisations",
-        count(*) filter (where filtered.has_candidate_source)::integer as "candidateSources",
+        (select count(*)::integer from documented_relationships) as "relationships",
+        (select count(*)::integer from (
+          select relationship.source_candidate_id as candidate_id from documented_relationships relationship
+          union
+          select relationship.target_candidate_id from documented_relationships relationship
+          where relationship.target_candidate_id is not null
+        ) relationship_endpoint) as "relationshipOrganisations",
         count(*) filter (where filtered.has_systems_context)::integer as "systemsContext",
-        count(*) filter (where filtered.classification_state <> 'none')::integer as "classifications",
-        count(*) filter (where filtered.state_key is not null)::integer as "resolvedHeadquarters",
-        coalesce(sum(filtered.evidence_score), 0)::integer as "evidenceScoreTotal",
+        count(*) filter (where exists (select 1 from effective_classifications classification where classification.candidate_id = filtered.id and classification.kind = 'ecosystem_role'))::integer as "ecosystemRoleOrganisations",
+        count(*) filter (where exists (select 1 from effective_classifications classification where classification.candidate_id = filtered.id and classification.kind = 'capability'))::integer as "capabilityOrganisations",
+        count(*) filter (where filtered.state_key is not null)::integer as "resolvedStates",
+        count(*) filter (where filtered.city_key is not null)::integer as "resolvedCities",
         count(*) filter (where filtered.evidence_score >= 80 and filtered.classification_state = 'evidence_backed')::integer as "strongEvidence",
         count(*) filter (where filtered.latest_evidence_at < ${timestamp(now)} - make_interval(days => ${ECOSYSTEM_INTELLIGENCE_THRESHOLDS.staleEvidence.maximumAgeDays}::integer))::integer as "staleEvidence",
         count(*) filter (where not exists (select 1 from effective_classifications classification where classification.candidate_id = filtered.id and classification.kind = 'ecosystem_domain'))::integer as "unknownDomain",
@@ -134,9 +132,8 @@ async function loadPopulationAndSummary(
       from filtered_candidates filtered
     `),
   );
-  return {
-    candidateIds: candidateIds.map(({ id }) => id),
-    summary: summary ?? {
+  return summary ?? {
+      fingerprint: "d41d8cd98f00b204e9800998ecf8427e",
       total: 0,
       companies: 0,
       rolesRepresented: 0,
@@ -150,11 +147,11 @@ async function loadPopulationAndSummary(
       dependencySignalOrganisations: 0,
       relationships: 0,
       relationshipOrganisations: 0,
-      candidateSources: 0,
       systemsContext: 0,
-      classifications: 0,
-      resolvedHeadquarters: 0,
-      evidenceScoreTotal: 0,
+      ecosystemRoleOrganisations: 0,
+      capabilityOrganisations: 0,
+      resolvedStates: 0,
+      resolvedCities: 0,
       strongEvidence: 0,
       staleEvidence: 0,
       unknownDomain: 0,
@@ -170,7 +167,6 @@ async function loadPopulationAndSummary(
       unknownContact: 0,
       unknownSignals: 0,
       unknownSystemsContext: 0,
-    },
   };
 }
 type GeographyRow = {
@@ -207,7 +203,7 @@ async function loadGeography(
       'city'::text,
       city_key,
       min(city_label),
-      min(state_key),
+      state_key,
       count(*)::integer,
       case
         when bool_and(headquarters_evidence_state = 'evidence_backed' and headquarters_confidence >= 70 and latitude_microdegrees is not null)
@@ -221,8 +217,8 @@ async function loadGeography(
       end
     from filtered_candidates
     where city_key is not null
-    group by city_key
-    order by "dimension", "count" desc, "key"
+    group by state_key, city_key
+    order by "dimension", "count" desc, "key", "stateKey"
   `));
   return {
     denominator,
@@ -454,8 +450,7 @@ export async function loadEcosystemOverview(
   EcosystemSnapshot,
   "population" | "summary" | "dataQuality" | "geography" | "explorer" | "matrices" | "insights"
 >> {
-  const population = await loadPopulationAndSummary(transaction, filters, now);
-  const summaryRow = population.summary;
+  const summaryRow = await loadPopulationAndSummary(transaction, filters, now);
   const total = number(summaryRow.total);
   const geography = await loadGeography(
     transaction,
@@ -504,10 +499,8 @@ export async function loadEcosystemOverview(
       label: "stale evidence",
     },
   });
-  const evidenceDenominator = total * 100;
-
   return {
-    population: { candidateIds: population.candidateIds, total },
+    population: { total, fingerprint: summaryRow.fingerprint },
     summary: {
       organisations: { count: total },
       companies: ratio(number(summaryRow.companies), total),
@@ -526,13 +519,14 @@ export async function loadEcosystemOverview(
       },
     },
     dataQuality: {
-      candidateSources: ratio(number(summaryRow.candidateSources), total),
-      systemsContext: ratio(number(summaryRow.systemsContext), total),
-      classifications: ratio(number(summaryRow.classifications), total),
-      resolvedHeadquarters: ratio(number(summaryRow.resolvedHeadquarters), total),
-      publicContacts: ratio(number(summaryRow.publicContacts), total),
-      evidenceCoverage: ratio(number(summaryRow.evidenceScoreTotal), evidenceDenominator),
+      resolvedState: ratio(number(summaryRow.resolvedStates), total),
+      resolvedCity: ratio(number(summaryRow.resolvedCities), total),
+      ecosystemRole: ratio(number(summaryRow.ecosystemRoleOrganisations), total),
+      capability: ratio(number(summaryRow.capabilityOrganisations), total),
       strongEvidence: ratio(number(summaryRow.strongEvidence), total),
+      publicContact: ratio(number(summaryRow.publicContacts), total),
+      organisationsWithActiveSignal: ratio(number(summaryRow.activeSignalOrganisations), total),
+      systemsContext: ratio(number(summaryRow.systemsContext), total),
       unknownCounts: {
         ecosystemDomain: number(summaryRow.unknownDomain),
         organisationSubtype: number(summaryRow.unknownSubtype),

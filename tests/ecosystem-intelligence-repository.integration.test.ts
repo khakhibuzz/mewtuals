@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -394,6 +395,17 @@ async function seedCoreFixture(): Promise<CoreFixture> {
       createdAt: recent,
       updatedAt: recent,
     },
+    {
+      sourceCandidateId: componentMaker.id,
+      targetCandidateId: generalOnlyCompany.id,
+      relationshipType: "supplies_to",
+      evidenceUrl: `${componentMaker.canonicalUrl}/filtered-target-evidence`,
+      confidence: 82,
+      observedAt: recent,
+      evidenceKey: `relationship-${testId}-filtered-target`,
+      createdAt: recent,
+      updatedAt: recent,
+    },
   ]);
 
   await database.insert(opportunityBriefRequests).values({
@@ -449,13 +461,17 @@ function sorted(values: readonly string[]): string[] {
   return [...values].sort();
 }
 
+function populationFingerprint(candidateIds: readonly string[]): string {
+  return createHash("md5").update(sorted(candidateIds).join(",")).digest("hex");
+}
+
 function assertSharedPopulation(
   snapshot: EcosystemSnapshot,
   expectedCandidateIds: readonly string[],
 ): void {
   const expected = sorted(expectedCandidateIds);
-  expect(sorted(snapshot.population.candidateIds)).toEqual(expected);
   expect(snapshot.population.total).toBe(expected.length);
+  expect(snapshot.population.fingerprint).toBe(populationFingerprint(expected));
   expect(snapshot.summary.organisations.count).toBe(expected.length);
   expect(snapshot.geography.denominator).toBe(expected.length);
   expect(snapshot.explorer.denominator).toBe(expected.length);
@@ -528,11 +544,14 @@ describe("Ecosystem Intelligence analytical repository", () => {
       } catch (error) {
         throw new Error(`Shared population failed for ${testCase.label}.`, { cause: error });
       }
-      expect(snapshot.population.candidateIds).not.toContain(fixture.generalOnlyCompany.id);
     }
 
     const defaultSnapshot = await repository.getSnapshot(DEFAULT_ECOSYSTEM_FILTERS, now);
-    expect(defaultSnapshot.population.candidateIds).toContain(fixture.laterGeneralCompany.id);
+    expect(defaultSnapshot.population.fingerprint).toBe(populationFingerprint(defaultIds));
+    expect(defaultSnapshot.summary.documentedRelationships).toEqual({
+      count: 2,
+      organisations: { numerator: 2, denominator: 3, percentage: 67 },
+    });
     expect(JSON.stringify(defaultSnapshot)).not.toContain(`private-${testId}@example.test`);
     expect(JSON.stringify(defaultSnapshot)).not.toContain("+919999999999");
   });
@@ -543,10 +562,31 @@ describe("Ecosystem Intelligence analytical repository", () => {
       now,
     );
     expect(empty.summary.companies).toEqual({ numerator: 0, denominator: 0, percentage: 0 });
-    expect(empty.dataQuality.evidenceCoverage.denominator).toBe(0);
+    for (const metric of [
+      empty.dataQuality.resolvedState,
+      empty.dataQuality.resolvedCity,
+      empty.dataQuality.ecosystemRole,
+      empty.dataQuality.capability,
+      empty.dataQuality.strongEvidence,
+      empty.dataQuality.publicContact,
+      empty.dataQuality.organisationsWithActiveSignal,
+      empty.dataQuality.systemsContext,
+    ]) {
+      expect(metric).toEqual({ numerator: 0, denominator: 0, percentage: 0 });
+    }
     expect(empty.geography.unresolvedCount).toBe(0);
 
     const snapshot = await repository.getSnapshot(DEFAULT_ECOSYSTEM_FILTERS, now);
+    expect(snapshot.dataQuality).toMatchObject({
+      resolvedState: { numerator: 1, denominator: 3, percentage: 33 },
+      resolvedCity: { numerator: 1, denominator: 3, percentage: 33 },
+      ecosystemRole: { numerator: 2, denominator: 3, percentage: 67 },
+      capability: { numerator: 1, denominator: 3, percentage: 33 },
+      strongEvidence: { numerator: 1, denominator: 3, percentage: 33 },
+      publicContact: { numerator: 2, denominator: 3, percentage: 67 },
+      organisationsWithActiveSignal: { numerator: 2, denominator: 3, percentage: 67 },
+      systemsContext: { numerator: 3, denominator: 3, percentage: 100 },
+    });
     const componentRole = snapshot.matrices.roleByCapability.cells.find(
       (cell) => cell.rowKey === "component_supplier" && cell.columnKey === "motion_control",
     );
@@ -563,7 +603,7 @@ describe("Ecosystem Intelligence analytical repository", () => {
     });
     expect(snapshot.relationships).toMatchObject({
       ready: false,
-      evidencedEdgeCount: 2,
+      evidencedEdgeCount: 1,
       unresolvedTargetCount: 1,
       message: "More verified relationship evidence is needed before showing the graph.",
     });
@@ -584,23 +624,26 @@ describe("Ecosystem Intelligence analytical repository", () => {
     expect(first.ledger.items[0]?.name.localeCompare(second.ledger.items[0]?.name ?? "")).toBeLessThan(0);
   });
 
-  it("caps representatives and an evidence-only ready relationship graph", async () => {
+  it("keeps large populations, momentum, geography, filters, and relationships exact while capping display rows", async () => {
     const capRunId = await createRun("caps", "robotics_hardware_india", recent);
     const capCandidates: FixtureCandidate[] = [];
-    for (let index = 0; index < 46; index += 1) {
+    for (let index = 0; index < 105; index += 1) {
       const candidate = await createCandidate({
-        suffix: `cap-${index.toString().padStart(2, "0")}`,
+        suffix: `cap-${index.toString().padStart(3, "0")}`,
         runId: capRunId,
-        name: `Cap Candidate ${index.toString().padStart(2, "0")}`,
-        category: "manufacturing and testing",
+        name: `Cap Candidate ${index.toString().padStart(3, "0")}`,
+        category: index === 0 ? "  MANUFACTURING   AND   TESTING  " : "manufacturing and testing",
         status: "rejected",
+        score: index === 0 ? 100 : index < 5 ? 99 : 70,
+        websiteUrl: index === 0 ? "not-a-public-url" : undefined,
+        linkedinUrl: index === 0 ? "https://user:secret@example.com/profile" : undefined,
         discoveredAt: recent,
         researchAt: recent,
         sourceAt: recent,
       });
       capCandidates.push(candidate);
     }
-    await database.insert(candidateEcosystemClassifications).values(capCandidates.map((candidate) => ({
+    await database.insert(candidateEcosystemClassifications).values(capCandidates.slice(1).map((candidate) => ({
       candidateId: candidate.id,
       kind: "ecosystem_role",
       termKey: "manufacturer",
@@ -611,42 +654,111 @@ describe("Ecosystem Intelligence analytical repository", () => {
       createdAt: recent,
       updatedAt: recent,
     })));
-    await database.insert(candidatePublicSignals).values(capCandidates.slice(0, 3).flatMap((candidate, candidateIndex) =>
-      [0, 1].map((signalIndex) => ({
+    await database.insert(candidateHeadquarters).values(capCandidates.slice(0, -1).map((candidate, index) => ({
+      candidateId: candidate.id,
+      countryCode: "IN",
+      stateKey: index === 1 ? "tamil_nadu" : "karnataka",
+      stateLabel: index === 1 ? "Tamil Nadu" : "Karnataka",
+      cityKey: index < 2 ? "shared-city" : `fixture-city-${index.toString().padStart(3, "0")}`,
+      cityLabel: index < 2 ? "Shared City" : `Fixture City ${index.toString().padStart(3, "0")}`,
+      evidenceState: "evidence_backed",
+      confidence: 90,
+      sourceUrls: [`${candidate.canonicalUrl}/headquarters`],
+      createdAt: recent,
+      updatedAt: recent,
+    })));
+    await database.insert(candidatePublicSignals).values([
+      ...capCandidates.slice(0, 25).map((candidate, index) => ({
         candidateId: candidate.id,
-        signalType: signalIndex === 0 ? "facility_expansion" : "contract_award",
-        title: `Active cap signal ${candidateIndex}-${signalIndex}`,
-        occurredAt: recent,
-        sourceUrl: `${candidate.canonicalUrl}/signal-${signalIndex}`,
+        signalType: "facility_expansion",
+        title: `Newest active cap signal ${index}`,
+        occurredAt: new Date(`2026-07-28T10:${index.toString().padStart(2, "0")}:00.000Z`),
+        sourceUrl: `${candidate.canonicalUrl}/newest-signal-${index}`,
         confidence: 90,
-        evidenceKey: `cap-signal-${testId}-${candidateIndex}-${signalIndex}`,
+        evidenceKey: `cap-signal-${testId}-newest-${index}`,
         createdAt: recent,
         updatedAt: recent,
       })),
-    ));
+      ...Array.from({ length: 10 }, (_, index) => ({
+        candidateId: capCandidates[25]!.id,
+        signalType: "product_launch",
+        title: `Older high-volume signal ${index}`,
+        occurredAt: new Date(`2026-07-10T10:${index.toString().padStart(2, "0")}:00.000Z`),
+        sourceUrl: `${capCandidates[25]!.canonicalUrl}/older-signal-${index}`,
+        confidence: 90,
+        evidenceKey: `cap-signal-${testId}-older-${index}`,
+        createdAt: recent,
+        updatedAt: recent,
+      })),
+    ]);
     const edges = Array.from({ length: 70 }, (_, index) => ({
-      sourceCandidateId: capCandidates[index % capCandidates.length]!.id,
-      targetCandidateId: capCandidates[(index + 1) % capCandidates.length]!.id,
+      sourceCandidateId: capCandidates[index]!.id,
+      targetCandidateId: capCandidates[index + 1]!.id,
       relationshipType: index % 2 === 0 ? "supplies_to" : "integrates_with",
-      evidenceUrl: `${capCandidates[index % capCandidates.length]!.canonicalUrl}/edge-${index}`,
+      evidenceUrl: `${capCandidates[index]!.canonicalUrl}/edge-${index}`,
       confidence: 80,
       observedAt: recent,
       evidenceKey: `cap-relationship-${testId}-${index}`,
       createdAt: recent,
       updatedAt: recent,
     }));
-    await database.insert(candidateRelationships).values(edges);
+    const unresolvedEdges = Array.from({ length: 8 }, (_, index) => ({
+      sourceCandidateId: capCandidates[index % 5]!.id,
+      targetPublicName: `Unresolved cap target ${index}`,
+      relationshipType: "tests_with",
+      evidenceUrl: `${capCandidates[index % 5]!.canonicalUrl}/unresolved-${index}`,
+      confidence: 80,
+      observedAt: recent,
+      evidenceKey: `cap-relationship-${testId}-unresolved-${index}`,
+      createdAt: recent,
+      updatedAt: recent,
+    }));
+    await database.insert(candidateRelationships).values([
+      ...edges,
+      ...unresolvedEdges,
+      {
+        sourceCandidateId: capCandidates[4]!.id,
+        targetCandidateId: capCandidates[0]!.id,
+        relationshipType: "integrates_with",
+        evidenceUrl: `${capCandidates[4]!.canonicalUrl}/resolved-loop`,
+        confidence: 85,
+        observedAt: recent,
+        evidenceKey: `cap-relationship-${testId}-resolved-loop`,
+        createdAt: recent,
+        updatedAt: recent,
+      },
+      {
+        sourceCandidateId: capCandidates[0]!.id,
+        targetCandidateId: fixture.generalOnlyCompany.id,
+        relationshipType: "supplies_to",
+        evidenceUrl: `${capCandidates[0]!.canonicalUrl}/outside-filter`,
+        confidence: 85,
+        observedAt: recent,
+        evidenceKey: `cap-relationship-${testId}-outside-filter`,
+        createdAt: recent,
+        updatedAt: recent,
+      },
+    ]);
 
     try {
       const snapshot = await repository.getSnapshot(
         parseEcosystemFilters({ reviewStatus: "rejected", pageSize: "100" }),
         now,
       );
+      assertSharedPopulation(snapshot, [fixture.rejectedCompany.id, ...capCandidates.map(({ id }) => id)]);
       expect(snapshot.momentum).toMatchObject({
         ready: true,
-        activeSignalCount: 6,
-        organisationCount: 3,
+        activeSignalCount: 35,
+        organisationCount: 26,
       });
+      expect(snapshot.momentum.categories).toEqual([
+        expect.objectContaining({ key: "facility_expansion", count: 25 }),
+        expect.objectContaining({ key: "product_launch", count: 10 }),
+      ]);
+      expect(snapshot.momentum.companies).toContainEqual(
+        expect.objectContaining({ key: capCandidates[25]!.id, count: 10 }),
+      );
+      expect(snapshot.momentum.signals).toHaveLength(25);
       expect(snapshot.relationships.ready).toBe(true);
       if (!snapshot.relationships.ready) throw new Error("Expected a ready graph.");
       expect(snapshot.relationships.nodes.length).toBeLessThanOrEqual(40);
@@ -655,7 +767,89 @@ describe("Ecosystem Intelligence analytical repository", () => {
       expect(Math.max(
         ...snapshot.explorer.businessStages.map(({ representativeCompanies }) => representativeCompanies.length),
       )).toBeLessThanOrEqual(5);
-      expect(snapshot.ledger.items).toHaveLength(47);
+      expect(snapshot.ledger.items).toHaveLength(100);
+      expect(snapshot.ledger.total).toBe(106);
+
+      const sharedCities = snapshot.geography.cities.filter(({ key }) => key === "shared-city");
+      expect(sharedCities).toHaveLength(2);
+      expect(sharedCities.map(({ stateKey }) => stateKey).sort()).toEqual(["karnataka", "tamil_nadu"]);
+      expect(snapshot.filterOptions.headquartersCities).toHaveLength(50);
+      expect(snapshot.filterOptions.headquartersCities[0]).toMatchObject({ key: "shared-city", count: 2 });
+      expect(snapshot.filterOptions.headquartersCities).toContainEqual({
+        key: "unknown",
+        label: "unknown",
+        count: 1,
+      });
+      expect(snapshot.filterOptions.headquartersCities.slice(1).map(({ key }) => key)).toEqual(
+        snapshot.filterOptions.headquartersCities.slice(1).map(({ key }) => key).sort(),
+      );
+
+      const normalizedInference = await repository.getSnapshot(
+        parseEcosystemFilters({
+          reviewStatus: "rejected",
+          minimumDiscoveryConfidence: "100",
+          capability: "testing_and_validation",
+        }),
+        now,
+      );
+      assertSharedPopulation(normalizedInference, [capCandidates[0]!.id]);
+
+      const malformedMissing = await repository.getSnapshot(
+        parseEcosystemFilters({
+          reviewStatus: "rejected",
+          minimumDiscoveryConfidence: "100",
+          publicContact: "missing",
+        }),
+        now,
+      );
+      assertSharedPopulation(malformedMissing, [capCandidates[0]!.id]);
+      expect(malformedMissing.ledger.items[0]).toMatchObject({
+        websiteUrl: null,
+        linkedinUrl: null,
+      });
+      const malformedDetail = await repository.getCandidateDetail(capCandidates[0]!.id, now);
+      expect(malformedDetail?.publicUrls).toMatchObject({
+        website: null,
+        linkedin: null,
+      });
+      const malformedAvailable = await repository.getSnapshot(
+        parseEcosystemFilters({
+          reviewStatus: "rejected",
+          minimumDiscoveryConfidence: "100",
+          publicContact: "available",
+        }),
+        now,
+      );
+      assertSharedPopulation(malformedAvailable, []);
+
+      const relationshipPopulation = await repository.getSnapshot(
+        parseEcosystemFilters({
+          reviewStatus: "rejected",
+          minimumDiscoveryConfidence: "99",
+          pageSize: "100",
+        }),
+        now,
+      );
+      assertSharedPopulation(relationshipPopulation, capCandidates.slice(0, 5).map(({ id }) => id));
+      expect(relationshipPopulation.summary.documentedRelationships).toEqual({
+        count: 13,
+        organisations: { numerator: 5, denominator: 5, percentage: 100 },
+      });
+      expect(relationshipPopulation.relationships).toMatchObject({
+        ready: false,
+        evidencedEdgeCount: 5,
+        candidateCount: 5,
+        unresolvedTargetCount: 8,
+      });
+      expect(relationshipPopulation.relationships.nodes).toEqual([]);
+      expect(relationshipPopulation.relationships.edges).toEqual([]);
+      const relationshipCounts = new Map(
+        relationshipPopulation.ledger.items.map(({ id, documentedRelationshipCount }) => [
+          id,
+          documentedRelationshipCount,
+        ]),
+      );
+      expect(capCandidates.slice(0, 5).map(({ id }) => relationshipCounts.get(id))).toEqual([4, 4, 4, 3, 3]);
     } finally {
       await database.delete(discoveryCandidates).where(
         inArray(discoveryCandidates.id, capCandidates.map(({ id }) => id)),
@@ -676,7 +870,7 @@ describe("Ecosystem Intelligence analytical repository", () => {
         findings: longFindings,
         sourceUrls: [`${fixture.componentMaker.canonicalUrl}/history-${index}`],
         analysisVersion: "physical-ai-v1",
-        createdAt: new Date(now.getTime() - index * 86_400_000),
+        createdAt: new Date(now.getTime() - (index + 1) * 86_400_000),
       });
     }
     await database.insert(discoveryCandidateSources).values(Array.from({ length: 28 }, (_, index) => ({
@@ -688,6 +882,38 @@ describe("Ecosystem Intelligence analytical repository", () => {
       lastSeenAt: recent,
       createdAt: recent,
     })));
+    const newestGeneralResearchAt = new Date("2026-07-29T11:30:00.000Z");
+    await database.insert(candidateResearchVersions).values({
+      candidateId: fixture.componentMaker.id,
+      discoveryRunId: fixture.generalRunId,
+      summary: longSummary,
+      findings: longFindings,
+      sourceUrls: [`${fixture.componentMaker.canonicalUrl}/general-run-current-research`],
+      analysisVersion: "physical-ai-v1",
+      createdAt: newestGeneralResearchAt,
+    });
+    await database.insert(candidatePublicSignals).values(Array.from({ length: 24 }, (_, index) => ({
+      candidateId: fixture.componentMaker.id,
+      signalType: "product_launch",
+      title: `Bounded detail signal ${index}`,
+      occurredAt: new Date(now.getTime() - (index + 1) * 60_000),
+      sourceUrl: `${fixture.componentMaker.canonicalUrl}/bounded-detail-signal-${index}`,
+      confidence: 90,
+      evidenceKey: `detail-signal-${testId}-${index}`,
+      createdAt: recent,
+      updatedAt: recent,
+    })));
+    await database.insert(candidateRelationships).values(Array.from({ length: 24 }, (_, index) => ({
+      sourceCandidateId: index % 2 === 0 ? fixture.componentMaker.id : fixture.laterGeneralCompany.id,
+      targetCandidateId: index % 2 === 0 ? fixture.laterGeneralCompany.id : fixture.componentMaker.id,
+      relationshipType: index % 2 === 0 ? "supplies_to" : "integrates_with",
+      evidenceUrl: `${fixture.componentMaker.canonicalUrl}/bounded-detail-relationship-${index}`,
+      confidence: 85,
+      observedAt: new Date(now.getTime() - (index + 1) * 60_000),
+      evidenceKey: `detail-relationship-${testId}-${index}`,
+      createdAt: recent,
+      updatedAt: recent,
+    })));
 
     try {
       const detail = await repository.getCandidateDetail(fixture.componentMaker.id, now);
@@ -696,9 +922,26 @@ describe("Ecosystem Intelligence analytical repository", () => {
         ({ kind, termKey }) => kind === "ecosystem_role" && termKey === "component_supplier",
       )).toEqual([expect.objectContaining({ evidenceState: "evidence_backed" })]);
       expect(detail?.signals.every(({ activeUntil }) => activeUntil.getTime() > now.getTime())).toBe(true);
-      expect(detail?.sources.length).toBeLessThanOrEqual(25);
+      expect(detail?.signals).toHaveLength(20);
+      expect(detail?.sources.length).toBeLessThanOrEqual(20);
+      expect(detail?.relationships).toHaveLength(20);
+      const repeatedDetail = await repository.getCandidateDetail(fixture.componentMaker.id, now);
+      expect(repeatedDetail?.relationships.map(({ id }) => id)).toEqual(
+        detail?.relationships.map(({ id }) => id),
+      );
+      for (let index = 1; index < (detail?.relationships.length ?? 0); index += 1) {
+        const previous = detail?.relationships[index - 1]?.observedAt?.getTime() ?? 0;
+        const current = detail?.relationships[index]?.observedAt?.getTime() ?? 0;
+        expect(previous).toBeGreaterThanOrEqual(current);
+      }
       expect(detail?.research.current).not.toBeNull();
-      expect(detail?.research.history.length).toBeLessThanOrEqual(19);
+      expect((detail?.research.history.length ?? 0) + (detail?.research.current ? 1 : 0)).toBeLessThanOrEqual(20);
+      const snapshot = await repository.getSnapshot(
+        parseEcosystemFilters({ pageSize: "100" }),
+        now,
+      );
+      expect(snapshot.ledger.items.find(({ id }) => id === fixture.componentMaker.id)?.latestResearchAt)
+        .toEqual(newestGeneralResearchAt);
       expect(JSON.stringify(detail)).not.toContain("rawMetadata");
       expect(JSON.stringify(detail)).not.toContain(`private-${testId}@example.test`);
       expect(JSON.stringify(detail)).not.toContain("+919999999999");
@@ -706,10 +949,48 @@ describe("Ecosystem Intelligence analytical repository", () => {
       expect(await repository.getCandidateDetail(randomUUID(), now)).toBeNull();
     } finally {
       await database.delete(candidateResearchVersions).where(inArray(candidateResearchVersions.discoveryRunId, extraRuns));
+      await database.delete(candidateResearchVersions).where(
+        sql`${candidateResearchVersions.candidateId} = ${fixture.componentMaker.id} and ${candidateResearchVersions.discoveryRunId} = ${fixture.generalRunId}`,
+      );
       await database.delete(discoveryRuns).where(inArray(discoveryRuns.id, extraRuns));
       await database.delete(discoveryCandidateSources).where(
         sql`${discoveryCandidateSources.candidateId} = ${fixture.componentMaker.id} and ${discoveryCandidateSources.sourceName} like 'bounded-source-%'`,
       );
+      await database.delete(candidatePublicSignals).where(
+        sql`${candidatePublicSignals.evidenceKey} like ${`detail-signal-${testId}-%`}`,
+      );
+      await database.delete(candidateRelationships).where(
+        sql`${candidateRelationships.evidenceKey} like ${`detail-relationship-${testId}-%`}`,
+      );
     }
+  });
+
+  it("keeps corpus membership versioned while latest research evidence reads all versions", async () => {
+    const querySource = await readFile(
+      `${process.cwd()}/db/repositories/ecosystem-intelligence-query.ts`,
+      "utf8",
+    );
+    expect(querySource).toMatch(
+      /corpus_research[\s\S]+analysis_version = \$\{filters\.analysisVersion\}/,
+    );
+    expect(querySource).not.toMatch(
+      /max\(research\.created_at\)[\s\S]{0,180}research\.analysis_version/,
+    );
+
+    const ledgerSource = await readFile(
+      `${process.cwd()}/db/repositories/ecosystem-intelligence-ledger-queries.ts`,
+      "utf8",
+    );
+    expect(ledgerSource).not.toMatch(
+      /select research\.created_at[\s\S]{0,240}research\.analysis_version/,
+    );
+
+    const changeSource = await readFile(
+      `${process.cwd()}/db/repositories/ecosystem-intelligence-change-queries.ts`,
+      "utf8",
+    );
+    expect(changeSource).not.toMatch(
+      /max\(research\.created_at\)[\s\S]{0,180}research\.analysis_version/,
+    );
   });
 });
