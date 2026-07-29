@@ -271,6 +271,21 @@ describe("Global Radar India relevance", () => {
       "distribution",
       "We are expanding distribution in India but the plan has since been cancelled",
     ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are expanding distribution in India but the proposal was cancelled",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are expanding distribution in India but the initiative was cancelled",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are expanding distribution in India but the India expansion plan was cancelled",
+    ],
   ] as const)(
     "rejects negated or abandoned original evidence mislabeled as %s",
     (proposedType, factKind, originalText) => {
@@ -856,6 +871,8 @@ describe("Global Radar India relevance", () => {
     "Applications are open worldwide but do not currently accept applications",
     "Applications are open worldwide but do not accept online applications from India",
     "Applications are open worldwide but do not accept applications via the portal from India",
+    "Applications are open worldwide but do not accept online applications from Brazil",
+    "Applications are open worldwide but do not accept applications via the portal from Brazil",
     "We only accept applications from Brazil worldwide.",
     "Applications are open worldwide but restricted to partner region zeta.",
     "申请面向全球供应商开放，但仅限日本",

@@ -327,7 +327,7 @@ const phraseLevelRelevantNegativePatterns = [
   /不(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放|欢迎)|未(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放)/u,
 ] as const;
 const cancellationSubjectSource =
-  "(?:(?:distribution|expansion)\\s+(?:initiative|plan|proposal|project|programme|program)|expansion|plans?)";
+  "(?:(?:India|Indian)\\s+expansion\\s+(?:initiative|plan|proposal|project|programme|program)|(?:distribution|expansion)\\s+(?:initiative|plan|proposal|project|programme|program)|expansion|initiatives?|plans?|proposals?)";
 const cancellationAdverbSource =
   "(?:already|formally|later|now|officially|since|subsequently)";
 const abandonedPlanContinuationPatterns = [
@@ -502,6 +502,7 @@ const englishAccessClaimNounPattern = new RegExp(
   `\\b${englishAccessClaimNounSource}\\b`,
   "iu",
 );
+const englishResidualFromAccessScopePattern = /\bfrom\s+(?=\S)/iu;
 const allowedEnglishEligibilityScopeTargetPattern =
   new RegExp(
     `^(?:only\\s+)?(?:(?:${termsPatternSource(englishEligibilityQualifierTerms)})\\s+)?(?:${englishGlobalAccessActorSource})$`,
@@ -730,7 +731,9 @@ function hasUnqualifiedEnglishAccessClaim(value: string): boolean {
   const removedChannelAccessClaim = withoutChannelFormats !== value;
   return (
     englishAccessClaimNounPattern.test(withoutChannelFormats) ||
-    (removedChannelAccessClaim && hasIndiaMarker(withoutChannelFormats))
+    (removedChannelAccessClaim &&
+      (hasIndiaMarker(withoutChannelFormats) ||
+        englishResidualFromAccessScopePattern.test(withoutChannelFormats)))
   );
 }
 
