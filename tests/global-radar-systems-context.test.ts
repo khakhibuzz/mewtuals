@@ -349,10 +349,83 @@ describe("Global Radar systems context", () => {
     });
   });
 
+  it.each(["newly_discovered", "needs_review"] as const)(
+    "keeps a severe compliance result within the ingestion statuses from %s",
+    (currentStatus) => {
+      const unknownAssessment = complianceAssessment();
+
+      expect(
+        assessComplianceReview({
+          currentStatus,
+          actionability: 80,
+          assessment: complianceAssessment({
+            sensitiveDataFlags: {
+              ...unknownAssessment.sensitiveDataFlags,
+              faces: "severe",
+            },
+          }),
+        }),
+      ).toMatchObject({
+        valid: true,
+        status: "needs_review",
+        actionability: 60,
+        actionabilityReduction: 20,
+        reviewReasons: ["severe_sensitive_data_flag"],
+      });
+    },
+  );
+
+  it.each([
+    "monitoring",
+    "qualified",
+    "dismissed",
+    "expired",
+    "promoted",
+  ] as const)(
+    "reports compliance findings without overwriting the human-managed %s status",
+    (currentStatus) => {
+      const unknownAssessment = complianceAssessment();
+      const severeAssessment = complianceAssessment({
+        sensitiveDataFlags: {
+          ...unknownAssessment.sensitiveDataFlags,
+          faces: "severe",
+        },
+      });
+
+      expect({
+        severe: assessComplianceReview({
+          currentStatus,
+          actionability: 80,
+          assessment: severeAssessment,
+        }),
+        unresolved: assessComplianceReview({
+          currentStatus,
+          actionability: 80,
+          assessment: unknownAssessment,
+        }),
+      }).toMatchObject({
+        severe: {
+          valid: true,
+          status: currentStatus,
+          actionability: 60,
+          actionabilityReduction: 20,
+          reviewReasons: ["severe_sensitive_data_flag"],
+        },
+        unresolved: {
+          valid: true,
+          status: currentStatus,
+          actionability: 70,
+          actionabilityReduction: 10,
+          reviewReasons: ["unresolved_sensitive_data_or_compliance"],
+        },
+      });
+    },
+  );
+
   it("applies a severity penalty once and clamps adjusted actionability to zero", () => {
     const unknownAssessment = complianceAssessment();
     const result = assessComplianceReview({
-      currentStatus: "monitoring",
+      currentStatus: "newly_discovered",
       actionability: 15,
       assessment: complianceAssessment({
         sensitiveDataFlags: {

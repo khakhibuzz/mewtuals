@@ -206,6 +206,10 @@ export function assessComplianceReview(
   const hasSevereFlag = flagStates.includes("severe");
   const hasUnresolvedCondition =
     flagStates.includes(null) || Object.values(complianceFacts).includes(null);
+  const requiresReview = hasSevereFlag || hasUnresolvedCondition;
+  const hasIngestionStatus =
+    parsed.data.currentStatus === "newly_discovered" ||
+    parsed.data.currentStatus === "needs_review";
   const nominalReduction = hasSevereFlag
     ? 20
     : hasUnresolvedCondition
@@ -225,7 +229,7 @@ export function assessComplianceReview(
   const result = complianceReviewResultSchema.parse({
     valid: true,
     status:
-      hasSevereFlag || hasUnresolvedCondition
+      requiresReview && hasIngestionStatus
         ? "needs_review"
         : parsed.data.currentStatus,
     actionability: parsed.data.actionability - actionabilityReduction,
