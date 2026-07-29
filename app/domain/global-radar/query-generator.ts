@@ -273,6 +273,7 @@ export function generateGlobalRadarQueries(
 ): readonly SearchQuery[] {
   const queries: SearchQuery[] = [];
   const seen = new Set<string>();
+  const watchlistCategoryByQueryText = new Map<string, string>();
   const workItems = plannedWorkItems(plan);
 
   for (const sourceAdapter of plan.sourceAdapters) {
@@ -300,8 +301,27 @@ export function generateGlobalRadarQueries(
           if (queries.length + candidateGroup.length > 120) {
             return Object.freeze(queries);
           }
+          if (
+            workItem.category &&
+            candidateGroup.some((query) => {
+              const existingCategory = watchlistCategoryByQueryText.get(
+                query.query,
+              );
+              return (
+                existingCategory !== undefined &&
+                existingCategory !== workItem.category
+              );
+            })
+          ) {
+            throw new Error(
+              "Global Radar watchlist contains duplicate semantic query text across categories.",
+            );
+          }
           candidateGroup.forEach((query) => {
             seen.add(query.fingerprint);
+            if (workItem.category) {
+              watchlistCategoryByQueryText.set(query.query, workItem.category);
+            }
             queries.push(query);
           });
         }

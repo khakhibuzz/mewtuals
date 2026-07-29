@@ -480,6 +480,48 @@ describe("Global Radar query generator", () => {
     }
   });
 
+  it("rejects distinct watchlist categories with duplicate semantic query text", () => {
+    const watchlistPlan = planGlobalRadarRun({
+      now: new Date("2026-07-29T05:00:00.000Z"),
+      scanMode: "watchlist_refresh",
+      config: {
+        ...planningConfig,
+        countries: ["China"],
+        languages: ["en"],
+        themes: ["robotics_manufacturing"],
+      },
+      coverageState: {
+        countryLastCoveredAt: {},
+        themeLastCoveredAt: {},
+        watchlistLastCoveredAt: {},
+      },
+      watchlist: [
+        {
+          category: "motors",
+          categorySearchTerms: { en: "components", "zh-CN": "零部件" },
+          theme: "robotics_manufacturing",
+          countries: ["China"],
+          languages: ["en"],
+          cadenceDays: 7,
+          priority: 100,
+        },
+        {
+          category: "batteries",
+          categorySearchTerms: { en: "components", "zh-CN": "零部件" },
+          theme: "robotics_manufacturing",
+          countries: ["China"],
+          languages: ["en"],
+          cadenceDays: 7,
+          priority: 50,
+        },
+      ],
+    });
+
+    expect(() => generateGlobalRadarQueries(watchlistPlan)).toThrow(
+      /duplicate semantic query text/i,
+    );
+  });
+
   it("uses explicit intent templates without claiming confirmed opportunities", () => {
     const queries = generateGlobalRadarQueries(plan());
     const direct = queries.find(

@@ -315,6 +315,39 @@ describe("Global Radar planner", () => {
     },
   );
 
+  it("derives localized term requirements after effective country intersection", () => {
+    const plan = planGlobalRadarRun(
+      plannerInput({
+        scanMode: "watchlist_refresh",
+        config: {
+          ...planningConfig,
+          countries: ["US"],
+          languages: ["en", "zh-CN"],
+        },
+        watchlist: [
+          {
+            category: "motors",
+            categorySearchTerms: { en: "motors" },
+            theme: "robotics_manufacturing",
+            countries: ["China", "US"],
+            languages: ["en"],
+            cadenceDays: 7,
+            priority: 100,
+          },
+        ],
+      }),
+    );
+
+    expect(plan.watchlist).toEqual([
+      expect.objectContaining({
+        category: "motors",
+        categorySearchTerms: { en: "motors" },
+        countries: ["US"],
+        languages: ["en"],
+      }),
+    ]);
+  });
+
   it("rejects unsupported watchlist languages before config filtering", () => {
     expect(() =>
       planGlobalRadarRun(
@@ -328,6 +361,28 @@ describe("Global Radar planner", () => {
               theme: "robotics_manufacturing",
               countries: ["US"],
               languages: ["fr"] as unknown as GlobalRadarLanguage[],
+              cadenceDays: 7,
+              priority: 100,
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/watchlist language/i);
+  });
+
+  it("rejects non-canonical raw watchlist language values before normalization", () => {
+    expect(() =>
+      planGlobalRadarRun(
+        plannerInput({
+          scanMode: "watchlist_refresh",
+          config: { ...planningConfig, countries: ["US"] },
+          watchlist: [
+            {
+              category: "motors",
+              categorySearchTerms: { en: "motors" },
+              theme: "robotics_manufacturing",
+              countries: ["US"],
+              languages: [" en "] as unknown as GlobalRadarLanguage[],
               cadenceDays: 7,
               priority: 100,
             },

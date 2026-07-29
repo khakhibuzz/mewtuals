@@ -289,19 +289,16 @@ function dueWatchlistEntries(
       const countries = unique(entry.countries).filter((country) =>
         config.countries.includes(country),
       );
-      const configuredLanguages = entry.languages.map((language) =>
-        language.trim(),
-      );
       if (
-        configuredLanguages.some(
+        entry.languages.some(
           (language) => language !== "en" && language !== "zh-CN",
         )
       ) {
         throw new Error("Global Radar watchlist language must be en or zh-CN.");
       }
-      const selectedLanguages = unique(
-        configuredLanguages as GlobalRadarLanguage[],
-      ).filter((language) => config.languages.includes(language));
+      const selectedLanguages = unique(entry.languages).filter((language) =>
+        config.languages.includes(language),
+      );
       const executableLanguages = unique(
         countries.flatMap((country) =>
           executableGlobalRadarLanguagesForCountry(country, selectedLanguages),
