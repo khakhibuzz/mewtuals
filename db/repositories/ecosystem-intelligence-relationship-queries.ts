@@ -5,7 +5,10 @@ import {
   type EcosystemFilters,
 } from "../../app/domain/ecosystem-intelligence";
 import type { MewtualsDatabase } from "../client";
-import { withFilteredCandidates } from "./ecosystem-intelligence-query";
+import {
+  publicHttpUrlOrNull,
+  withFilteredCandidates,
+} from "./ecosystem-intelligence-query";
 import type { EcosystemSnapshot } from "./ecosystem-intelligence-types";
 
 type ReadTransaction = Parameters<MewtualsDatabase["transaction"]>[0] extends
@@ -63,9 +66,10 @@ async function loadRelationships(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["relationships"]> {
-  const [stats] = await transaction.execute<RelationshipStatsRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
+  const [stats] = await transaction.execute<RelationshipStatsRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
     , spanned_candidates as (
       select source_candidate_id as id from drawable_relationships
       union
@@ -81,7 +85,7 @@ async function loadRelationships(
     candidates: number(stats?.candidateCount),
     unresolvedTargets: number(stats?.unresolvedTargetCount),
   });
-  const graphRows = await transaction.execute<GraphNodeRow | GraphEdgeRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
+  const graphRows = await transaction.execute<GraphNodeRow | GraphEdgeRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
     , resolved_edges as (
       select relationship.* from drawable_relationships relationship
     ),
@@ -160,15 +164,18 @@ async function loadRelationships(
         }))
       : [],
     edges: readiness.ready
-      ? graphRows.filter((row): row is GraphEdgeRow => row.recordType === "edge").map((row) => ({
-          id: row.id,
-          sourceCandidateId: row.sourceCandidateId,
-          targetCandidateId: row.targetCandidateId,
-          type: row.relationshipType,
-          evidenceUrl: row.evidenceUrl,
-          confidence: number(row.confidence),
-          observedAt: nullableDate(row.observedAt),
-        }))
+      ? graphRows.filter((row): row is GraphEdgeRow => row.recordType === "edge").flatMap((row) => {
+          const evidenceUrl = publicHttpUrlOrNull(row.evidenceUrl);
+          return evidenceUrl ? [{
+            id: row.id,
+            sourceCandidateId: row.sourceCandidateId,
+            targetCandidateId: row.targetCandidateId,
+            type: row.relationshipType,
+            evidenceUrl,
+            confidence: number(row.confidence),
+            observedAt: nullableDate(row.observedAt),
+          }] : [];
+        })
       : [],
   };
 }

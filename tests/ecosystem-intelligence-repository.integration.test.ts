@@ -486,6 +486,168 @@ function assertSharedPopulation(
   expect(snapshot.filterOptions.denominator).toBe(expected.length);
 }
 
+type CoreProjection = {
+  id: string;
+  type: "company" | "creator";
+  status: string;
+  state: string | null;
+  city: string | null;
+  role: string | null;
+  stage: string | null;
+  layer: string | null;
+  capability: string | null;
+  activeSignal: string | null;
+  contact: "available" | "missing";
+  evidenceBand: string;
+  freshness: string;
+  recent: boolean;
+};
+
+function coreProjection(candidateId: string): CoreProjection {
+  if (candidateId === fixture.componentMaker.id) return {
+    id: candidateId, type: "company", status: "shortlisted", state: "karnataka", city: "bengaluru",
+    role: "component_supplier", stage: "component_manufacturing", layer: "mechanical_and_actuation",
+    capability: "motion_control", activeSignal: "product_launch", contact: "available",
+    evidenceBand: "strong", freshness: "current", recent: true,
+  };
+  if (candidateId === fixture.unknownCompany.id) return {
+    id: candidateId, type: "company", status: "discovered", state: null, city: null,
+    role: null, stage: null, layer: null, capability: null, activeSignal: null, contact: "missing",
+    evidenceBand: "limited", freshness: "stale", recent: false,
+  };
+  if (candidateId === fixture.rejectedCompany.id) return {
+    id: candidateId, type: "company", status: "rejected", state: "delhi", city: "delhi",
+    role: null, stage: null, layer: "electronics_and_compute", capability: null, activeSignal: null,
+    contact: "available", evidenceBand: "partial", freshness: "stale", recent: false,
+  };
+  if (candidateId === fixture.creatorEnabler.id) return {
+    id: candidateId, type: "creator", status: "queued_for_profile", state: null, city: null,
+    role: "research_enabler", stage: "research_and_ecosystem", layer: null, capability: null,
+    activeSignal: null, contact: "available", evidenceBand: "strong", freshness: "stale", recent: false,
+  };
+  if (candidateId === fixture.laterGeneralCompany.id) return {
+    id: candidateId, type: "company", status: "queued_for_profile", state: null, city: null,
+    role: "system_integrator", stage: "system_integration", layer: null, capability: null,
+    activeSignal: "partnership", contact: "available", evidenceBand: "partial", freshness: "current", recent: true,
+  };
+  throw new Error(`No core projection fixture exists for ${candidateId}.`);
+}
+
+function keyCounts(values: readonly (string | null)[], unknown = "unknown"): string[] {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const key = value ?? unknown;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts].map(([key, count]) => `${key}:${count}`).sort();
+}
+
+function positiveOptionCounts(options: readonly { key: string; count: number }[]): string[] {
+  return options.filter(({ count }) => count > 0).map(({ key, count }) => `${key}:${count}`).sort();
+}
+
+function assertCandidateLevelSectionProjection(
+  snapshot: EcosystemSnapshot,
+  expectedCandidateIds: readonly string[],
+): void {
+  const candidates = expectedCandidateIds.map(coreProjection);
+  const expectedIds = new Set(expectedCandidateIds);
+  expect(new Set(snapshot.ledger.items.map(({ id }) => id))).toEqual(expectedIds);
+
+  expect(positiveOptionCounts(snapshot.geography.states)).toEqual(
+    keyCounts(candidates.map(({ state }) => state).filter((state): state is string => state !== null), ""),
+  );
+  expect(positiveOptionCounts(snapshot.geography.cities)).toEqual(
+    keyCounts(candidates.map(({ city }) => city).filter((city): city is string => city !== null), ""),
+  );
+  expect(snapshot.geography.unresolvedCount).toBe(candidates.filter(({ state }) => state === null).length);
+
+  const expectedExplorer = (facet: "stage" | "layer") => {
+    const counts = new Map<string, string[]>();
+    for (const candidate of candidates) {
+      const key = candidate[facet];
+      if (key) counts.set(key, [...(counts.get(key) ?? []), candidate.id]);
+    }
+    return [...counts].map(([key, ids]) => `${key}:${ids.sort().join(",")}`).sort();
+  };
+  const actualExplorer = (groups: EcosystemSnapshot["explorer"]["businessStages"]) => groups
+    .filter(({ count }) => count > 0)
+    .map(({ key, count, representativeCompanies }) => {
+      expect(representativeCompanies).toHaveLength(count);
+      return `${key}:${representativeCompanies.map(({ id }) => id).sort().join(",")}`;
+    }).sort();
+  expect(actualExplorer(snapshot.explorer.businessStages)).toEqual(expectedExplorer("stage"));
+  expect(actualExplorer(snapshot.explorer.technicalLayers)).toEqual(expectedExplorer("layer"));
+
+  const matrixCounts = (pairs: readonly [string, string][]) => {
+    const counts = new Map<string, number>();
+    for (const [row, column] of pairs) {
+      const key = `${row}:${column}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts].map(([key, count]) => `${key}:${count}`).sort();
+  };
+  const populatedCells = (cells: EcosystemSnapshot["matrices"]["roleByCapability"]["cells"]) =>
+    cells.filter(({ count }) => count > 0).map(({ rowKey, columnKey, count }) =>
+      `${rowKey}:${columnKey}:${count}`).sort();
+  expect(populatedCells(snapshot.matrices.roleByCapability.cells)).toEqual(matrixCounts(
+    candidates.map(({ role, capability }) => [role ?? "unknown", capability ?? "unknown"]),
+  ));
+  expect(populatedCells(snapshot.matrices.stateByRole.cells)).toEqual(matrixCounts(
+    candidates.map(({ state, role }) => [state ?? "unknown", role ?? "unknown"]),
+  ));
+
+  for (const insight of snapshot.insights.items) {
+    const expectedMeasure = insight.ruleKey === "representation_below_target"
+      ? [candidates.filter(({ role }) => role !== null).length, candidates.length]
+      : insight.ruleKey === "geographic_concentration"
+        ? [Math.max(0, ...snapshot.geography.states.map(({ count }) => count)), candidates.filter(({ state }) => state !== null).length]
+        : insight.ruleKey === "missing_data"
+          ? [candidates.filter(({ layer }) => layer === null).length, candidates.length]
+          : insight.ruleKey === "low_public_contact_coverage"
+            ? [candidates.filter(({ contact }) => contact === "available").length, candidates.length]
+            : insight.ruleKey === "dependency_related_signals"
+              ? [candidates.filter(({ activeSignal }) => activeSignal === "partnership").length, candidates.filter(({ activeSignal }) => activeSignal === "partnership").length]
+              : [candidates.filter(({ freshness }) => freshness === "stale").length, candidates.length];
+    expect([insight.numerator, insight.denominator], insight.ruleKey).toEqual(expectedMeasure);
+  }
+
+  const recentCandidates = candidates.filter(({ recent }) => recent);
+  for (const window of snapshot.velocity.windows) {
+    expect(window.candidateCount).toBe(recentCandidates.length);
+    expect(positiveOptionCounts(window.byReviewStatus)).toEqual(keyCounts(recentCandidates.map(({ status }) => status)));
+    expect(positiveOptionCounts(window.byState)).toEqual(keyCounts(recentCandidates.map(({ state }) => state)));
+  }
+  const activeCandidates = candidates.filter(({ activeSignal }) => activeSignal !== null);
+  expect(snapshot.momentum.activeSignalCount).toBe(activeCandidates.length);
+  expect(snapshot.momentum.organisationCount).toBe(activeCandidates.length);
+
+  const componentIncluded = expectedIds.has(fixture.componentMaker.id);
+  const laterIncluded = expectedIds.has(fixture.laterGeneralCompany.id);
+  const resolvedRelationshipCount = componentIncluded && laterIncluded ? 1 : 0;
+  const unresolvedRelationshipCount = componentIncluded ? 1 : 0;
+  expect(snapshot.relationships).toMatchObject({
+    evidencedEdgeCount: resolvedRelationshipCount,
+    candidateCount: resolvedRelationshipCount > 0 ? 2 : 0,
+    unresolvedTargetCount: unresolvedRelationshipCount,
+  });
+  expect(snapshot.summary.documentedRelationships.count)
+    .toBe(resolvedRelationshipCount + unresolvedRelationshipCount);
+
+  expect(positiveOptionCounts(snapshot.filterOptions.participantTypes)).toEqual(keyCounts(candidates.map(({ type }) => type)));
+  expect(positiveOptionCounts(snapshot.filterOptions.reviewStatuses)).toEqual(keyCounts(candidates.map(({ status }) => status)));
+  expect(positiveOptionCounts(snapshot.filterOptions.headquartersStates)).toEqual(keyCounts(candidates.map(({ state }) => state)));
+  expect(positiveOptionCounts(snapshot.filterOptions.headquartersCities)).toEqual(keyCounts(candidates.map(({ city }) => city)));
+  expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.ecosystem_role)).toEqual(keyCounts(candidates.map(({ role }) => role)));
+  expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.business_stage)).toEqual(keyCounts(candidates.map(({ stage }) => stage)));
+  expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.technical_layer)).toEqual(keyCounts(candidates.map(({ layer }) => layer)));
+  expect(positiveOptionCounts(snapshot.filterOptions.taxonomy.capability)).toEqual(keyCounts(candidates.map(({ capability }) => capability)));
+  expect(positiveOptionCounts(snapshot.filterOptions.activeSignalTypes)).toEqual(keyCounts(candidates.map(({ activeSignal }) => activeSignal)));
+  expect(positiveOptionCounts(snapshot.filterOptions.publicContacts)).toEqual(keyCounts(candidates.map(({ contact }) => contact)));
+  expect(positiveOptionCounts(snapshot.filterOptions.evidenceCoverageBands)).toEqual(keyCounts(candidates.map(({ evidenceBand }) => evidenceBand)));
+  expect(positiveOptionCounts(snapshot.filterOptions.evidenceFreshness)).toEqual(keyCounts(candidates.map(({ freshness }) => freshness)));
+}
+
 beforeAll(async () => {
   await cleanup();
   fixture = await seedCoreFixture();
@@ -649,6 +811,149 @@ describe("Ecosystem Intelligence analytical repository", () => {
     }
   });
 
+  it("derives relationship readiness, counts, graph edges, and detail from exact public URLs", async () => {
+    const runId = await createRun("relationship-url-truth", "robotics_hardware_india", recent);
+    const candidates: FixtureCandidate[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      candidates.push(await createCandidate({
+        suffix: `relationship-url-truth-${index}`,
+        runId,
+        name: `Relationship URL truth ${index}`,
+        status: "rejected",
+        score: 96,
+        discoveredAt: recent,
+        researchAt: recent,
+        sourceAt: recent,
+      }));
+    }
+    const validRelationships = [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+      [3, 4],
+      [4, 0],
+      [0, 2],
+      [1, 3],
+    ] as const;
+    const [insertedValidRelationships, insertedInvalidRelationships] = await Promise.all([
+      database.insert(candidateRelationships).values(validRelationships.map(([source, target], index) => ({
+        sourceCandidateId: candidates[source]!.id,
+        targetCandidateId: candidates[target]!.id,
+        relationshipType: "integrates_with" as const,
+        evidenceUrl: `${candidates[source]!.canonicalUrl}/valid-${index}`,
+        confidence: 90,
+        observedAt: recent,
+        evidenceKey: `relationship-url-truth-valid-${testId}-${index}`,
+        createdAt: recent,
+        updatedAt: recent,
+      }))).returning({ id: candidateRelationships.id }),
+      database.insert(candidateRelationships).values([
+        {
+          sourceCandidateId: candidates[0]!.id,
+          targetCandidateId: candidates[3]!.id,
+          relationshipType: "integrates_with",
+          evidenceUrl: "https://user:secret@example.com/private-proof",
+          confidence: 90,
+          observedAt: recent,
+          evidenceKey: `relationship-url-truth-credentials-${testId}`,
+          createdAt: recent,
+          updatedAt: recent,
+        },
+        {
+          sourceCandidateId: candidates[0]!.id,
+          targetPublicName: "Internal relationship target",
+          relationshipType: "tests_with",
+          evidenceUrl: "http://service.internal/private-proof",
+          confidence: 90,
+          observedAt: recent,
+          evidenceKey: `relationship-url-truth-internal-${testId}`,
+          createdAt: recent,
+          updatedAt: recent,
+        },
+        {
+          sourceCandidateId: candidates[4]!.id,
+          targetCandidateId: candidates[2]!.id,
+          relationshipType: "supplies_to",
+          evidenceUrl: "http://0x7f000001/private-proof",
+          confidence: 90,
+          observedAt: recent,
+          evidenceKey: `relationship-url-truth-loopback-${testId}`,
+          createdAt: recent,
+          updatedAt: recent,
+        },
+      ]).returning({ id: candidateRelationships.id }),
+    ]);
+    const filters = parseEcosystemFilters({
+      reviewStatus: "rejected",
+      minimumDiscoveryConfidence: "96",
+      pageSize: "100",
+    });
+
+    try {
+      const belowThreshold = await repository.getSnapshot(filters, now);
+      assertSharedPopulation(belowThreshold, candidates.map(({ id }) => id));
+      expect(belowThreshold.summary.documentedRelationships).toEqual({
+        count: 7,
+        organisations: { numerator: 5, denominator: 5, percentage: 100 },
+      });
+      expect(belowThreshold.relationships).toMatchObject({
+        ready: false,
+        evidencedEdgeCount: 7,
+        candidateCount: 5,
+        unresolvedTargetCount: 0,
+        nodes: [],
+        edges: [],
+      });
+      expect(belowThreshold.ledger.items.reduce(
+        (count, row) => count + row.documentedRelationshipCount,
+        0,
+      )).toBe(14);
+
+      const rawNormalizedEvidenceUrl = "https://www.Example.COM:443/relationship-proof/?utm_source=test&b=2&a=1#private";
+      const [thresholdRelationship] = await database.insert(candidateRelationships).values({
+        sourceCandidateId: candidates[2]!.id,
+        targetCandidateId: candidates[4]!.id,
+        relationshipType: "tests_with",
+        evidenceUrl: rawNormalizedEvidenceUrl,
+        confidence: 95,
+        observedAt: now,
+        evidenceKey: `relationship-url-truth-threshold-${testId}`,
+        createdAt: recent,
+        updatedAt: recent,
+      }).returning({ id: candidateRelationships.id });
+      if (!thresholdRelationship) throw new Error("Threshold relationship was not inserted.");
+
+      const ready = await repository.getSnapshot(filters, now);
+      expect(ready.summary.documentedRelationships.count).toBe(8);
+      expect(ready.relationships).toMatchObject({
+        ready: true,
+        evidencedEdgeCount: 8,
+        candidateCount: 5,
+        unresolvedTargetCount: 0,
+      });
+      expect(new Set(ready.relationships.edges.map(({ id }) => id))).toEqual(new Set([
+        ...insertedValidRelationships.map(({ id }) => id),
+        thresholdRelationship.id,
+      ]));
+      expect(ready.relationships.edges.find(({ id }) => id === thresholdRelationship.id)?.evidenceUrl)
+        .toBe(normalizePublicDiscoveryUrl(rawNormalizedEvidenceUrl));
+      expect(ready.relationships.edges.some(({ id }) =>
+        insertedInvalidRelationships.some((invalid) => invalid.id === id))).toBe(false);
+
+      const detail = await repository.getCandidateDetail(candidates[0]!.id, now);
+      expect(detail).not.toBeNull();
+      expect(detail?.relationships.some(({ id }) =>
+        insertedInvalidRelationships.some((invalid) => invalid.id === id))).toBe(false);
+      expect(detail?.relationships.every(({ evidenceUrl }) =>
+        evidenceUrl === normalizePublicDiscoveryUrl(evidenceUrl))).toBe(true);
+    } finally {
+      await database.delete(discoveryCandidates).where(
+        inArray(discoveryCandidates.id, candidates.map(({ id }) => id)),
+      );
+      await database.delete(discoveryRuns).where(eq(discoveryRuns.id, runId));
+    }
+  });
+
   it("uses durable Physical AI research membership and one shared population for every supported filter", async () => {
     const defaultIds = [
       fixture.componentMaker.id,
@@ -695,8 +1000,9 @@ describe("Ecosystem Intelligence analytical repository", () => {
       const snapshot = await repository.getSnapshot(testCase.filters, now);
       try {
         assertSharedPopulation(snapshot, testCase.expected);
+        assertCandidateLevelSectionProjection(snapshot, testCase.expected);
       } catch (error) {
-        throw new Error(`Shared population failed for ${testCase.label}.`, { cause: error });
+        throw new Error(`Candidate-level section projection failed for ${testCase.label}.`, { cause: error });
       }
     }
 

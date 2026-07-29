@@ -61,13 +61,6 @@ export function publicHttpUrlOrNull(value: string | null): string | null {
   }
 }
 
-// Relationship/source evidence only needs an HTTP(S) evidence locator here.
-// Candidate contact authority deliberately does not use SQL URL parsing; it is
-// derived once per snapshot by normalizePublicDiscoveryUrl below.
-export function httpEvidenceUrlPredicate(expression: SQL): SQL {
-  return sql`coalesce(btrim(${expression}) ~* '^https?://[^[:space:]]+$', false)`;
-}
-
 type ReadTransaction = Parameters<MewtualsDatabase["transaction"]>[0] extends
   (transaction: infer Transaction) => unknown ? Transaction : never;
 
@@ -110,6 +103,29 @@ export async function loadValidPublicContactCandidateIds(
     order by candidate.id
   `);
   return rows.filter(hasValidPublicContact).map(({ id }) => id);
+}
+
+type PublicRelationshipEvidenceRow = {
+  id: string;
+  evidenceUrl: string;
+};
+
+export async function loadValidPublicRelationshipEvidenceIds(
+  transaction: ReadTransaction,
+): Promise<string[]> {
+  // Relationship evidence uses the same exact domain validator as candidate
+  // contact URLs. This uncapped preliminary read deliberately selects only the
+  // durable relationship identity and evidence URL.
+  const rows = await transaction.execute<PublicRelationshipEvidenceRow>(sql`
+    select
+      relationship.id as "id",
+      relationship.evidence_url as "evidenceUrl"
+    from ${candidateRelationships} relationship
+    order by relationship.id
+  `);
+  return rows
+    .filter(({ evidenceUrl }) => publicHttpUrlOrNull(evidenceUrl) !== null)
+    .map(({ id }) => id);
 }
 
 export function activeSignalPredicate(alias: string, now: Date): SQL {
@@ -261,8 +277,10 @@ function filteredCandidatesCte(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
 ): SQL {
   const validPublicContactCandidateIdsJson = JSON.stringify(validPublicContactCandidateIds);
+  const validPublicRelationshipEvidenceIdsJson = JSON.stringify(validPublicRelationshipEvidenceIds);
   const hasPublicContact = sql`exists (
     select 1
     from valid_public_contact_candidate_ids public_contact_candidate
@@ -285,6 +303,10 @@ function filteredCandidatesCte(
     valid_public_contact_candidate_ids(id) as (
       select value::uuid
       from jsonb_array_elements_text(${validPublicContactCandidateIdsJson}::jsonb)
+    ),
+    valid_public_relationship_evidence_ids(id) as (
+      select value::uuid
+      from jsonb_array_elements_text(${validPublicRelationshipEvidenceIdsJson}::jsonb)
     ),
     inferred_rules(category, kind, term_key) as (values ${inferenceValues}),
     signal_freshness(signal_type, freshness_days) as (values ${signalFreshnessValues}),
@@ -384,7 +406,11 @@ function filteredCandidatesCte(
       from ${candidateRelationships} relationship
       join filtered_candidates source_candidate
         on source_candidate.id = relationship.source_candidate_id
-      where ${httpEvidenceUrlPredicate(sql`relationship.evidence_url`)}
+      where exists (
+        select 1
+        from valid_public_relationship_evidence_ids public_relationship
+        where public_relationship.id = relationship.id
+      )
         and (
           relationship.target_candidate_id is null
           or exists (
@@ -405,7 +431,13 @@ export function withFilteredCandidates(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
   query: SQL,
 ): SQL {
-  return sql`with ${filteredCandidatesCte(filters, now, validPublicContactCandidateIds)} ${query}`;
+  return sql`with ${filteredCandidatesCte(
+    filters,
+    now,
+    validPublicContactCandidateIds,
+    validPublicRelationshipEvidenceIds,
+  )} ${query}`;
 }

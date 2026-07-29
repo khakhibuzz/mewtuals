@@ -14,6 +14,7 @@ export async function loadEcosystemActivity(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<Pick<
   EcosystemSnapshot,
@@ -24,6 +25,7 @@ export async function loadEcosystemActivity(
     filters,
     now,
     validPublicContactCandidateIds,
+    validPublicRelationshipEvidenceIds,
     denominator,
   );
   const directory = await loadEcosystemDirectory(
@@ -31,6 +33,7 @@ export async function loadEcosystemActivity(
     filters,
     now,
     validPublicContactCandidateIds,
+    validPublicRelationshipEvidenceIds,
     denominator,
   );
   return {
@@ -40,6 +43,7 @@ export async function loadEcosystemActivity(
       filters,
       now,
       validPublicContactCandidateIds,
+      validPublicRelationshipEvidenceIds,
       denominator,
     ),
     ...directory,

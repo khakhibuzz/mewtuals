@@ -82,9 +82,10 @@ async function loadVelocity(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["velocity"]> {
-  const rows = await transaction.execute<VelocityRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
+  const rows = await transaction.execute<VelocityRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
     , windows(days) as (values (7), (30), (90)),
     candidate_activity as (
       select candidate.*,
@@ -186,9 +187,10 @@ async function loadMomentum(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["momentum"]> {
-  const [row] = await transaction.execute<MomentumAggregateRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
+  const [row] = await transaction.execute<MomentumAggregateRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
     , active_signals as (
       select
         signal.id,
@@ -322,6 +324,7 @@ export async function loadEcosystemChange(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<Pick<EcosystemSnapshot, "velocity" | "momentum">> {
   return {
@@ -330,6 +333,7 @@ export async function loadEcosystemChange(
       filters,
       now,
       validPublicContactCandidateIds,
+      validPublicRelationshipEvidenceIds,
       denominator,
     ),
     momentum: await loadMomentum(
@@ -337,6 +341,7 @@ export async function loadEcosystemChange(
       filters,
       now,
       validPublicContactCandidateIds,
+      validPublicRelationshipEvidenceIds,
       denominator,
     ),
   };

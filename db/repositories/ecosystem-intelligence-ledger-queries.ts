@@ -151,6 +151,7 @@ async function loadLedger(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
   total: number,
 ): Promise<EcosystemSnapshot["ledger"]> {
   const sortExpression: SQL = filters.sort === "name"
@@ -161,7 +162,7 @@ async function loadLedger(
         ? sql`candidate.evidence_score`
         : sql`candidate.discovered_at`;
   const orderExpression = filters.direction === "asc" ? asc(sortExpression) : desc(sortExpression);
-  const rows = await transaction.execute<LedgerRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
+  const rows = await transaction.execute<LedgerRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
     select
       candidate.id as "id",
       candidate.type::text as "type",
@@ -256,9 +257,10 @@ async function loadFilterOptions(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["filterOptions"]> {
-  const rows = await transaction.execute<OptionRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
+  const rows = await transaction.execute<OptionRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, validPublicRelationshipEvidenceIds, sql`
     , city_option_counts as (
       select coalesce(city_key, 'unknown') as key, count(*)::integer as count
       from filtered_candidates
@@ -383,6 +385,7 @@ export async function loadEcosystemDirectory(
   filters: EcosystemFilters,
   now: Date,
   validPublicContactCandidateIds: readonly string[],
+  validPublicRelationshipEvidenceIds: readonly string[],
   denominator: number,
 ): Promise<Pick<EcosystemSnapshot, "ledger" | "filterOptions">> {
   return {
@@ -391,6 +394,7 @@ export async function loadEcosystemDirectory(
       filters,
       now,
       validPublicContactCandidateIds,
+      validPublicRelationshipEvidenceIds,
       denominator,
     ),
     filterOptions: await loadFilterOptions(
@@ -398,6 +402,7 @@ export async function loadEcosystemDirectory(
       filters,
       now,
       validPublicContactCandidateIds,
+      validPublicRelationshipEvidenceIds,
       denominator,
     ),
   };

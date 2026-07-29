@@ -4,7 +4,10 @@ import {
   loadEcosystemActivity,
 } from "./ecosystem-intelligence-activity-queries";
 import { loadEcosystemOverview } from "./ecosystem-intelligence-overview-queries";
-import { loadValidPublicContactCandidateIds } from "./ecosystem-intelligence-query";
+import {
+  loadValidPublicContactCandidateIds,
+  loadValidPublicRelationshipEvidenceIds,
+} from "./ecosystem-intelligence-query";
 import type { EcosystemIntelligenceRepository } from "./ecosystem-intelligence-types";
 
 export type {
@@ -41,17 +44,22 @@ export function createEcosystemIntelligenceRepository(
           transaction,
           filters.analysisVersion,
         );
+        const validPublicRelationshipEvidenceIds = await loadValidPublicRelationshipEvidenceIds(
+          transaction,
+        );
         const overview = await loadEcosystemOverview(
           transaction,
           filters,
           now,
           validPublicContactCandidateIds,
+          validPublicRelationshipEvidenceIds,
         );
         const activity = await loadEcosystemActivity(
           transaction,
           filters,
           now,
           validPublicContactCandidateIds,
+          validPublicRelationshipEvidenceIds,
           overview.population.total,
         );
 
@@ -69,10 +77,17 @@ export function createEcosystemIntelligenceRepository(
 
     async getCandidateDetail(candidateId, now) {
       ensureValidNow(now);
-      return database.transaction(
-        (transaction) => loadCandidateDetail(transaction, candidateId, now),
-        { isolationLevel: "repeatable read", accessMode: "read only" },
-      );
+      return database.transaction(async (transaction) => {
+        const validPublicRelationshipEvidenceIds = await loadValidPublicRelationshipEvidenceIds(
+          transaction,
+        );
+        return loadCandidateDetail(
+          transaction,
+          candidateId,
+          now,
+          validPublicRelationshipEvidenceIds,
+        );
+      }, { isolationLevel: "repeatable read", accessMode: "read only" });
     },
   };
 }

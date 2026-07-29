@@ -17,7 +17,6 @@ import {
 } from "../schema";
 import {
   activeSignalPredicate,
-  httpEvidenceUrlPredicate,
   inferenceValues,
   publicHttpUrlOrNull,
   signalFreshnessValues,
@@ -122,6 +121,7 @@ async function loadCandidateDetail(
   transaction: ReadTransaction,
   candidateId: string,
   now: Date,
+  validPublicRelationshipEvidenceIds: readonly string[],
 ): Promise<EcosystemCandidateDetail | null> {
   const [identity] = await transaction.execute<DetailIdentityRow>(sql`
     select
@@ -224,7 +224,12 @@ async function loadCandidateDetail(
     order by signal.occurred_at desc, signal.id
     limit ${MAX_DETAIL_SIGNALS}
   `);
+  const validPublicRelationshipEvidenceIdsJson = JSON.stringify(validPublicRelationshipEvidenceIds);
   const relationships = await transaction.execute<DetailRelationshipRow>(sql`
+    with valid_public_relationship_evidence_ids(id) as (
+      select value::uuid
+      from jsonb_array_elements_text(${validPublicRelationshipEvidenceIdsJson}::jsonb)
+    )
     select * from (
       select
         relationship.id as "id",
@@ -244,7 +249,10 @@ async function loadCandidateDetail(
       left join ${discoveryCandidates} target_candidate
         on target_candidate.id = relationship.target_candidate_id
       where relationship.source_candidate_id = ${candidateId}
-        and ${httpEvidenceUrlPredicate(sql`relationship.evidence_url`)}
+        and exists (
+          select 1 from valid_public_relationship_evidence_ids valid_relationship
+          where valid_relationship.id = relationship.id
+        )
       union all
       select
         relationship.id,
@@ -264,7 +272,10 @@ async function loadCandidateDetail(
       join ${discoveryCandidates} target_candidate
         on target_candidate.id = relationship.target_candidate_id
       where relationship.target_candidate_id = ${candidateId}
-        and ${httpEvidenceUrlPredicate(sql`relationship.evidence_url`)}
+        and exists (
+          select 1 from valid_public_relationship_evidence_ids valid_relationship
+          where valid_relationship.id = relationship.id
+        )
     ) evidenced_relationship
     order by "sortAt" desc, "direction", "id"
     limit ${MAX_DETAIL_RELATIONSHIPS}
@@ -350,18 +361,21 @@ async function loadCandidateDetail(
       sourceUrls: headquarters.sourceUrls ?? [],
     } : null,
     signals: signalDtos,
-    relationships: relationships.map((relationship) => ({
-      id: relationship.id,
-      direction: relationship.direction,
-      sourceCandidateId: relationship.sourceCandidateId,
-      sourceName: relationship.sourceName,
-      targetCandidateId: relationship.targetCandidateId,
-      targetName: relationship.targetName,
-      type: relationship.relationshipType,
-      evidenceUrl: relationship.evidenceUrl,
-      confidence: number(relationship.confidence),
-      observedAt: nullableDate(relationship.observedAt),
-    })),
+    relationships: relationships.flatMap((relationship) => {
+      const evidenceUrl = publicHttpUrlOrNull(relationship.evidenceUrl);
+      return evidenceUrl ? [{
+        id: relationship.id,
+        direction: relationship.direction,
+        sourceCandidateId: relationship.sourceCandidateId,
+        sourceName: relationship.sourceName,
+        targetCandidateId: relationship.targetCandidateId,
+        targetName: relationship.targetName,
+        type: relationship.relationshipType,
+        evidenceUrl,
+        confidence: number(relationship.confidence),
+        observedAt: nullableDate(relationship.observedAt),
+      }] : [];
+    }),
     sources: sources.map((source) => ({
       ...source,
       firstSeenAt: date(source.firstSeenAt),
