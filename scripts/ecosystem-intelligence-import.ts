@@ -1,335 +1,22 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
-import { getuid } from "node:process";
 import { resolve } from "node:path";
+import { getuid } from "node:process";
 import { pathToFileURL } from "node:url";
 
 import { z } from "zod";
 
 import {
-  normalizeDiscoveryUrl,
-  normalizePublicDiscoveryUrl,
-} from "../app/domain/discovery";
-import {
-  ECOSYSTEM_TAXONOMY,
-  ecosystemTaxonomyKinds,
-  isRegisteredTaxonomyKey,
-  normalizeIndiaCity,
-  normalizeIndiaState,
-} from "../app/domain/ecosystem-intelligence-taxonomy";
+  ECOSYSTEM_IMPORT_SCHEMA_VERSION,
+  ecosystemImportDocumentSchema,
+  type EcosystemImportDocument,
+} from "../app/domain/ecosystem-intelligence-import";
 import { loadLocalEnvironment } from "./load-local-env.mjs";
 
-export const ECOSYSTEM_IMPORT_SCHEMA_VERSION =
-  "ecosystem-intelligence-import-v1" as const;
 export const MAX_ECOSYSTEM_IMPORT_BYTES = 1_024 * 1_024;
-const MAX_CANDIDATES = 100;
-const MAX_FACTS_PER_KIND = 50;
-const MAX_SOURCES_PER_FACT = 12;
+const READ_CHUNK_BYTES = 64 * 1_024;
 const MAX_SAFE_ISSUES = 20;
-const MAX_URL_LENGTH = 2_048;
-
-const classificationKinds = ecosystemTaxonomyKinds.filter(
-  (kind) => kind !== "signal_type" && kind !== "relationship_type",
-) as [
-  Exclude<(typeof ecosystemTaxonomyKinds)[number], "signal_type" | "relationship_type">,
-  ...Exclude<(typeof ecosystemTaxonomyKinds)[number], "signal_type" | "relationship_type">[],
-];
-const signalTypeKeys = ECOSYSTEM_TAXONOMY.termsByKind.signal_type.map(
-  ({ key }) => key,
-) as [
-  (typeof ECOSYSTEM_TAXONOMY.termsByKind.signal_type)[number]["key"],
-  ...(typeof ECOSYSTEM_TAXONOMY.termsByKind.signal_type)[number]["key"][],
-];
-const relationshipTypeKeys =
-  ECOSYSTEM_TAXONOMY.termsByKind.relationship_type.map(({ key }) => key) as [
-    (typeof ECOSYSTEM_TAXONOMY.termsByKind.relationship_type)[number]["key"],
-    ...(typeof ECOSYSTEM_TAXONOMY.termsByKind.relationship_type)[number]["key"][],
-  ];
-
-const boundedString = (maximum: number) =>
-  z.string().transform((value) => value.trim().replace(/\s+/g, " ")).pipe(
-    z.string().min(1).max(maximum),
-  );
-const confidenceSchema = z.number().int().min(0).max(100);
-const evidenceStateSchema = z.enum(["evidence_backed", "inferred"]);
-const isoDateTimeSchema = z
-  .string()
-  .datetime({ offset: true })
-  .transform((value) => new Date(value).toISOString());
-
-function normalizedUrlSchema(canonical: boolean) {
-  return z.string().max(MAX_URL_LENGTH, { message: "url_too_long" }).transform((value, context) => {
-    try {
-      return canonical
-        ? normalizeDiscoveryUrl(value)
-        : normalizePublicDiscoveryUrl(value);
-    } catch {
-      context.addIssue({ code: "custom", message: "invalid_url" });
-      return z.NEVER;
-    }
-  });
-}
-
-const publicUrlSchema = normalizedUrlSchema(false);
-const canonicalUrlSchema = normalizedUrlSchema(true);
-const sourceUrlsSchema = z
-  .array(publicUrlSchema)
-  .min(1)
-  .max(MAX_SOURCES_PER_FACT)
-  .transform((values) => [...new Set(values)]);
-
-const classificationSchema = z
-  .strictObject({
-    kind: z.enum(classificationKinds),
-    termKey: boundedString(100),
-    evidenceState: evidenceStateSchema,
-    confidence: confidenceSchema,
-    basis: boundedString(1_000),
-    sourceUrls: sourceUrlsSchema,
-  })
-  .superRefine((value, context) => {
-    if (!isRegisteredTaxonomyKey(value.kind, value.termKey)) {
-      context.addIssue({
-        code: "custom",
-        path: ["termKey"],
-        message: "unregistered_taxonomy_key",
-      });
-    }
-  });
-
-const headquartersSchema = z
-  .strictObject({
-    countryCode: z.literal("IN"),
-    stateKey: boundedString(100).transform((value, context) => {
-      const normalized = normalizeIndiaState(value);
-      if (!normalized) {
-        context.addIssue({ code: "custom", message: "invalid_state_key" });
-        return z.NEVER;
-      }
-      return normalized;
-    }),
-    stateLabel: boundedString(100),
-    cityKey: boundedString(100).transform((value, context) => {
-      const normalized = normalizeIndiaCity(value);
-      if (!normalized) {
-        context.addIssue({ code: "custom", message: "invalid_city_key" });
-        return z.NEVER;
-      }
-      return normalized;
-    }),
-    cityLabel: boundedString(100),
-    latitude: z.number().finite().min(-90).max(90).optional(),
-    longitude: z.number().finite().min(-180).max(180).optional(),
-    evidenceState: evidenceStateSchema,
-    confidence: confidenceSchema,
-    sourceUrls: sourceUrlsSchema,
-  })
-  .superRefine((value, context) => {
-    if ((value.latitude === undefined) !== (value.longitude === undefined)) {
-      context.addIssue({
-        code: "custom",
-        path: ["latitude"],
-        message: "coordinate_pair_required",
-      });
-    }
-  });
-
-const signalSchema = z
-  .strictObject({
-    signalType: z.enum(signalTypeKeys),
-    title: boundedString(300),
-    occurredAt: isoDateTimeSchema,
-    expiresAt: isoDateTimeSchema.optional(),
-    sourceUrl: publicUrlSchema,
-    confidence: confidenceSchema,
-  })
-  .superRefine((value, context) => {
-    if (value.expiresAt && value.expiresAt < value.occurredAt) {
-      context.addIssue({
-        code: "custom",
-        path: ["expiresAt"],
-        message: "expiry_before_occurrence",
-      });
-    }
-  });
-
-const relationshipSchema = z
-  .strictObject({
-    targetCandidateId: z.uuid().optional(),
-    targetCanonicalUrl: canonicalUrlSchema.optional(),
-    targetPublicName: boundedString(200).optional(),
-    relationshipType: z.enum(relationshipTypeKeys),
-    evidenceUrl: publicUrlSchema,
-    confidence: confidenceSchema,
-    observedAt: isoDateTimeSchema.optional(),
-  })
-  .superRefine((value, context) => {
-    const routes = [
-      value.targetCandidateId,
-      value.targetCanonicalUrl,
-      value.targetPublicName,
-    ].filter((route) => route !== undefined);
-    if (routes.length !== 1) {
-      context.addIssue({
-        code: "custom",
-        path: ["targetCandidateId"],
-        message: "exactly_one_target_identity",
-      });
-    }
-  });
-
-const candidateSchema = z
-  .strictObject({
-    candidateId: z.uuid().optional(),
-    canonicalUrl: canonicalUrlSchema.optional(),
-    classifications: z.array(classificationSchema).max(MAX_FACTS_PER_KIND).default([]),
-    headquarters: headquartersSchema.optional(),
-    signals: z.array(signalSchema).max(MAX_FACTS_PER_KIND).default([]),
-    relationships: z.array(relationshipSchema).max(MAX_FACTS_PER_KIND).default([]),
-  })
-  .superRefine((value, context) => {
-    if (Number(value.candidateId !== undefined) + Number(value.canonicalUrl !== undefined) !== 1) {
-      context.addIssue({
-        code: "custom",
-        path: ["candidateId"],
-        message: "exactly_one_candidate_identity",
-      });
-    }
-    if (
-      value.classifications.length === 0 &&
-      !value.headquarters &&
-      value.signals.length === 0 &&
-      value.relationships.length === 0
-    ) {
-      context.addIssue({ code: "custom", message: "candidate_has_no_facts" });
-    }
-
-    addDuplicateIssues(
-      value.classifications.map(({ kind, termKey }) => `${kind}\n${termKey}`),
-      "classifications",
-      context,
-    );
-    addDuplicateIssues(
-      value.signals.map(({ signalType, occurredAt, sourceUrl }) =>
-        `${signalType}\n${datePart(occurredAt)}\n${sourceUrl}`,
-      ),
-      "signals",
-      context,
-    );
-    addDuplicateIssues(
-      value.relationships.map((relationship) =>
-        [
-          relationship.relationshipType,
-          relationship.targetCandidateId ??
-            relationship.targetCanonicalUrl ??
-            normalizePublicName(relationship.targetPublicName ?? ""),
-          relationship.evidenceUrl,
-          observedDate(relationship.observedAt),
-        ].join("\n"),
-      ),
-      "relationships",
-      context,
-    );
-  });
-
-function addDuplicateIssues(
-  keys: readonly string[],
-  field: "classifications" | "signals" | "relationships",
-  context: z.RefinementCtx,
-): void {
-  const firstIndex = new Map<string, number>();
-  keys.forEach((key, index) => {
-    if (firstIndex.has(key)) {
-      context.addIssue({
-        code: "custom",
-        path: [field, index],
-        message: "duplicate_fact",
-      });
-    } else {
-      firstIndex.set(key, index);
-    }
-  });
-}
-
-export const ecosystemImportDocumentSchema = z
-  .strictObject({
-    schemaVersion: z.literal(ECOSYSTEM_IMPORT_SCHEMA_VERSION),
-    generatedAt: isoDateTimeSchema,
-    candidates: z.array(candidateSchema).min(1).max(MAX_CANDIDATES),
-  })
-  .superRefine((value, context) => {
-    const firstIdentityIndex = new Map<string, number>();
-    value.candidates.forEach((candidate, index) => {
-      const key = candidate.candidateId
-        ? `id:${candidate.candidateId}`
-        : `url:${candidate.canonicalUrl}`;
-      if (firstIdentityIndex.has(key)) {
-        context.addIssue({
-          code: "custom",
-          path: ["candidates", index],
-          message: "duplicate_candidate_identity",
-        });
-      } else {
-        firstIdentityIndex.set(key, index);
-      }
-    });
-  });
-
-export type EcosystemImportDocument = z.infer<typeof ecosystemImportDocumentSchema>;
-export type EcosystemImportCandidate = EcosystemImportDocument["candidates"][number];
-
-export function parseEcosystemImportDocument(input: unknown): EcosystemImportDocument {
-  return ecosystemImportDocumentSchema.parse(input);
-}
-
-function datePart(value: string): string {
-  return value.slice(0, 10);
-}
-
-function observedDate(value: string | undefined): string {
-  return value ? datePart(value) : "";
-}
-
-function normalizePublicName(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
-}
-
-function sha256Tuple(parts: readonly string[]): string {
-  return createHash("sha256").update(parts.join("\n")).digest("hex");
-}
-
-export function deriveSignalEvidenceKey(input: {
-  candidateId: string;
-  signalType: string;
-  occurredAt: string;
-  sourceUrl: string;
-}): string {
-  return sha256Tuple([
-    input.candidateId,
-    input.signalType,
-    datePart(input.occurredAt),
-    input.sourceUrl,
-  ]);
-}
-
-export function deriveRelationshipEvidenceKey(input: {
-  sourceCandidateId: string;
-  relationshipType: string;
-  targetCandidateId?: string;
-  targetPublicName?: string;
-  evidenceUrl: string;
-  observedAt?: string;
-}): string {
-  const target = input.targetCandidateId ?? normalizePublicName(input.targetPublicName ?? "");
-  return sha256Tuple([
-    input.sourceCandidateId,
-    input.relationshipType,
-    target,
-    input.evidenceUrl,
-    observedDate(input.observedAt),
-  ]);
-}
 
 type SafeCounts = {
   classifications: number;
@@ -337,6 +24,53 @@ type SafeCounts = {
   signals: number;
   relationships: number;
 };
+
+type SafeIssue = { path: string; code: string };
+
+type PrivateFileReadDependencies = {
+  platform?: string;
+  uid?: number;
+  afterChunk?: (state: { file: string; totalBytes: number }) => void | Promise<void>;
+  onAllocate?: (bytes: number) => void;
+  onReadRequest?: (bytes: number) => void;
+};
+
+export class EcosystemImportCliError extends Error {
+  constructor(
+    readonly status: "validation_failed" | "import_failed",
+    readonly issues: readonly SafeIssue[],
+    readonly fileHash?: string,
+  ) {
+    super(status);
+  }
+}
+
+const SAFE_VALIDATION_CODES = new Set([
+  "candidate_has_no_facts",
+  "coordinate_pair_required",
+  "duplicate_candidate_identity",
+  "duplicate_fact",
+  "exactly_one_candidate_identity",
+  "exactly_one_target_identity",
+  "expiry_before_occurrence",
+  "invalid_city_key",
+  "invalid_state_key",
+  "invalid_url",
+  "unregistered_taxonomy_key",
+  "url_too_long",
+]);
+
+const SAFE_IMPORT_CODES = new Set([
+  "duplicate_relationship_fact",
+  "duplicate_signal_fact",
+  "evidence_key_conflict",
+  "identity_ambiguous",
+  "identity_not_found",
+  "invalid_candidate_identity",
+  "repeated_candidate_identity",
+  "self_relationship",
+  "unregistered_taxonomy_key",
+]);
 
 function factCounts(document: EcosystemImportDocument): SafeCounts {
   return document.candidates.reduce<SafeCounts>(
@@ -353,29 +87,19 @@ function factCounts(document: EcosystemImportDocument): SafeCounts {
 function unresolvedRelationshipCount(document: EcosystemImportDocument): number {
   return document.candidates.reduce(
     (count, candidate) =>
-      count + candidate.relationships.filter(({ targetPublicName }) =>
-        targetPublicName !== undefined,
+      count + candidate.relationships.filter(
+        ({ targetPublicName }) => targetPublicName !== undefined,
       ).length,
     0,
   );
 }
 
-type SafeIssue = { path: string; code: string };
-
-class EcosystemImportCliError extends Error {
-  constructor(
-    readonly status: "validation_failed" | "import_failed",
-    readonly issues: readonly SafeIssue[],
-    readonly fileHash?: string,
-  ) {
-    super(status);
-  }
-}
-
 function issueCode(issue: z.core.$ZodIssue): string {
-  if (issue.message === "url_too_long") return "url_too_long";
-  if (issue.code === "custom" && typeof issue.message === "string") {
-    return issue.message.slice(0, 80);
+  if (
+    typeof issue.message === "string" &&
+    SAFE_VALIDATION_CODES.has(issue.message)
+  ) {
+    return issue.message;
   }
   if (issue.code === "unrecognized_keys") return "unknown_key";
   if (issue.code === "too_big") return "limit_exceeded";
@@ -393,82 +117,127 @@ function safeZodIssues(error: z.ZodError): SafeIssue[] {
   }));
 }
 
-async function readPrivateDocument(fileArgument: string): Promise<{
-  fileHash: string;
-  document: EcosystemImportDocument;
-}> {
+function fileIssue(code: string): EcosystemImportCliError {
+  return new EcosystemImportCliError("validation_failed", [
+    { path: "file", code },
+  ]);
+}
+
+function validatePrivateFileMetadata(
+  metadata: BigIntStats,
+  expectedUid: bigint,
+): void {
+  if (!metadata.isFile()) throw fileIssue("file_not_regular");
+  if (metadata.uid !== expectedUid) throw fileIssue("file_not_owned");
+  if ((metadata.mode & BigInt(0o077)) !== BigInt(0)) {
+    throw fileIssue("unsafe_file_mode");
+  }
+}
+
+function sameFinalMetadata(opened: BigIntStats, final: BigIntStats): boolean {
+  return (
+    final.dev === opened.dev &&
+    final.ino === opened.ino &&
+    final.size === opened.size &&
+    final.uid === opened.uid &&
+    final.mode === opened.mode &&
+    final.mtimeNs === opened.mtimeNs &&
+    final.ctimeNs === opened.ctimeNs
+  );
+}
+
+async function readBoundedFile(
+  handle: FileHandle,
+  file: string,
+  dependencies: PrivateFileReadDependencies,
+): Promise<{ contents: Buffer; finalMetadata: BigIntStats }> {
+  const buffer = Buffer.allocUnsafe(MAX_ECOSYSTEM_IMPORT_BYTES + 1);
+  dependencies.onAllocate?.(buffer.byteLength);
+  let totalBytes = 0;
+  let requestedTotal = 0;
+
+  while (requestedTotal < buffer.byteLength) {
+    const requestedBytes = Math.min(
+      READ_CHUNK_BYTES,
+      buffer.byteLength - requestedTotal,
+    );
+    requestedTotal += requestedBytes;
+    dependencies.onReadRequest?.(requestedBytes);
+    const { bytesRead } = await handle.read(
+      buffer,
+      totalBytes,
+      requestedBytes,
+      totalBytes,
+    );
+    if (bytesRead === 0) break;
+    totalBytes += bytesRead;
+    await dependencies.afterChunk?.({ file, totalBytes });
+  }
+
+  const finalMetadata = await handle.stat({ bigint: true });
+  return { contents: buffer.subarray(0, totalBytes), finalMetadata };
+}
+
+export async function readPrivateEcosystemDocument(
+  fileArgument: string,
+  dependencies: PrivateFileReadDependencies = {},
+): Promise<{ fileHash: string; document: EcosystemImportDocument }> {
+  const platform = dependencies.platform ?? process.platform;
+  const uid = dependencies.uid ?? (typeof getuid === "function" ? getuid() : undefined);
+  if (platform === "win32" || uid === undefined) {
+    throw fileIssue("unsupported_platform");
+  }
+
   const file = resolve(fileArgument);
-  let metadata;
+  let initialMetadata: BigIntStats;
   try {
-    metadata = await lstat(file);
+    initialMetadata = await lstat(file, { bigint: true });
   } catch {
-    throw new EcosystemImportCliError("validation_failed", [
-      { path: "file", code: "file_unreadable" },
-    ]);
+    throw fileIssue("file_unreadable");
   }
-  if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new EcosystemImportCliError("validation_failed", [
-      { path: "file", code: "file_not_regular" },
-    ]);
-  }
-  if (typeof getuid === "function" && metadata.uid !== getuid()) {
-    throw new EcosystemImportCliError("validation_failed", [
-      { path: "file", code: "file_not_owned" },
-    ]);
-  }
-  if ((metadata.mode & 0o077) !== 0) {
-    throw new EcosystemImportCliError("validation_failed", [
-      { path: "file", code: "unsafe_file_mode" },
-    ]);
-  }
-  if (metadata.size > MAX_ECOSYSTEM_IMPORT_BYTES) {
-    throw new EcosystemImportCliError("validation_failed", [
-      { path: "file", code: "file_too_large" },
-    ]);
+  if (initialMetadata.isSymbolicLink()) throw fileIssue("file_not_regular");
+  validatePrivateFileMetadata(initialMetadata, BigInt(uid));
+  if (initialMetadata.size > BigInt(MAX_ECOSYSTEM_IMPORT_BYTES)) {
+    throw fileIssue("file_too_large");
   }
 
   let handle: FileHandle;
   try {
     handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch {
-    throw new EcosystemImportCliError("validation_failed", [
-      { path: "file", code: "file_unreadable" },
-    ]);
+    throw fileIssue("file_unreadable");
   }
+
   let contents: Buffer;
   try {
-    const openedMetadata = await handle.stat();
+    const openedMetadata = await handle.stat({ bigint: true });
+    validatePrivateFileMetadata(openedMetadata, BigInt(uid));
+    if (!sameFinalMetadata(initialMetadata, openedMetadata)) {
+      throw fileIssue("file_changed");
+    }
+    if (openedMetadata.size > BigInt(MAX_ECOSYSTEM_IMPORT_BYTES)) {
+      throw fileIssue("file_too_large");
+    }
+
+    const result = await readBoundedFile(handle, file, dependencies);
+    validatePrivateFileMetadata(result.finalMetadata, BigInt(uid));
     if (
-      !openedMetadata.isFile() ||
-      openedMetadata.dev !== metadata.dev ||
-      openedMetadata.ino !== metadata.ino
+      result.contents.byteLength > MAX_ECOSYSTEM_IMPORT_BYTES ||
+      result.finalMetadata.size > BigInt(MAX_ECOSYSTEM_IMPORT_BYTES)
     ) {
-      throw new EcosystemImportCliError("validation_failed", [
-        { path: "file", code: "file_changed" },
-      ]);
+      throw fileIssue("file_too_large");
     }
-    if (
-      (typeof getuid === "function" && openedMetadata.uid !== getuid()) ||
-      (openedMetadata.mode & 0o077) !== 0
-    ) {
-      throw new EcosystemImportCliError("validation_failed", [
-        { path: "file", code: "unsafe_file_mode" },
-      ]);
+    if (!sameFinalMetadata(openedMetadata, result.finalMetadata)) {
+      throw fileIssue("file_changed");
     }
-    if (openedMetadata.size > MAX_ECOSYSTEM_IMPORT_BYTES) {
-      throw new EcosystemImportCliError("validation_failed", [
-        { path: "file", code: "file_too_large" },
-      ]);
+    if (BigInt(result.contents.byteLength) !== result.finalMetadata.size) {
+      throw fileIssue("file_changed");
     }
-    contents = await handle.readFile();
+    contents = result.contents;
   } finally {
     await handle.close();
   }
-  if (contents.byteLength > MAX_ECOSYSTEM_IMPORT_BYTES) {
-    throw new EcosystemImportCliError("validation_failed", [
-      { path: "file", code: "file_too_large" },
-    ]);
-  }
+
   const fileHash = createHash("sha256").update(contents).digest("hex");
   let input: unknown;
   try {
@@ -489,6 +258,21 @@ async function readPrivateDocument(fileArgument: string): Promise<{
     );
   }
   return { fileHash, document: parsed.data };
+}
+
+export function safeImportErrorCode(error: unknown): string {
+  let current: unknown = error;
+  const visited = new Set<unknown>();
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (typeof candidate.code === "string") {
+      if (SAFE_IMPORT_CODES.has(candidate.code)) return candidate.code;
+      if (/^[A-Z0-9]{5}$/.test(candidate.code)) return candidate.code;
+    }
+    current = candidate.cause;
+  }
+  return "import_failed";
 }
 
 function parseArguments(arguments_: readonly string[]): {
@@ -518,7 +302,7 @@ const zeroDuplicates: SafeCounts = {
 
 async function runCommand(arguments_: readonly string[]) {
   const { command, file } = parseArguments(arguments_);
-  const { fileHash, document } = await readPrivateDocument(file);
+  const { fileHash, document } = await readPrivateEcosystemDocument(file);
   const counts = factCounts(document);
   if (command === "validate") {
     return {
@@ -566,13 +350,9 @@ async function runCommand(arguments_: readonly string[]) {
     }
   } catch (error) {
     if (error instanceof EcosystemImportCliError) throw error;
-    const code =
-      error && typeof error === "object" && "code" in error && typeof error.code === "string"
-        ? error.code.slice(0, 80)
-        : "import_failed";
     throw new EcosystemImportCliError(
       "import_failed",
-      [{ path: "$", code }],
+      [{ path: "$", code: safeImportErrorCode(error) }],
       fileHash,
     );
   }

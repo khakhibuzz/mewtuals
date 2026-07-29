@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { eq, inArray, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -23,8 +25,13 @@ import {
   discoveryCandidates,
   discoveryRuns,
 } from "../db/schema";
-import { parseEcosystemImportDocument } from
-  "../scripts/ecosystem-intelligence-import";
+import * as schema from "../db/schema";
+import {
+  deriveRelationshipEvidenceKey,
+  deriveSignalEvidenceKey,
+  parseEcosystemImportDocument,
+} from
+  "../app/domain/ecosystem-intelligence-import";
 
 const database = getDb();
 const repository = createEcosystemIntelligenceImportRepository(database);
@@ -36,6 +43,14 @@ const temporaryDirectories: string[] = [];
 
 function candidateUrl(suffix: string): string {
   return `https://${suffix}-${compactTestId}.example`;
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolvePromise!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
 }
 
 async function assertTestDatabase(): Promise<void> {
@@ -227,6 +242,107 @@ afterAll(async () => {
 });
 
 describe("Ecosystem Intelligence import repository", () => {
+  it("retries a real serializable identity phantom and rejects the now-ambiguous identity", async () => {
+    const source = await createCandidate("serializable-phantom", "company");
+    const identityRead = deferred();
+    const releaseImporter = deferred();
+    const concurrentClient = postgres(process.env.DATABASE_URL!, {
+      max: 1,
+      prepare: false,
+    });
+    const concurrentDatabase = drizzle(concurrentClient, { schema });
+    const retryingRepository = createEcosystemIntelligenceImportRepository(
+      database,
+      {
+        afterIdentityPredicateRead: async (attempt) => {
+          if (attempt !== 1) return;
+          identityRead.resolve();
+          await releaseImporter.promise;
+        },
+      },
+    );
+    const importPromise = retryingRepository.importDocument(document([
+      evidenceCandidate({ canonicalUrl: source.candidate.canonicalUrl }),
+    ]), baseTime);
+
+    await identityRead.promise;
+    try {
+      await concurrentDatabase.transaction(async (transaction) => {
+        await transaction
+          .select({ id: candidateEcosystemClassifications.id })
+          .from(candidateEcosystemClassifications)
+          .where(eq(
+            candidateEcosystemClassifications.candidateId,
+            source.candidate.id,
+          ));
+        const [run] = await transaction.insert(discoveryRuns).values({
+          externalRunKey: `ecosystem-import-${testId}-serializable-creator-${randomUUID()}`,
+          campaignKey: "robotics_hardware_india",
+          trigger: "manual",
+          status: "succeeded",
+          startedAt: baseTime,
+          completedAt: baseTime,
+          geography: testGeography,
+          candidateType: "creator",
+          sourcesUsed: ["integration"],
+          requestedCount: 1,
+          companyPercentage: 0,
+          foundCount: 1,
+          newCount: 1,
+          createdAt: baseTime,
+          updatedAt: baseTime,
+        }).returning();
+        if (!run) throw new Error("Concurrent Discovery run was not created.");
+        const [candidate] = await transaction.insert(discoveryCandidates).values({
+          type: "creator",
+          name: "Import serializable phantom creator",
+          normalizedName: "import serializable phantom creator",
+          canonicalIdentityKey: source.candidate.canonicalIdentityKey,
+          canonicalUrl: source.candidate.canonicalUrl,
+          websiteUrl: source.candidate.canonicalUrl,
+          discoveredDescription: "Concurrent identity for SSI coverage.",
+          category: "creator",
+          geography: testGeography,
+          firstSourceName: "integration",
+          firstSourceUrl: source.candidate.canonicalUrl,
+          discoveredAt: baseTime,
+          lastSeenAt: baseTime,
+          mostRecentRunId: run.id,
+          discoveryScore: 80,
+          createdAt: baseTime,
+          updatedAt: baseTime,
+        }).returning();
+        if (!candidate) throw new Error("Concurrent candidate was not created.");
+        await transaction.insert(discoveryCandidateIdentifiers).values({
+          candidateId: candidate.id,
+          candidateType: "creator",
+          kind: source.identifier.kind,
+          normalizedValue: source.identifier.value,
+          createdAt: baseTime,
+        });
+      }, { isolationLevel: "serializable" });
+    } finally {
+      releaseImporter.resolve();
+      await concurrentClient.end({ timeout: 5 });
+    }
+
+    await expect(importPromise).rejects.toMatchObject({
+      code: "identity_ambiguous",
+    });
+    expect(await database.select().from(candidateEcosystemClassifications).where(
+      eq(candidateEcosystemClassifications.candidateId, source.candidate.id),
+    )).toHaveLength(0);
+    expect(await database.select().from(candidateHeadquarters).where(
+      eq(candidateHeadquarters.candidateId, source.candidate.id),
+    )).toHaveLength(0);
+    expect(await database.select().from(candidatePublicSignals).where(
+      eq(candidatePublicSignals.candidateId, source.candidate.id),
+    )).toHaveLength(0);
+    expect(await database.select().from(candidateRelationships).where(
+      eq(candidateRelationships.sourceCandidateId, source.candidate.id),
+    )).toHaveLength(0);
+  });
+
   it("resolves normalized canonical source and target identities before inserting facts", async () => {
     const source = await createCandidate("source");
     const target = await createCandidate("target");
@@ -434,6 +550,31 @@ describe("Ecosystem Intelligence import repository", () => {
     expect(after.headquarters).toMatchObject({ cityKey: "mysuru", confidence: 90 });
     expect(after.signal).toMatchObject({ title: "Updated public launch title", confidence: 85 });
     expect(after.relationship).toMatchObject({ confidence: 82 });
+
+    const olderCallerUpdate = document([evidenceCandidate(
+      { candidateId: source.candidate.id },
+      {
+        classifications: [{
+          ...changed.candidates[0].classifications[0],
+          confidence: 96,
+        }],
+        headquarters: undefined,
+        signals: [],
+        relationships: [],
+      },
+    )]);
+    await repository.importDocument(
+      olderCallerUpdate,
+      new Date("2026-07-29T09:00:00.000Z"),
+    );
+    const [afterOlderCaller] = await database
+      .select()
+      .from(candidateEcosystemClassifications)
+      .where(eq(candidateEcosystemClassifications.candidateId, source.candidate.id));
+    expect(afterOlderCaller).toMatchObject({
+      confidence: 96,
+      updatedAt: new Date("2026-07-29T10:30:00.000Z"),
+    });
   });
 
   it("rolls back every fact when a resolved relationship is a self-link", async () => {
@@ -461,6 +602,11 @@ describe("Ecosystem Intelligence import repository", () => {
 
   it("rolls back earlier upserts when a later database fact fails", async () => {
     const source = await createCandidate("database-rollback");
+    const attempts: number[] = [];
+    const noGenericRetryRepository = createEcosystemIntelligenceImportRepository(
+      database,
+      { afterIdentityPredicateRead: (attempt) => { attempts.push(attempt); } },
+    );
     const functionName = `fail_ecosystem_signal_${compactTestId}`;
     const triggerName = `fail_ecosystem_signal_${compactTestId}`;
     await database.execute(sql.raw(`
@@ -477,7 +623,7 @@ describe("Ecosystem Intelligence import repository", () => {
       for each row execute function ${functionName}();
     `));
     try {
-      await expect(repository.importDocument(document([
+      await expect(noGenericRetryRepository.importDocument(document([
         evidenceCandidate({ candidateId: source.candidate.id }),
       ]), baseTime)).rejects.toThrow();
     } finally {
@@ -491,6 +637,170 @@ describe("Ecosystem Intelligence import repository", () => {
     expect(await database.select().from(candidateHeadquarters)).toHaveLength(0);
     expect(await database.select().from(candidatePublicSignals)).toHaveLength(0);
     expect(await database.select().from(candidateRelationships)).toHaveLength(0);
+    expect(attempts).toEqual([1]);
+  });
+
+  it("bounds repeated SQLSTATE 40001 serialization retries at three attempts", async () => {
+    const source = await createCandidate("serialization-retry-limit");
+    const functionName = `ser_ec_cls_${compactTestId.slice(0, 20)}`;
+    const triggerName = `ser_ec_cls_${compactTestId.slice(0, 20)}`;
+    const attempts: number[] = [];
+    const boundedRetryRepository = createEcosystemIntelligenceImportRepository(
+      database,
+      { afterIdentityPredicateRead: (attempt) => { attempts.push(attempt); } },
+    );
+    await database.execute(sql.raw(`
+      create function ${functionName}() returns trigger language plpgsql as $$
+      begin
+        if NEW.candidate_id = '${source.candidate.id}'::uuid then
+          raise exception 'forced serialization retry' using errcode = '40001';
+        end if;
+        return NEW;
+      end;
+      $$;
+      create trigger ${triggerName}
+      before insert or update on candidate_ecosystem_classifications
+      for each row execute function ${functionName}();
+    `));
+    try {
+      await expect(boundedRetryRepository.importDocument(document([
+        evidenceCandidate({ candidateId: source.candidate.id }),
+      ]), baseTime)).rejects.toMatchObject({ cause: { code: "40001" } });
+    } finally {
+      await database.execute(sql.raw(`
+        drop trigger if exists ${triggerName} on candidate_ecosystem_classifications;
+        drop function if exists ${functionName}();
+      `));
+    }
+
+    expect(attempts).toEqual([1, 2, 3]);
+    expect(await database.select().from(candidateEcosystemClassifications).where(
+      eq(candidateEcosystemClassifications.candidateId, source.candidate.id),
+    )).toHaveLength(0);
+  });
+
+  it.each(["signal", "relationship"] as const)(
+    "rejects an incoming %s evidence key already owned by another source candidate",
+    async (factKind) => {
+      const source = await createCandidate(`conflict-source-${factKind}`);
+      const owner = await createCandidate(`conflict-owner-${factKind}`);
+      const input = document([evidenceCandidate(
+        { candidateId: source.candidate.id },
+        {
+          classifications: [],
+          headquarters: undefined,
+          signals: factKind === "signal" ? [{
+            signalType: "product_launch",
+            title: "Incoming signal",
+            occurredAt: "2026-07-20T10:00:00.000Z",
+            sourceUrl: "https://evidence.example.com/conflicted-signal",
+            confidence: 80,
+          }] : [],
+          relationships: factKind === "relationship" ? [{
+            targetPublicName: "Incoming Public Lab",
+            relationshipType: "researches_with",
+            evidenceUrl: "https://evidence.example.com/conflicted-relationship",
+            confidence: 75,
+            observedAt: "2026-07-21T00:00:00.000Z",
+          }] : [],
+        },
+      )]);
+
+      if (factKind === "signal") {
+        const signal = input.candidates[0].signals[0]!;
+        await database.insert(candidatePublicSignals).values({
+          candidateId: owner.candidate.id,
+          signalType: signal.signalType,
+          title: "Existing owner signal",
+          occurredAt: new Date(signal.occurredAt),
+          sourceUrl: signal.sourceUrl,
+          confidence: 70,
+          evidenceKey: deriveSignalEvidenceKey({
+            candidateId: source.candidate.id,
+            signalType: signal.signalType,
+            occurredAt: signal.occurredAt,
+            sourceUrl: signal.sourceUrl,
+          }),
+          createdAt: baseTime,
+          updatedAt: baseTime,
+        });
+      } else {
+        const relationship = input.candidates[0].relationships[0]!;
+        await database.insert(candidateRelationships).values({
+          sourceCandidateId: owner.candidate.id,
+          targetPublicName: "Existing Owner Lab",
+          relationshipType: relationship.relationshipType,
+          evidenceUrl: relationship.evidenceUrl,
+          confidence: 70,
+          observedAt: new Date(relationship.observedAt!),
+          evidenceKey: deriveRelationshipEvidenceKey({
+            sourceCandidateId: source.candidate.id,
+            relationshipType: relationship.relationshipType,
+            targetPublicName: relationship.targetPublicName,
+            evidenceUrl: relationship.evidenceUrl,
+            observedAt: relationship.observedAt,
+          }),
+          createdAt: baseTime,
+          updatedAt: baseTime,
+        });
+      }
+
+      await expect(repository.importDocument(input, baseTime)).rejects.toMatchObject({
+        code: "evidence_key_conflict",
+      });
+      expect(await database.select().from(candidatePublicSignals).where(
+        eq(candidatePublicSignals.candidateId, source.candidate.id),
+      )).toHaveLength(0);
+      expect(await database.select().from(candidateRelationships).where(
+        eq(candidateRelationships.sourceCandidateId, source.candidate.id),
+      )).toHaveLength(0);
+    },
+  );
+
+  it("imports only incoming evidence keys despite a large unrelated candidate history", async () => {
+    const source = await createCandidate("bounded-history");
+    await database.insert(candidatePublicSignals).values(
+      Array.from({ length: 120 }, (_, index) => ({
+        candidateId: source.candidate.id,
+        signalType: "funding",
+        title: `Historical signal ${index}`,
+        occurredAt: new Date(`2025-${String((index % 12) + 1).padStart(2, "0")}-01T00:00:00.000Z`),
+        sourceUrl: `https://history.example.com/signals/${index}`,
+        confidence: 60,
+        evidenceKey: `historical-signal-${testId}-${index}`,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      })),
+    );
+    await database.insert(candidateRelationships).values(
+      Array.from({ length: 120 }, (_, index) => ({
+        sourceCandidateId: source.candidate.id,
+        targetPublicName: `Historical target ${index}`,
+        relationshipType: "supplies_to",
+        evidenceUrl: `https://history.example.com/relationships/${index}`,
+        confidence: 60,
+        evidenceKey: `historical-relationship-${testId}-${index}`,
+        createdAt: baseTime,
+        updatedAt: baseTime,
+      })),
+    );
+
+    const result = await repository.importDocument(document([
+      evidenceCandidate({ candidateId: source.candidate.id }),
+    ]), baseTime);
+
+    expect(result.insertedCounts).toEqual({
+      classifications: 1,
+      headquarters: 1,
+      signals: 1,
+      relationships: 1,
+    });
+    expect(await database.select().from(candidatePublicSignals).where(
+      eq(candidatePublicSignals.candidateId, source.candidate.id),
+    )).toHaveLength(121);
+    expect(await database.select().from(candidateRelationships).where(
+      eq(candidateRelationships.sourceCandidateId, source.candidate.id),
+    )).toHaveLength(121);
   });
 
   it("does not mutate Discovery identity or workflow rows", async () => {

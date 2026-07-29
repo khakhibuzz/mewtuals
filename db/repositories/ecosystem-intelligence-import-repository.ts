@@ -1,4 +1,6 @@
 import {
+  and,
+  eq,
   inArray,
   or,
   sql,
@@ -12,7 +14,7 @@ import {
   deriveSignalEvidenceKey,
   type EcosystemImportCandidate,
   type EcosystemImportDocument,
-} from "../../scripts/ecosystem-intelligence-import";
+} from "../../app/domain/ecosystem-intelligence-import";
 import { getDb, type MewtualsDatabase } from "../client";
 import {
   candidateEcosystemClassifications,
@@ -65,6 +67,12 @@ type PreparedCandidate = EcosystemImportCandidate & {
   resolvedCandidateId: string;
   resolvedRelationships: ResolvedRelationship[];
 };
+
+export type EcosystemIntelligenceImportDependencies = {
+  afterIdentityPredicateRead?: (attempt: number) => void | Promise<void>;
+};
+
+const MAX_SERIALIZATION_ATTEMPTS = 3;
 
 const zeroCounts = (): FactCounts => ({
   classifications: 0,
@@ -119,14 +127,27 @@ function assertUnique(keys: readonly string[], code: string): void {
   }
 }
 
+function sqlState(error: unknown): string | undefined {
+  let current: unknown = error;
+  const visited = new Set<unknown>();
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (typeof candidate.code === "string") return candidate.code;
+    current = candidate.cause;
+  }
+  return undefined;
+}
+
 export function createEcosystemIntelligenceImportRepository(
   database: MewtualsDatabase = getDb(),
+  dependencies: EcosystemIntelligenceImportDependencies = {},
 ): EcosystemIntelligenceImportRepository {
   return {
     async importDocument(document, now) {
       ensureRegisteredTaxonomy(document);
 
-      return database.transaction(async (transaction) => {
+      const importOnce = (attempt: number) => database.transaction(async (transaction) => {
         const sourceIdentities = document.candidates.map((candidate) =>
           normalizedIdentity(candidate),
         );
@@ -191,6 +212,7 @@ export function createEcosystemIntelligenceImportRepository(
                   ? [inArray(discoveryCandidates.canonicalUrl, canonicalUrls)]
                   : []),
               ));
+        await dependencies.afterIdentityPredicateRead?.(attempt);
         const matchedCandidateIds = [
           ...new Set([
             ...explicitIds,
@@ -302,25 +324,75 @@ export function createEcosystemIntelligenceImportRepository(
         );
 
         const candidateIds = prepared.map(({ resolvedCandidateId }) => resolvedCandidateId);
+        const classificationPredicates = prepared.flatMap((candidate) =>
+          candidate.classifications.map((classification) => and(
+            eq(candidateEcosystemClassifications.candidateId, candidate.resolvedCandidateId),
+            eq(candidateEcosystemClassifications.kind, classification.kind),
+            eq(candidateEcosystemClassifications.termKey, classification.termKey),
+          )),
+        );
+        const incomingSignalOwners = new Map(
+          prepared.flatMap((candidate) =>
+            candidate.signals.map((signal) => [
+              deriveSignalEvidenceKey({
+                candidateId: candidate.resolvedCandidateId,
+                signalType: signal.signalType,
+                occurredAt: signal.occurredAt,
+                sourceUrl: signal.sourceUrl,
+              }),
+              candidate.resolvedCandidateId,
+            ] as const),
+          ),
+        );
+        const incomingRelationshipOwners = new Map(
+          prepared.flatMap((candidate) =>
+            candidate.resolvedRelationships.map(({ evidenceKey }) => [
+              evidenceKey,
+              candidate.resolvedCandidateId,
+            ] as const),
+          ),
+        );
         const [
           existingClassifications,
           existingHeadquarters,
           existingSignals,
           existingRelationships,
         ] = await Promise.all([
-          transaction.select().from(candidateEcosystemClassifications).where(
-            inArray(candidateEcosystemClassifications.candidateId, candidateIds),
-          ),
+          classificationPredicates.length === 0
+            ? Promise.resolve([])
+            : transaction.select().from(candidateEcosystemClassifications).where(
+                or(...classificationPredicates),
+              ),
           transaction.select().from(candidateHeadquarters).where(
             inArray(candidateHeadquarters.candidateId, candidateIds),
           ),
-          transaction.select().from(candidatePublicSignals).where(
-            inArray(candidatePublicSignals.candidateId, candidateIds),
-          ),
-          transaction.select().from(candidateRelationships).where(
-            inArray(candidateRelationships.sourceCandidateId, candidateIds),
-          ),
+          incomingSignalOwners.size === 0
+            ? Promise.resolve([])
+            : transaction.select().from(candidatePublicSignals).where(
+                inArray(candidatePublicSignals.evidenceKey, [...incomingSignalOwners.keys()]),
+              ),
+          incomingRelationshipOwners.size === 0
+            ? Promise.resolve([])
+            : transaction.select().from(candidateRelationships).where(
+                inArray(candidateRelationships.evidenceKey, [
+                  ...incomingRelationshipOwners.keys(),
+                ]),
+              ),
         ]);
+
+        for (const existing of existingSignals) {
+          if (incomingSignalOwners.get(existing.evidenceKey) !== existing.candidateId) {
+            throw new EcosystemImportRepositoryError("evidence_key_conflict");
+          }
+        }
+        for (const existing of existingRelationships) {
+          if (
+            incomingRelationshipOwners.get(existing.evidenceKey) !==
+            existing.sourceCandidateId
+          ) {
+            throw new EcosystemImportRepositoryError("evidence_key_conflict");
+          }
+        }
 
         const insertedCounts = zeroCounts();
         const updatedCounts = zeroCounts();
@@ -384,7 +456,7 @@ export function createEcosystemIntelligenceImportRepository(
                 confidence: sql`excluded.confidence`,
                 basis: sql`excluded.basis`,
                 sourceUrls: sql`excluded.source_urls`,
-                updatedAt: sql`excluded.updated_at`,
+                updatedAt: sql`greatest(${candidateEcosystemClassifications.updatedAt}, excluded.updated_at)`,
               },
             });
         }
@@ -441,7 +513,7 @@ export function createEcosystemIntelligenceImportRepository(
                 evidenceState: sql`excluded.evidence_state`,
                 confidence: sql`excluded.confidence`,
                 sourceUrls: sql`excluded.source_urls`,
-                updatedAt: sql`excluded.updated_at`,
+                updatedAt: sql`greatest(${candidateHeadquarters.updatedAt}, excluded.updated_at)`,
               },
             });
         }
@@ -494,7 +566,7 @@ export function createEcosystemIntelligenceImportRepository(
                 expiresAt: sql`excluded.expires_at`,
                 sourceUrl: sql`excluded.source_url`,
                 confidence: sql`excluded.confidence`,
-                updatedAt: sql`excluded.updated_at`,
+                updatedAt: sql`greatest(${candidatePublicSignals.updatedAt}, excluded.updated_at)`,
               },
             });
         }
@@ -544,7 +616,7 @@ export function createEcosystemIntelligenceImportRepository(
                 evidenceUrl: sql`excluded.evidence_url`,
                 confidence: sql`excluded.confidence`,
                 observedAt: sql`excluded.observed_at`,
-                updatedAt: sql`excluded.updated_at`,
+                updatedAt: sql`greatest(${candidateRelationships.updatedAt}, excluded.updated_at)`,
               },
             });
         }
@@ -562,7 +634,18 @@ export function createEcosystemIntelligenceImportRepository(
             0,
           ),
         };
-      });
+      }, { isolationLevel: "serializable" });
+
+      for (let attempt = 1; attempt <= MAX_SERIALIZATION_ATTEMPTS; attempt += 1) {
+        try {
+          return await importOnce(attempt);
+        } catch (error) {
+          if (sqlState(error) !== "40001" || attempt === MAX_SERIALIZATION_ATTEMPTS) {
+            throw error;
+          }
+        }
+      }
+      throw new Error("Unreachable serialization retry state.");
     },
   };
 }

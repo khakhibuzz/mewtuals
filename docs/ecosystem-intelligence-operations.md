@@ -21,6 +21,10 @@ symbolic links, directories, oversized files, unknown top-level or fact fields,
 private/non-HTTP URLs, unregistered taxonomy keys, unresolved or ambiguous
 candidate identities, and duplicate facts within one file.
 Every URL-valued field is limited to 2,048 characters before normalization.
+These ownership and mode checks require POSIX file semantics; the command
+explicitly rejects unsupported platforms. Mode-bit validation does not inspect
+extended ACL entries, so operators must also keep the parent directory private
+and must not grant additional access through platform ACL tooling.
 
 Each candidate entry identifies one existing Discovery candidate by exactly
 one of `candidateId` or `canonicalUrl`. A resolved relationship target uses
@@ -65,14 +69,32 @@ The repository first resolves every source and resolved relationship target by
 Discovery candidate ID or the existing normalized Discovery identifiers. It
 rejects missing, ambiguous, repeated, or self-referential identities before
 writing. It then applies classifications, headquarters, public signals, and
-relationships in one PostgreSQL transaction with explicit unique conflict
-targets. A failure rolls back every fact in the file.
+relationships in one serializable PostgreSQL transaction with explicit unique
+conflict targets. Serialization failures are retried at most three times; all
+other failures are returned immediately. A failure rolls back every fact in
+the file.
 
-Classifications upsert by candidate/kind/term, headquarters by candidate, and
-signals and relationships by their deterministic evidence keys. Upserts
-preserve `created_at` and update only their evidence-owned fields and
-`updated_at`. Replaying unchanged bytes is idempotent and reports existing facts
-as duplicates rather than creating new rows.
+The immutable row keys and mutable evidence fields are:
+
+- Classification key: candidate, `kind`, and `termKey`. Mutable fields:
+  `evidenceState`, `confidence`, `basis`, and `sourceUrls`.
+- Headquarters key: candidate. Mutable fields: country, state and city keys and
+  labels, coordinates, `evidenceState`, `confidence`, and `sourceUrls`.
+- Signal key: candidate, `signalType`, the UTC date of `occurredAt`, and
+  normalized `sourceUrl`. Mutable fields: `title`, the exact `occurredAt`
+  timestamp within that date, `expiresAt`, and `confidence`.
+- Relationship key: source candidate, `relationshipType`, resolved target
+  candidate or normalized unresolved public name, normalized `evidenceUrl`, and
+  the UTC date of `observedAt` (or no date). Mutable fields: target display name
+  when its normalized identity is unchanged, the exact `observedAt` timestamp
+  within that date, and `confidence`.
+
+Upserts preserve `created_at`, never move `updated_at` backwards, and update
+only the mutable fields above. Replaying unchanged bytes is idempotent and
+reports existing facts as duplicates rather than creating new rows. Correcting
+any key-defining field creates a new row; it does not replace the old identity.
+If the old fact is no longer valid, remove it through the reviewed database
+recovery procedure after the corrected import succeeds.
 
 If the import exits without terminal JSON or its success is otherwise unknown,
 do not generate or edit a replacement file. Retry the exact same file and

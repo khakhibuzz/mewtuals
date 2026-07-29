@@ -2,9 +2,11 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  appendFileSync,
   mkdtempSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,11 +15,16 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  MAX_ECOSYSTEM_IMPORT_BYTES,
+  readPrivateEcosystemDocument,
+  safeImportErrorCode,
+} from "../scripts/ecosystem-intelligence-import";
+import {
   deriveRelationshipEvidenceKey,
   deriveSignalEvidenceKey,
   ecosystemImportDocumentSchema,
   parseEcosystemImportDocument,
-} from "../scripts/ecosystem-intelligence-import";
+} from "../app/domain/ecosystem-intelligence-import";
 
 const script = resolve("scripts/ecosystem-intelligence-import.ts");
 const tsx = resolve("node_modules/.bin/tsx");
@@ -401,6 +408,55 @@ describe("ecosystem intelligence validate CLI", () => {
     });
   });
 
+  it("rejects unsupported non-POSIX security semantics explicitly", async () => {
+    const file = writePrivateDocument(validDocument());
+
+    await expect(readPrivateEcosystemDocument(file, {
+      platform: "win32",
+    })).rejects.toMatchObject({
+      issues: [{ path: "file", code: "unsupported_platform" }],
+    });
+  });
+
+  it("rejects inode growth and caps allocation and read requests at MAX plus one", async () => {
+    const file = writePrivateDocument(validDocument());
+    const allocations: number[] = [];
+    const requests: number[] = [];
+    let mutated = false;
+
+    await expect(readPrivateEcosystemDocument(file, {
+      afterChunk: async () => {
+        if (mutated) return;
+        mutated = true;
+        appendFileSync(file, Buffer.alloc(MAX_ECOSYSTEM_IMPORT_BYTES + 128, 0x20));
+      },
+      onAllocate: (bytes) => allocations.push(bytes),
+      onReadRequest: (bytes) => requests.push(bytes),
+    })).rejects.toMatchObject({
+      issues: [{ path: "file", code: "file_too_large" }],
+    });
+    expect(allocations).toEqual([MAX_ECOSYSTEM_IMPORT_BYTES + 1]);
+    expect(Math.max(...requests)).toBeLessThanOrEqual(64 * 1_024);
+    expect(requests.reduce((total, bytes) => total + bytes, 0))
+      .toBeLessThanOrEqual(MAX_ECOSYSTEM_IMPORT_BYTES + 1);
+  });
+
+  it("rejects same-inode truncation after reading starts", async () => {
+    const file = writePrivateDocument(validDocument());
+    appendFileSync(file, " ".repeat(96 * 1_024));
+    let mutated = false;
+
+    await expect(readPrivateEcosystemDocument(file, {
+      afterChunk: async () => {
+        if (mutated) return;
+        mutated = true;
+        truncateSync(file, 16);
+      },
+    })).rejects.toMatchObject({
+      issues: [{ path: "file", code: "file_changed" }],
+    });
+  });
+
   it("reports bounded paths and codes without rejected values or file contents", async () => {
     const document = validDocument();
     document.candidates[0].signals[0].sourceUrl =
@@ -446,5 +502,17 @@ describe("ecosystem intelligence validate CLI", () => {
     });
     expect(result.stderr).not.toContain(secret);
     expect(result.stderr.length).toBeLessThan(1_000);
+  });
+
+  it("allowlists import error codes and redacts synthetic secret-bearing codes", () => {
+    const secret = "PRIVATE_DATABASE_HOST_AND_TOKEN";
+
+    expect(safeImportErrorCode({ code: "identity_ambiguous" })).toBe(
+      "identity_ambiguous",
+    );
+    expect(safeImportErrorCode({ code: "40001" })).toBe("40001");
+    expect(safeImportErrorCode({ code: secret })).toBe("import_failed");
+    expect(JSON.stringify({ code: safeImportErrorCode({ code: secret }) }))
+      .not.toContain(secret);
   });
 });
