@@ -14,7 +14,7 @@ CREATE TABLE "candidate_ecosystem_classifications" (
 	CONSTRAINT "candidate_ecosystem_classifications_evidence_state_check" CHECK ("candidate_ecosystem_classifications"."evidence_state" IN ('evidence_backed', 'inferred')),
 	CONSTRAINT "candidate_ecosystem_classifications_confidence_check" CHECK ("candidate_ecosystem_classifications"."confidence" >= 0 AND "candidate_ecosystem_classifications"."confidence" <= 100),
 	CONSTRAINT "candidate_ecosystem_classifications_basis_check" CHECK (length(btrim("candidate_ecosystem_classifications"."basis")) between 1 and 1000),
-	CONSTRAINT "candidate_ecosystem_classifications_sources_check" CHECK (jsonb_typeof("candidate_ecosystem_classifications"."source_urls") = 'array' and jsonb_array_length("candidate_ecosystem_classifications"."source_urls") between 1 and 12)
+	CONSTRAINT "candidate_ecosystem_classifications_sources_check" CHECK (jsonb_typeof("candidate_ecosystem_classifications"."source_urls") = 'array' and jsonb_array_length("candidate_ecosystem_classifications"."source_urls") between 1 and 12 and jsonb_path_query_array("candidate_ecosystem_classifications"."source_urls", '$[*] ? (@.type() == "string" && @ like_regex "^https?://")') = "candidate_ecosystem_classifications"."source_urls")
 );
 --> statement-breakpoint
 CREATE TABLE "candidate_headquarters" (
@@ -33,14 +33,14 @@ CREATE TABLE "candidate_headquarters" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "candidate_headquarters_candidate_unique" UNIQUE("candidate_id"),
-	CONSTRAINT "candidate_headquarters_country_check" CHECK ("candidate_headquarters"."country_code" ~ '^[A-Z]{2}$'),
+	CONSTRAINT "candidate_headquarters_country_check" CHECK ("candidate_headquarters"."country_code" = 'IN'),
 	CONSTRAINT "candidate_headquarters_location_check" CHECK (length(btrim("candidate_headquarters"."state_key")) > 0 AND length(btrim("candidate_headquarters"."state_label")) > 0 AND length(btrim("candidate_headquarters"."city_key")) > 0 AND length(btrim("candidate_headquarters"."city_label")) > 0),
 	CONSTRAINT "candidate_headquarters_coordinates_check" CHECK (("candidate_headquarters"."latitude_microdegrees" IS NULL AND "candidate_headquarters"."longitude_microdegrees" IS NULL) OR ("candidate_headquarters"."latitude_microdegrees" IS NOT NULL AND "candidate_headquarters"."longitude_microdegrees" IS NOT NULL)),
 	CONSTRAINT "candidate_headquarters_latitude_check" CHECK ("candidate_headquarters"."latitude_microdegrees" IS NULL OR ("candidate_headquarters"."latitude_microdegrees" >= -90000000 AND "candidate_headquarters"."latitude_microdegrees" <= 90000000)),
 	CONSTRAINT "candidate_headquarters_longitude_check" CHECK ("candidate_headquarters"."longitude_microdegrees" IS NULL OR ("candidate_headquarters"."longitude_microdegrees" >= -180000000 AND "candidate_headquarters"."longitude_microdegrees" <= 180000000)),
 	CONSTRAINT "candidate_headquarters_evidence_state_check" CHECK ("candidate_headquarters"."evidence_state" IN ('evidence_backed', 'inferred')),
 	CONSTRAINT "candidate_headquarters_confidence_check" CHECK ("candidate_headquarters"."confidence" >= 0 AND "candidate_headquarters"."confidence" <= 100),
-	CONSTRAINT "candidate_headquarters_sources_check" CHECK (jsonb_typeof("candidate_headquarters"."source_urls") = 'array' and jsonb_array_length("candidate_headquarters"."source_urls") between 1 and 12)
+	CONSTRAINT "candidate_headquarters_sources_check" CHECK (jsonb_typeof("candidate_headquarters"."source_urls") = 'array' and jsonb_array_length("candidate_headquarters"."source_urls") between 1 and 12 and jsonb_path_query_array("candidate_headquarters"."source_urls", '$[*] ? (@.type() == "string" && @ like_regex "^https?://")') = "candidate_headquarters"."source_urls")
 );
 --> statement-breakpoint
 CREATE TABLE "candidate_public_signals" (
@@ -75,7 +75,7 @@ CREATE TABLE "candidate_relationships" (
 	"evidence_key" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "candidate_relationships_target_check" CHECK ("candidate_relationships"."target_candidate_id" IS NOT NULL OR ("candidate_relationships"."target_public_name" IS NOT NULL AND length(btrim("candidate_relationships"."target_public_name")) > 0)),
+	CONSTRAINT "candidate_relationships_target_check" CHECK (("candidate_relationships"."target_candidate_id" IS NOT NULL AND "candidate_relationships"."target_public_name" IS NULL) OR ("candidate_relationships"."target_candidate_id" IS NULL AND "candidate_relationships"."target_public_name" IS NOT NULL AND length(btrim("candidate_relationships"."target_public_name")) > 0)),
 	CONSTRAINT "candidate_relationships_self_link_check" CHECK ("candidate_relationships"."target_candidate_id" IS NULL OR "candidate_relationships"."source_candidate_id" <> "candidate_relationships"."target_candidate_id"),
 	CONSTRAINT "candidate_relationships_type_check" CHECK (length(btrim("candidate_relationships"."relationship_type")) between 1 and 100),
 	CONSTRAINT "candidate_relationships_evidence_url_check" CHECK (length(btrim("candidate_relationships"."evidence_url")) > 0 AND "candidate_relationships"."evidence_url" ~ '^https?://'),

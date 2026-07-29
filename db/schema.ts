@@ -602,7 +602,7 @@ export const candidateEcosystemClassifications = pgTable(
     ),
     check(
       "candidate_ecosystem_classifications_sources_check",
-      sql`jsonb_typeof(${table.sourceUrls}) = 'array' and jsonb_array_length(${table.sourceUrls}) between 1 and 12`,
+      sql`jsonb_typeof(${table.sourceUrls}) = 'array' and jsonb_array_length(${table.sourceUrls}) between 1 and 12 and jsonb_path_query_array(${table.sourceUrls}, '$[*] ? (@.type() == "string" && @ like_regex "^https?://")') = ${table.sourceUrls}`,
     ),
   ],
 );
@@ -641,7 +641,7 @@ export const candidateHeadquarters = pgTable(
     index("candidate_headquarters_confidence_idx").on(table.confidence),
     check(
       "candidate_headquarters_country_check",
-      sql`${table.countryCode} ~ '^[A-Z]{2}$'`,
+      sql`${table.countryCode} = 'IN'`,
     ),
     check(
       "candidate_headquarters_location_check",
@@ -669,7 +669,7 @@ export const candidateHeadquarters = pgTable(
     ),
     check(
       "candidate_headquarters_sources_check",
-      sql`jsonb_typeof(${table.sourceUrls}) = 'array' and jsonb_array_length(${table.sourceUrls}) between 1 and 12`,
+      sql`jsonb_typeof(${table.sourceUrls}) = 'array' and jsonb_array_length(${table.sourceUrls}) between 1 and 12 and jsonb_path_query_array(${table.sourceUrls}, '$[*] ? (@.type() == "string" && @ like_regex "^https?://")') = ${table.sourceUrls}`,
     ),
   ],
 );
@@ -768,7 +768,7 @@ export const candidateRelationships = pgTable(
     index("candidate_relationships_observed_at_idx").on(table.observedAt),
     check(
       "candidate_relationships_target_check",
-      sql`${table.targetCandidateId} IS NOT NULL OR (${table.targetPublicName} IS NOT NULL AND length(btrim(${table.targetPublicName})) > 0)`,
+      sql`(${table.targetCandidateId} IS NOT NULL AND ${table.targetPublicName} IS NULL) OR (${table.targetCandidateId} IS NULL AND ${table.targetPublicName} IS NOT NULL AND length(btrim(${table.targetPublicName})) > 0)`,
     ),
     check(
       "candidate_relationships_self_link_check",

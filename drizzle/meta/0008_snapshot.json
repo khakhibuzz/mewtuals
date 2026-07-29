@@ -187,7 +187,7 @@
         },
         "candidate_ecosystem_classifications_sources_check": {
           "name": "candidate_ecosystem_classifications_sources_check",
-          "value": "jsonb_typeof(\"candidate_ecosystem_classifications\".\"source_urls\") = 'array' and jsonb_array_length(\"candidate_ecosystem_classifications\".\"source_urls\") between 1 and 12"
+          "value": "jsonb_typeof(\"candidate_ecosystem_classifications\".\"source_urls\") = 'array' and jsonb_array_length(\"candidate_ecosystem_classifications\".\"source_urls\") between 1 and 12 and jsonb_path_query_array(\"candidate_ecosystem_classifications\".\"source_urls\", '$[*] ? (@.type() == \"string\" && @ like_regex \"^https?://\")') = \"candidate_ecosystem_classifications\".\"source_urls\""
         }
       },
       "isRLSEnabled": false
@@ -376,7 +376,7 @@
       "checkConstraints": {
         "candidate_headquarters_country_check": {
           "name": "candidate_headquarters_country_check",
-          "value": "\"candidate_headquarters\".\"country_code\" ~ '^[A-Z]{2}$'"
+          "value": "\"candidate_headquarters\".\"country_code\" = 'IN'"
         },
         "candidate_headquarters_location_check": {
           "name": "candidate_headquarters_location_check",
@@ -404,7 +404,7 @@
         },
         "candidate_headquarters_sources_check": {
           "name": "candidate_headquarters_sources_check",
-          "value": "jsonb_typeof(\"candidate_headquarters\".\"source_urls\") = 'array' and jsonb_array_length(\"candidate_headquarters\".\"source_urls\") between 1 and 12"
+          "value": "jsonb_typeof(\"candidate_headquarters\".\"source_urls\") = 'array' and jsonb_array_length(\"candidate_headquarters\".\"source_urls\") between 1 and 12 and jsonb_path_query_array(\"candidate_headquarters\".\"source_urls\", '$[*] ? (@.type() == \"string\" && @ like_regex \"^https?://\")') = \"candidate_headquarters\".\"source_urls\""
         }
       },
       "isRLSEnabled": false
@@ -791,7 +791,7 @@
       "checkConstraints": {
         "candidate_relationships_target_check": {
           "name": "candidate_relationships_target_check",
-          "value": "\"candidate_relationships\".\"target_candidate_id\" IS NOT NULL OR (\"candidate_relationships\".\"target_public_name\" IS NOT NULL AND length(btrim(\"candidate_relationships\".\"target_public_name\")) > 0)"
+          "value": "(\"candidate_relationships\".\"target_candidate_id\" IS NOT NULL AND \"candidate_relationships\".\"target_public_name\" IS NULL) OR (\"candidate_relationships\".\"target_candidate_id\" IS NULL AND \"candidate_relationships\".\"target_public_name\" IS NOT NULL AND length(btrim(\"candidate_relationships\".\"target_public_name\")) > 0)"
         },
         "candidate_relationships_self_link_check": {
           "name": "candidate_relationships_self_link_check",

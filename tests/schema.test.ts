@@ -1,4 +1,4 @@
-import { getTableConfig } from "drizzle-orm/pg-core";
+import { getTableConfig, PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import type { OpportunityBriefSourceMetadata } from "../app/domain/opportunity-brief";
@@ -73,6 +73,21 @@ const foreignKeyNames = (table: Parameters<typeof getTableConfig>[0]) =>
 
 const checkNames = (table: Parameters<typeof getTableConfig>[0]) =>
   configFor(table).checks.map((constraint) => constraint.name);
+
+const checkSql = (
+  table: Parameters<typeof getTableConfig>[0],
+  name: string,
+) => {
+  const constraint = configFor(table).checks.find(
+    (candidate) => candidate.name === name,
+  );
+  return constraint
+    ? new PgDialect().sqlToQuery(constraint.value).sql
+    : undefined;
+};
+
+const normalizedSourceCheckSql = (value: string, tableName: string) =>
+  value.replaceAll(`"${tableName}".`, '"candidate_evidence".');
 
 const hasUniqueIndex = (
   table: Parameters<typeof getTableConfig>[0],
@@ -481,6 +496,31 @@ describe("Mewtuals PostgreSQL schema", () => {
         "candidate_headquarters_sources_check",
       ]),
     );
+    expect(
+      checkSql(candidateHeadquarters, "candidate_headquarters_country_check"),
+    ).toBe(`"candidate_headquarters"."country_code" = 'IN'`);
+  });
+
+  it("requires bounded public HTTP(S) URL arrays for ecosystem evidence", () => {
+    const classificationCheck = checkSql(
+      candidateEcosystemClassifications,
+      "candidate_ecosystem_classifications_sources_check",
+    );
+    const headquartersCheck = checkSql(
+      candidateHeadquarters,
+      "candidate_headquarters_sources_check",
+    );
+
+    expect(classificationCheck).toContain("jsonb_path_query_array");
+    expect(headquartersCheck).toContain("jsonb_path_query_array");
+    expect(
+      normalizedSourceCheckSql(
+        classificationCheck!,
+        "candidate_ecosystem_classifications",
+      ),
+    ).toBe(
+      normalizedSourceCheckSql(headquartersCheck!, "candidate_headquarters"),
+    );
   });
 
   it("models dated public signals with replay-safe evidence identity", () => {
@@ -577,6 +617,11 @@ describe("Mewtuals PostgreSQL schema", () => {
         "candidate_relationships_evidence_url_check",
         "candidate_relationships_confidence_check",
       ]),
+    );
+    expect(
+      checkSql(candidateRelationships, "candidate_relationships_target_check"),
+    ).toBe(
+      `("candidate_relationships"."target_candidate_id" IS NOT NULL AND "candidate_relationships"."target_public_name" IS NULL) OR ("candidate_relationships"."target_candidate_id" IS NULL AND "candidate_relationships"."target_public_name" IS NOT NULL AND length(btrim("candidate_relationships"."target_public_name")) > 0)`,
     );
   });
 

@@ -1077,6 +1077,40 @@ async function assertEcosystemConstraintBehavior(sql, candidateId) {
         `https://migration-robotics.example.test/evidence/${index + 1}`,
     ),
   );
+  const [resolvedTarget] = await sql`
+    insert into discovery_candidates (
+      type,
+      name,
+      normalized_name,
+      canonical_identity_key,
+      canonical_url,
+      website_url,
+      discovered_description,
+      category,
+      geography,
+      first_source_name,
+      first_source_url,
+      most_recent_run_id,
+      discovery_score
+    )
+    select
+      'company',
+      'Migration Components',
+      'migration components',
+      'website:migration-components.example.test',
+      'https://migration-components.example.test',
+      'https://migration-components.example.test',
+      'Public migration fixture for a robotics component company.',
+      'Components, Sensors, and Actuators',
+      'India',
+      'Migration Source',
+      'https://migration-components.example.test/about',
+      most_recent_run_id,
+      88
+    from discovery_candidates
+    where id = ${candidateId}
+    returning id
+  `;
   await sql`
     insert into candidate_ecosystem_classifications (
       candidate_id, kind, term_key, evidence_state, confidence, basis, source_urls
@@ -1146,7 +1180,7 @@ async function assertEcosystemConstraintBehavior(sql, candidateId) {
     ) values (
       ${candidateId},
       'Public Manufacturing Partner',
-      'manufacturing_partner',
+      'supplies_to',
       'https://migration-robotics.example.test/partner',
       85,
       '2026-07-19T00:00:00.000Z',
@@ -1203,6 +1237,30 @@ async function assertEcosystemConstraintBehavior(sql, candidateId) {
     `,
   );
   await assertConstraintFailure(
+    "Non-string classification source",
+    "candidate_ecosystem_classifications_sources_check",
+    () => sql`
+      insert into candidate_ecosystem_classifications (
+        candidate_id, kind, term_key, evidence_state, confidence, basis, source_urls
+      ) values (
+        ${candidateId}, 'ecosystem_role', 'integrator', 'evidence_backed', 90,
+        'Non-string public source.', '[42]'::jsonb
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Non-public classification source",
+    "candidate_ecosystem_classifications_sources_check",
+    () => sql`
+      insert into candidate_ecosystem_classifications (
+        candidate_id, kind, term_key, evidence_state, confidence, basis, source_urls
+      ) values (
+        ${candidateId}, 'ecosystem_role', 'integrator', 'evidence_backed', 90,
+        'Non-public source.', '["private-source"]'::jsonb
+      )
+    `,
+  );
+  await assertConstraintFailure(
     "Oversized classification source array",
     "candidate_ecosystem_classifications_sources_check",
     () => sql`
@@ -1225,6 +1283,15 @@ async function assertEcosystemConstraintBehavior(sql, candidateId) {
         ${candidateId}, 'karnataka', 'Karnataka', 'bengaluru', 'Bengaluru',
         'evidence_backed', 95, ${sourceUrls}::jsonb
       )
+    `,
+  );
+  await assertConstraintFailure(
+    "Non-India headquarters country",
+    "candidate_headquarters_country_check",
+    () => sql`
+      update candidate_headquarters
+      set country_code = 'US'
+      where candidate_id = ${candidateId}
     `,
   );
   await assertConstraintFailure(
@@ -1336,7 +1403,7 @@ async function assertEcosystemConstraintBehavior(sql, candidateId) {
         source_candidate_id, target_public_name, relationship_type,
         evidence_url, confidence, evidence_key
       ) values (
-        ${candidateId}, 'Another Partner', 'manufacturing_partner',
+        ${candidateId}, 'Another Partner', 'supplies_to',
         'https://migration-robotics.example.test/partner', 85,
         'migration-relationship-evidence-key'
       )
@@ -1349,7 +1416,7 @@ async function assertEcosystemConstraintBehavior(sql, candidateId) {
       insert into candidate_relationships (
         source_candidate_id, relationship_type, evidence_url, confidence, evidence_key
       ) values (
-        ${candidateId}, 'manufacturing_partner',
+        ${candidateId}, 'supplies_to',
         'https://migration-robotics.example.test/missing-target', 85,
         'missing-target-evidence-key'
       )
@@ -1363,9 +1430,24 @@ async function assertEcosystemConstraintBehavior(sql, candidateId) {
         source_candidate_id, target_candidate_id, relationship_type,
         evidence_url, confidence, evidence_key
       ) values (
-        ${candidateId}, ${candidateId}, 'manufacturing_partner',
+        ${candidateId}, ${candidateId}, 'supplies_to',
         'https://migration-robotics.example.test/self-link', 85,
         'self-link-evidence-key'
+      )
+    `,
+  );
+  await assertConstraintFailure(
+    "Relationship with resolved and public-name targets",
+    "candidate_relationships_target_check",
+    () => sql`
+      insert into candidate_relationships (
+        source_candidate_id, target_candidate_id, target_public_name,
+        relationship_type, evidence_url, confidence, evidence_key
+      ) values (
+        ${candidateId}, ${resolvedTarget.id}, 'Migration Components',
+        'supplies_to',
+        'https://migration-robotics.example.test/both-targets', 85,
+        'both-targets-evidence-key'
       )
     `,
   );
@@ -1377,7 +1459,7 @@ async function assertEcosystemConstraintBehavior(sql, candidateId) {
         source_candidate_id, target_public_name, relationship_type,
         evidence_url, confidence, evidence_key
       ) values (
-        ${candidateId}, 'Invalid Confidence Partner', 'manufacturing_partner',
+        ${candidateId}, 'Invalid Confidence Partner', 'supplies_to',
         'https://migration-robotics.example.test/invalid-relationship-confidence',
         -1, 'invalid-relationship-confidence-key'
       )
