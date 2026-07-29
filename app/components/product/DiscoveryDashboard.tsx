@@ -34,7 +34,7 @@ export type DiscoveryDashboardCandidate = {
 
 export type DiscoveryDashboardRun = {
   id: string;
-  trigger: "scheduled" | "manual" | "trial";
+  trigger: "scheduled" | "manual" | "trial" | "radar_promotion";
   status: "queued" | "running" | "succeeded" | "partial" | "failed";
   startedAt: string | null;
   completedAt: string | null;

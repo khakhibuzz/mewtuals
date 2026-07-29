@@ -19,7 +19,8 @@ import { createOpportunityRepository } from "../db/repositories/opportunity-repo
 import { createDiscoveryRepository } from "../db/repositories/discovery-repository";
 import { createVerificationRepository } from "../db/repositories/verification-repository";
 import { opportunitySeedData } from "../db/seed-data";
-import * as databaseSchema from "../db/schema";
+import * as globalRadarDatabaseSchema from "../db/global-radar-schema";
+import * as coreDatabaseSchema from "../db/schema";
 import {
   magicLinks,
   discoveryCandidateIdentifiers,
@@ -36,6 +37,11 @@ import {
   users,
   verificationReviews,
 } from "../db/schema";
+
+const databaseSchema = {
+  ...coreDatabaseSchema,
+  ...globalRadarDatabaseSchema,
+};
 
 const localEnvironment = resolve(process.cwd(), ".env.local");
 if (existsSync(localEnvironment)) loadEnvFile(localEnvironment);

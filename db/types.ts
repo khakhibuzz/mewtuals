@@ -14,6 +14,19 @@ import type {
   users,
   verificationReviews,
 } from "./schema";
+import type {
+  globalEntities,
+  globalRadarAdminEvents,
+  globalRadarPromotions,
+  globalRadarRuns,
+  globalRadarSearchQueries,
+  globalRadarSignalEntities,
+  globalRadarSignals,
+  globalRadarWatchlistEntries,
+  globalSignalEvidence,
+  globalSignalRequirements,
+  globalSignalUpdates,
+} from "./global-radar-schema";
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -47,3 +60,35 @@ export type DiscoveryCandidateSource =
   typeof discoveryCandidateSources.$inferSelect;
 export type NewDiscoveryCandidateSource =
   typeof discoveryCandidateSources.$inferInsert;
+export type GlobalEntity = typeof globalEntities.$inferSelect;
+export type NewGlobalEntity = typeof globalEntities.$inferInsert;
+export type GlobalRadarRun = typeof globalRadarRuns.$inferSelect;
+export type NewGlobalRadarRun = typeof globalRadarRuns.$inferInsert;
+export type GlobalRadarSearchQuery =
+  typeof globalRadarSearchQueries.$inferSelect;
+export type NewGlobalRadarSearchQuery =
+  typeof globalRadarSearchQueries.$inferInsert;
+export type GlobalRadarSignal = typeof globalRadarSignals.$inferSelect;
+export type NewGlobalRadarSignal = typeof globalRadarSignals.$inferInsert;
+export type GlobalRadarSignalEntity =
+  typeof globalRadarSignalEntities.$inferSelect;
+export type NewGlobalRadarSignalEntity =
+  typeof globalRadarSignalEntities.$inferInsert;
+export type GlobalSignalRequirement =
+  typeof globalSignalRequirements.$inferSelect;
+export type NewGlobalSignalRequirement =
+  typeof globalSignalRequirements.$inferInsert;
+export type GlobalSignalEvidence = typeof globalSignalEvidence.$inferSelect;
+export type NewGlobalSignalEvidence = typeof globalSignalEvidence.$inferInsert;
+export type GlobalSignalUpdate = typeof globalSignalUpdates.$inferSelect;
+export type NewGlobalSignalUpdate = typeof globalSignalUpdates.$inferInsert;
+export type GlobalRadarWatchlistEntry =
+  typeof globalRadarWatchlistEntries.$inferSelect;
+export type NewGlobalRadarWatchlistEntry =
+  typeof globalRadarWatchlistEntries.$inferInsert;
+export type GlobalRadarPromotion = typeof globalRadarPromotions.$inferSelect;
+export type NewGlobalRadarPromotion =
+  typeof globalRadarPromotions.$inferInsert;
+export type GlobalRadarAdminEvent = typeof globalRadarAdminEvents.$inferSelect;
+export type NewGlobalRadarAdminEvent =
+  typeof globalRadarAdminEvents.$inferInsert;

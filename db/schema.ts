@@ -89,6 +89,7 @@ export const discoveryRunTriggerEnum = pgEnum("discovery_run_trigger", [
   "scheduled",
   "manual",
   "trial",
+  "radar_promotion",
 ]);
 
 export const discoveryRunCandidateTypeEnum = pgEnum(

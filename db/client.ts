@@ -2,7 +2,10 @@ import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import { z } from "zod";
 
-import * as schema from "./schema";
+import * as globalRadarSchema from "./global-radar-schema";
+import * as coreSchema from "./schema";
+
+const schema = { ...coreSchema, ...globalRadarSchema };
 
 export type MewtualsDatabase = PostgresJsDatabase<typeof schema>;
 

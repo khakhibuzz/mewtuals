@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -182,6 +182,92 @@ function connectionArgs(database = "postgres") {
   return ["-h", host, "-p", port, "-d", database];
 }
 
+function repositoryRoot() {
+  const commonDirectory = run(
+    "git",
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { capture: true },
+  ).stdout.trim();
+  return dirname(realpathSync(commonDirectory));
+}
+
+function runningServerIdentity(binDir) {
+  const result = run(
+    binary(binDir, "psql"),
+    [
+      ...connectionArgs(),
+      "-tAc",
+      "select current_setting('server_version_num') || E'\\t' || current_user || E'\\t' || current_setting('data_directory')",
+    ],
+    { capture: true, allowFailure: true },
+  );
+  if (result.status !== 0) return undefined;
+  const [versionNumber, databaseUser, serverDataDirectory] = result.stdout
+    .trim()
+    .split("\t");
+  if (!versionNumber || !databaseUser || !serverDataDirectory) {
+    throw new Error("Refusing to reuse PostgreSQL: server identity was incomplete.");
+  }
+  return {
+    versionNumber: Number(versionNumber),
+    databaseUser,
+    dataDirectory: realpathSync(serverDataDirectory),
+  };
+}
+
+function isRepositoryOwnedDataDirectory(candidate) {
+  const root = repositoryRoot();
+  if (candidate === resolve(root, ".local-postgres", "data")) return true;
+
+  const worktreesRoot = resolve(root, ".worktrees");
+  const worktreeRelativePath = relative(worktreesRoot, candidate);
+  const pathParts = worktreeRelativePath.split(sep);
+  return (
+    worktreeRelativePath !== "" &&
+    !worktreeRelativePath.startsWith(`..${sep}`) &&
+    pathParts.length === 3 &&
+    pathParts[0] !== "" &&
+    pathParts[1] === ".local-postgres" &&
+    pathParts[2] === "data"
+  );
+}
+
+function assertReusableServer(identity) {
+  const expectedUser = userInfo().username;
+  const validVersion =
+    Number.isInteger(identity.versionNumber) &&
+    identity.versionNumber >= 160000 &&
+    identity.versionNumber < 170000;
+  if (
+    !validVersion ||
+    identity.databaseUser !== expectedUser ||
+    !isRepositoryOwnedDataDirectory(identity.dataDirectory)
+  ) {
+    throw new Error(
+      `Refusing to reuse PostgreSQL at ${host}:${port}: expected PostgreSQL 16 owned by ${expectedUser} with a repository-owned .local-postgres/data directory.`,
+    );
+  }
+}
+
+function assertCurrentWorktreeServer(identity) {
+  assertReusableServer(identity);
+  const currentDataDirectory = realpathSync(dataDir);
+  if (identity.dataDirectory !== currentDataDirectory) {
+    throw new Error(
+      `Refusing to use PostgreSQL at ${host}:${port}: endpoint data directory ${identity.dataDirectory} does not match the current worktree data directory ${currentDataDirectory}.`,
+    );
+  }
+}
+
+function requireServerIdentity(identity) {
+  if (!identity) {
+    throw new Error(
+      `Refusing to use PostgreSQL at ${host}:${port}: server identity could not be validated.`,
+    );
+  }
+  return identity;
+}
+
 function ensureDatabase(binDir, databaseName) {
   const result = run(
     binary(binDir, "psql"),
@@ -207,23 +293,38 @@ function ensureDatabase(binDir, databaseName) {
 }
 
 function start(binDir) {
-  initialise(binDir);
+  let reusedDataDirectory;
+  const ownServerRunning = isRunning(binDir);
+  let identity = runningServerIdentity(binDir);
 
-  if (!isRunning(binDir)) {
-    run(binary(binDir, "pg_ctl"), [
-      "-D",
-      dataDir,
-      "-l",
-      logFile,
-      "-o",
-      `-h ${host} -p ${port} -c unix_socket_directories=''`,
-      "-w",
-      "start",
-    ]);
+  if (ownServerRunning) {
+    assertCurrentWorktreeServer(requireServerIdentity(identity));
+  } else {
+    if (identity) {
+      assertReusableServer(identity);
+      reusedDataDirectory = identity.dataDirectory;
+    } else {
+      initialise(binDir);
+      run(binary(binDir, "pg_ctl"), [
+        "-D",
+        dataDir,
+        "-l",
+        logFile,
+        "-o",
+        `-h ${host} -p ${port} -c unix_socket_directories=''`,
+        "-w",
+        "start",
+      ]);
+      identity = runningServerIdentity(binDir);
+      assertCurrentWorktreeServer(requireServerIdentity(identity));
+    }
   }
 
   for (const databaseName of databaseNames) {
     ensureDatabase(binDir, databaseName);
+  }
+  if (reusedDataDirectory) {
+    console.log(`Reusing repository-owned PostgreSQL at ${reusedDataDirectory}.`);
   }
   console.log(`PostgreSQL 16 is running at ${host}:${port}.`);
   console.log(`Databases: ${databaseNames.join(", ")}`);

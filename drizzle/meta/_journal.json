@@ -36,6 +36,13 @@
       "when": 1784672848858,
       "tag": "0004_true_ser_duncan",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785343419069,
+      "tag": "0005_global_demand_radar",
+      "breakpoints": true
     }
   ]
 }
