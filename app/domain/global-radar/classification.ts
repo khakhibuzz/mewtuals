@@ -258,7 +258,7 @@ function validateEvidence(
         fingerprint: createEvidenceFingerprint({
           sourceUrl: item.sourceUrl,
           canonicalSourceUrl: item.canonicalSourceUrl,
-          claim: item.originalText,
+          isPrimarySource: item.isPrimarySource,
         }),
       }),
     );
@@ -384,6 +384,20 @@ function publishedEmailAddresses(value: string): ReadonlySet<string> {
   return new Set(matches?.map((email) => email.toLowerCase()) ?? []);
 }
 
+function publishedPublicUrls(value: string): ReadonlySet<string> {
+  const matches = value.match(/https?:\/\/[^\s<>"'`()\[\]{}]+/gi) ?? [];
+  const urls = new Set<string>();
+  for (const match of matches) {
+    const candidate = match.replace(/[.,;!?。，；！？、]+$/u, "");
+    try {
+      urls.add(canonicalizeEvidenceUrl(candidate));
+    } catch {
+      // Invalid or non-public tokens cannot establish response-path provenance.
+    }
+  }
+  return urls;
+}
+
 function canonicalEvidenceUrls(item: CandidateEvidence): readonly string[] {
   const urls = [canonicalizeEvidenceUrl(item.sourceUrl)];
   if (item.canonicalSourceUrl) {
@@ -455,8 +469,7 @@ function validateResponsePath(
   );
   if (
     !targetIsEvidence &&
-    !citedEvidence.originalText.includes(responseUrl) &&
-    !citedEvidence.originalText.includes(canonicalResponseUrl)
+    !publishedPublicUrls(citedEvidence.originalText).has(canonicalResponseUrl)
   ) {
     return { valid: false, reason: "response_path_not_cited" };
   }

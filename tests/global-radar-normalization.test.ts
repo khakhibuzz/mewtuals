@@ -127,28 +127,46 @@ describe("Global Radar normalization", () => {
     );
   });
 
-  it("deduplicates mirrors of one canonical source but preserves distinct primary sources", () => {
-    const shared = {
-      claim: "Supplier registration is open.",
-    };
+  it("deduplicates paraphrased mirrors by source while preserving distinct primary sources", () => {
     const primaryUrl = "https://example.com/suppliers";
-    const original = createEvidenceFingerprint({
-      ...shared,
+    const originalEvidence = {
       sourceUrl: `${primaryUrl}?utm_source=newsletter`,
       canonicalSourceUrl: primaryUrl,
-    });
-    const mirror = createEvidenceFingerprint({
+      isPrimarySource: true,
+      claim: "Supplier registration is open.",
+      publishedAt: "2026-07-27T00:00:00.000Z",
+    } as const;
+    const mirrorEvidence = {
       sourceUrl: "https://mirror.example/story/123",
       canonicalSourceUrl: primaryUrl,
-      claim: "  supplier   registration is OPEN. ",
-    });
-    const independentPrimary = createEvidenceFingerprint({
-      ...shared,
+      isPrimarySource: false,
+      claim: "The organisation has begun accepting supplier applications.",
+      publishedAt: "2026-07-29T00:00:00.000Z",
+    } as const;
+    const independentPrimaryEvidence = {
       sourceUrl: "https://procurement.example/notices/456",
+      canonicalSourceUrl: primaryUrl,
+      isPrimarySource: true,
+      claim: "Supplier registration is open.",
+      publishedAt: "2026-07-27T00:00:00.000Z",
+    } as const;
+    const uncitedMirrorEvidence = {
+      sourceUrl: "https://uncited-mirror.example/story/123",
       canonicalSourceUrl: null,
-    });
+      isPrimarySource: false,
+      claim: "The organisation has begun accepting supplier applications.",
+      publishedAt: "2026-07-29T00:00:00.000Z",
+    } as const;
+
+    const original = createEvidenceFingerprint(originalEvidence);
+    const mirror = createEvidenceFingerprint(mirrorEvidence);
+    const independentPrimary = createEvidenceFingerprint(
+      independentPrimaryEvidence,
+    );
+    const uncitedMirror = createEvidenceFingerprint(uncitedMirrorEvidence);
 
     expect(mirror).toBe(original);
     expect(independentPrimary).not.toBe(original);
+    expect(uncitedMirror).not.toBe(original);
   });
 });

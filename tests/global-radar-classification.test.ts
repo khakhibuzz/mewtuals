@@ -423,6 +423,8 @@ describe("Global Radar signal classification", () => {
               sourceUrl: "https://mirror.example/story",
               canonicalSourceUrl: "https://example.com/announcement",
               publishedAt: "2026-07-28T00:00:00.000Z",
+              originalText:
+                "A mirrored report says Example Robotics now accepts supplier applications.",
               organizationId: "org:two",
               corporateGroupId: "group:two",
               isPrimarySource: false,
@@ -436,6 +438,44 @@ describe("Global Radar signal classification", () => {
         }),
       ),
     ).toBe("insufficient_non_syndicated_evidence");
+  });
+
+  it("keeps distinct primary sources despite a shared canonical reference", () => {
+    const result = classifySignal(
+      candidate({
+        proposedSignalClass: "ecosystem_momentum",
+        directDemandAsk: null,
+        evidence: [
+          evidence({
+            sourceUrl: "https://alpha.example/announcement",
+            canonicalSourceUrl: "https://shared.example/reference",
+            organizationId: "org:alpha",
+            corporateGroupId: "group:alpha",
+            supportsDirectDemand: false,
+          }),
+          evidence({
+            sourceUrl: "https://beta.example/announcement",
+            canonicalSourceUrl: "https://shared.example/reference",
+            organizationId: "org:beta",
+            corporateGroupId: "group:beta",
+            supportsDirectDemand: false,
+          }),
+        ],
+        momentumMetrics: {
+          taxonomyConsistency: 90,
+          evidenceQuality: 90,
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      signalClass: "ecosystem_momentum",
+      gateFacts: {
+        evidenceItemCount: 2,
+        independentOrganizationCount: 2,
+      },
+    });
   });
 
   it.each([
@@ -755,6 +795,66 @@ describe("Global Radar signal classification", () => {
           url: "https://example.com/suppliers",
           businessEmail: null,
           evidenceUrl: "https://example.com/suppliers",
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      gateFacts: { responsePathVerified: true },
+    });
+  });
+
+  it.each([
+    [
+      "https://example.com/application",
+      "https://example.com/application-old",
+    ],
+    [
+      "https://example.com/application-old",
+      "https://example.com/application",
+    ],
+  ])(
+    "rejects response URL %s when the cited token is only %s",
+    (responseUrl, citedUrl) => {
+      expect(
+        rejectionReason(
+          candidate({
+            evidence: [
+              evidence({
+                sourceUrl: "https://example.com/announcement",
+                originalText: `Apply through ${citedUrl}.`,
+              }),
+            ],
+            responsePath: {
+              type: "supplier_or_partner_registration",
+              url: responseUrl,
+              businessEmail: null,
+              evidenceUrl: "https://example.com/announcement",
+            },
+          }),
+        ),
+      ).toBe("response_path_not_cited");
+    },
+  );
+
+  it.each([
+    "https://example.com/application",
+    "http://www.example.com/application/?utm_source=radar#apply",
+  ])("accepts exact canonical response URL token %s", (publishedUrl) => {
+    const result = classifySignal(
+      candidate({
+        evidence: [
+          evidence({
+            sourceUrl: "https://example.com/announcement",
+            originalText: `Apply through ${publishedUrl}.`,
+          }),
+        ],
+        responsePath: {
+          type: "supplier_or_partner_registration",
+          url: "https://example.com/application",
+          businessEmail: null,
+          evidenceUrl: "https://example.com/announcement",
         },
       }),
     );
