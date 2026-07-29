@@ -295,7 +295,7 @@ function dueWatchlistEntries(
   config: ReturnType<typeof canonicalConfig>,
 ): WatchlistPlanningInput[] {
   return input.watchlist
-    .map((entry) => {
+    .map<WatchlistPlanningInput | null>((entry) => {
       if (!entry.category.trim()) {
         throw new Error("Global Radar watchlist category is required.");
       }
@@ -321,15 +321,16 @@ function dueWatchlistEntries(
       const selectedLanguages = unique(
         configuredLanguages as GlobalRadarLanguage[],
       ).filter((language) => config.languages.includes(language));
-      const languages = unique(
+      const executableLanguages = unique(
         countries.flatMap((country) =>
           executableGlobalRadarLanguagesForCountry(country, selectedLanguages),
         ),
       );
+      if (executableLanguages.length === 0) return null;
       const categorySearchTerms: Partial<
         Record<GlobalRadarLanguage, string>
       > = {};
-      languages.forEach((language) => {
+      executableLanguages.forEach((language) => {
         const searchTerm = entry.categorySearchTerms?.[language]?.trim();
         if (!searchTerm) {
           throw new Error(
@@ -343,11 +344,12 @@ function dueWatchlistEntries(
         categorySearchTerms,
         theme: entry.theme,
         countries,
-        languages,
+        languages: selectedLanguages,
         cadenceDays: entry.cadenceDays,
         priority: entry.priority,
       };
     })
+    .filter((entry): entry is WatchlistPlanningInput => entry !== null)
     .filter((entry) => {
       const lastCoveredAt = coverageTimestamp(
         input.coverageState.watchlistLastCoveredAt[entry.category],

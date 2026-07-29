@@ -193,7 +193,7 @@ describe("Global Radar query generator", () => {
 
     expect(watchlistPlan.watchlist[0]).toMatchObject({
       countries: ["Japan"],
-      languages: ["en"],
+      languages: ["en", "zh-CN"],
       categorySearchTerms: { en: "component suppliers" },
     });
     expect(queries).toHaveLength(3);
@@ -235,6 +235,99 @@ describe("Global Radar query generator", () => {
     expect(watchlistPlan.watchlist).toEqual([]);
     expect(watchlistPlan.languages).toEqual([]);
     expect(generateGlobalRadarQueries(watchlistPlan)).toEqual([]);
+  });
+
+  it("keeps mixed-country Chinese selection from leaking English work into Japan", () => {
+    const watchlistPlan = planGlobalRadarRun({
+      now: new Date("2026-07-29T05:00:00.000Z"),
+      scanMode: "watchlist_refresh",
+      config: {
+        ...planningConfig,
+        countries: ["Japan", "China"],
+        languages: ["zh-CN"],
+        themes: ["robotics_manufacturing"],
+      },
+      coverageState: {
+        countryLastCoveredAt: {},
+        themeLastCoveredAt: {},
+        watchlistLastCoveredAt: {},
+      },
+      watchlist: [
+        {
+          category: "component_suppliers",
+          categorySearchTerms: {
+            en: "component suppliers",
+            "zh-CN": "零部件供应商",
+          },
+          theme: "robotics_manufacturing",
+          countries: ["Japan", "China"],
+          languages: ["zh-CN"],
+          cadenceDays: 7,
+          priority: 100,
+        },
+      ],
+    });
+    const queries = generateGlobalRadarQueries(watchlistPlan);
+
+    expect(watchlistPlan.watchlist[0].languages).toEqual(["zh-CN"]);
+    expect(queries).toHaveLength(6);
+    expect(queries.every((query) => query.sourceCountry === "China")).toBe(true);
+    expect(queries.map((query) => query.language)).toEqual([
+      "en",
+      "zh-CN",
+      "en",
+      "zh-CN",
+      "en",
+      "zh-CN",
+    ]);
+  });
+
+  it("executes mixed-country English selection per country", () => {
+    const watchlistPlan = planGlobalRadarRun({
+      now: new Date("2026-07-29T05:00:00.000Z"),
+      scanMode: "watchlist_refresh",
+      config: {
+        ...planningConfig,
+        countries: ["Japan", "China"],
+        languages: ["en"],
+        themes: ["robotics_manufacturing"],
+      },
+      coverageState: {
+        countryLastCoveredAt: {},
+        themeLastCoveredAt: {},
+        watchlistLastCoveredAt: {},
+      },
+      watchlist: [
+        {
+          category: "component_suppliers",
+          categorySearchTerms: {
+            en: "component suppliers",
+            "zh-CN": "零部件供应商",
+          },
+          theme: "robotics_manufacturing",
+          countries: ["Japan", "China"],
+          languages: ["en"],
+          cadenceDays: 7,
+          priority: 100,
+        },
+      ],
+    });
+    const queries = generateGlobalRadarQueries(watchlistPlan);
+
+    expect(watchlistPlan.watchlist[0].languages).toEqual(["en"]);
+    expect(queries.map(({ sourceCountry, language }) =>
+      `${sourceCountry}:${language}`,
+    )).toEqual([
+      "Japan:en",
+      "Japan:en",
+      "Japan:en",
+      "China:en",
+      "China:zh-CN",
+      "China:en",
+      "China:zh-CN",
+      "China:en",
+      "China:zh-CN",
+    ]);
   });
 
   it("keeps distinct China watchlist categories as complete bilingual families", () => {
