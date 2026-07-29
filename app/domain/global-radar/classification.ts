@@ -125,7 +125,9 @@ function isSearchResultUrl(value: string): boolean {
   }
   if (
     hasEngineDomain(host, "bing") &&
-    ["/search", "/ck/", "/aclick"].some((prefix) => path.startsWith(prefix))
+    ["/search", "/news/search", "/images/search", "/ck/", "/aclick"].some(
+      (prefix) => path.startsWith(prefix),
+    )
   ) {
     return true;
   }
@@ -170,7 +172,7 @@ function isSearchResultUrl(value: string): boolean {
     return true;
   }
   if (
-    host === "search.naver.com" &&
+    ["search.naver.com", "m.search.naver.com"].includes(host) &&
     path.startsWith("/search.naver")
   ) {
     return true;

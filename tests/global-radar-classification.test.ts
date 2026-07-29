@@ -964,6 +964,59 @@ describe("Global Radar signal classification", () => {
   });
 
   it.each([
+    ["Bing News", "https://www.bing.com/news/search?q=robotics+rfp"],
+    ["Bing Images", "https://www.bing.com/images/search?q=robotics+rfp"],
+    ["regional Bing News", "https://cn.bing.com/news/search?q=robotics+rfp"],
+    ["mobile Bing Images", "https://m.bing.com/images/search?q=robotics+rfp"],
+  ])(
+    "rejects %s results on source and canonical evidence URLs",
+    (_name, resultUrl) => {
+      expect({
+        canonical: rejectionReason(
+          candidate({
+            evidence: [
+              evidence({
+                sourceUrl: "https://example.com/robotics-rfp",
+                canonicalSourceUrl: resultUrl,
+              }),
+            ],
+          }),
+        ),
+        source: rejectionReason(
+          candidate({ evidence: [evidence({ sourceUrl: resultUrl })] }),
+        ),
+      }).toEqual({
+        canonical: "search_result_is_not_evidence",
+        source: "search_result_is_not_evidence",
+      });
+    },
+  );
+
+  it("rejects mobile Naver results on source and canonical evidence URLs", () => {
+    const resultUrl =
+      "https://m.search.naver.com/search.naver?query=robotics+rfp";
+
+    expect({
+      canonical: rejectionReason(
+        candidate({
+          evidence: [
+            evidence({
+              sourceUrl: "https://example.com/robotics-rfp",
+              canonicalSourceUrl: resultUrl,
+            }),
+          ],
+        }),
+      ),
+      source: rejectionReason(
+        candidate({ evidence: [evidence({ sourceUrl: resultUrl })] }),
+      ),
+    }).toEqual({
+      canonical: "search_result_is_not_evidence",
+      source: "search_result_is_not_evidence",
+    });
+  });
+
+  it.each([
     ["Sogou", "https://www.sogou.com/web?query=robotics+rfp"],
     ["360 Search", "https://www.so.com/s?q=robotics+rfp"],
     [
