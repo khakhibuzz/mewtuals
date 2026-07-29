@@ -223,6 +223,25 @@ const englishNegationAdverbs = [
   "presently",
   "yet",
 ] as const;
+const englishNegationAuxiliaries = [
+  "are",
+  "can",
+  "could",
+  "did",
+  "do",
+  "does",
+  "had",
+  "has",
+  "have",
+  "is",
+  "must",
+  "shall",
+  "should",
+  "was",
+  "were",
+  "will",
+  "would",
+] as const;
 const englishNegationIntentTerms = [
   "continue",
   "continued",
@@ -238,13 +257,19 @@ const englishNegationIntentTerms = [
   "planned",
   "planning",
 ] as const;
+const englishNegationHaveTerms = ["had", "has", "have", "having"] as const;
 const englishNegationAdverbSource = `(?:${termsPatternSource(englishNegationAdverbs)})`;
+const englishNegationAuxiliarySource = `(?:${termsPatternSource(englishNegationAuxiliaries)})`;
 const englishNegationIntentSource = `(?:${termsPatternSource(englishNegationIntentTerms)})`;
+const englishNegationPlanningSource =
+  `(?:${englishNegationIntentSource}\\s+to|` +
+  `(?:${termsPatternSource(englishNegationHaveTerms)})\\s+` +
+  `(?:a\\s+plan|plans)\\s+to)`;
 const englishNegationBridgeSource =
   `(?:${englishNegationAdverbSource}\\s+)?` +
   `(?:(?:be|been|being)\\s+)?` +
   `(?:${englishNegationAdverbSource}\\s+)?` +
-  `(?:${englishNegationIntentSource}\\s+to\\s+` +
+  `(?:${englishNegationPlanningSource}\\s+` +
   `(?:${englishNegationAdverbSource}\\s+)?` +
   `(?:(?:be|been|being)\\s+)?)?` +
   `(?:${englishNegationAdverbSource}\\s+)?`;
@@ -255,7 +280,7 @@ function negatedEnglishSupportPatterns(
   const termSource = termsPatternSource(terms);
   return Object.freeze([
     new RegExp(
-      `\\b(?:are|can|could|did|do|does|had|has|have|is|must|shall|should|was|were|will|would)\\s+not\\s+(?!only\\b)${englishNegationBridgeSource}(?:${termSource})\\b`,
+      `\\b${englishNegationAuxiliarySource}\\s+not\\s+(?!only\\b)${englishNegationBridgeSource}(?:${termSource})\\b`,
       "iu",
     ),
     new RegExp(
@@ -301,8 +326,8 @@ const indiaSpecificExclusionPatterns = [
 const phraseLevelRelevantNegativePatterns = [
   /不(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放|欢迎)|未(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放)/u,
 ] as const;
-const abandonedIntentPatterns = [
-  /\b(?:abandon|abandoned|cancelled|canceled|ceased|withdraw|withdrawn)\b/iu,
+const abandonedPlanContinuationPatterns = [
+  /^(?:(?:we|they|the\s+(?:company|organisation|organization))\s+)?(?:(?:later|subsequently)\s+)?(?:abandoned|cancelled|canceled|withdrew|withdrawn)\s+(?:(?:the|this|that|our|their|those)\s+)?(?:expansion|initiative|plan|plans|proposal)\b/iu,
 ] as const;
 const negatedOpennessPatterns = [
   ...negatedEnglishSupportPatterns(englishOpennessSupportTerms),
@@ -596,6 +621,18 @@ function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(value));
 }
 
+const englishFreshNegatedPredicateSource =
+  `(?:(?:[\\p{L}\\p{N}'’-]+\\s+){0,4})?` +
+  `(?:${englishNegationAuxiliarySource}\\s+not\\b|` +
+  `cannot\\b|never\\b|no\\s+longer\\b|not\\s+(?!only\\b))`;
+const semanticPredicateBoundaryPattern = new RegExp(
+  `(?:\\s*\\b(?:but|however|whereas)\\b\\s*|` +
+    `\\s*(?:但是|不过|然而|但)\\s*|` +
+    `\\s*\\band\\b\\s*(?=${englishFreshNegatedPredicateSource})|` +
+    `\\s*(?:并且|而且|且)\\s*(?=(?:并)?(?:不再|不|未|没有)))`,
+  "giu",
+);
+
 function claimClauses(value: string): readonly string[] {
   const normalized = value
     .normalize("NFKC")
@@ -616,6 +653,15 @@ function claimClauses(value: string): readonly string[] {
     normalized
       .split(/[\n\r.!?;。！？；]+/u)
       .map((clause) => clause.trim())
+      .filter(Boolean),
+  );
+}
+
+function semanticPredicateUnits(clause: string): readonly string[] {
+  return Object.freeze(
+    clause
+      .split(semanticPredicateBoundaryPattern)
+      .map((unit) => unit.trim())
       .filter(Boolean),
   );
 }
@@ -781,31 +827,38 @@ function isNegativeExactIndiaClause(
   factKind: IndiaEvidenceFactKind,
 ): boolean {
   if (matchesAny(clause, indiaSpecificExclusionPatterns)) return true;
+  const units = semanticPredicateUnits(clause);
+  const targetsRequestedFact = (unit: string): boolean =>
+    hasIndiaMarker(unit) &&
+    matchesAny(unit, factSupportPatterns[factKind]);
+  const supportsRequestedFact = (unit: string): boolean =>
+    targetsRequestedFact(unit) && supportsRelevanceType(unit, relevanceType);
+
   if (
-    !hasIndiaMarker(clause) ||
-    !matchesAny(clause, factSupportPatterns[factKind])
-  ) {
-    return false;
-  }
-  if (
-    hasNegativeFactDeterminer(clause, factKind) ||
-    hasNegativeFactIntent(clause, factKind)
+    units.some(
+      (unit) =>
+        targetsRequestedFact(unit) &&
+        (hasNegativeFactDeterminer(unit, factKind) ||
+          hasNegativeFactIntent(unit, factKind) ||
+          matchesAny(
+            unit,
+            englishNegatedSupportPatternsByRelevanceType[relevanceType],
+          ) ||
+          matchesAny(unit, phraseLevelRelevantNegativePatterns)),
+    )
   ) {
     return true;
   }
-  if (
-    matchesAny(
-      clause,
-      englishNegatedSupportPatternsByRelevanceType[relevanceType],
-    ) ||
-    matchesAny(clause, phraseLevelRelevantNegativePatterns)
-  ) {
-    return true;
-  }
-  return (
-    supportsRelevanceType(clause, relevanceType) &&
-    matchesAny(clause, abandonedIntentPatterns)
-  );
+
+  return units.some((unit, index) => {
+    if (!supportsRequestedFact(unit)) return false;
+    if (matchesAny(unit, abandonedPlanContinuationPatterns)) return true;
+    const continuation = units[index + 1];
+    return (
+      continuation !== undefined &&
+      matchesAny(continuation, abandonedPlanContinuationPatterns)
+    );
+  });
 }
 
 function positivelySupportsExactIndiaFact(
@@ -823,15 +876,21 @@ function positivelySupportsExactIndiaFact(
   }
   return clauses.some(
     (clause) =>
-      hasIndiaMarker(clause) &&
-      matchesAny(clause, factSupportPatterns[factKind]) &&
-      supportsRelevanceType(clause, relevanceType),
+      semanticPredicateUnits(clause).some(
+        (unit) =>
+          hasIndiaMarker(unit) &&
+          matchesAny(unit, factSupportPatterns[factKind]) &&
+          supportsRelevanceType(unit, relevanceType),
+      ),
   );
 }
 
 function positivelySupportsGlobalOpenness(value: string): boolean {
   const clauses = claimClauses(value);
-  const hasPositiveGlobalOpenness = clauses.some(
+  const predicateUnits = clauses.flatMap((clause) =>
+    semanticPredicateUnits(clause),
+  );
+  const hasPositiveGlobalOpenness = predicateUnits.some(
     positivelyClaimsGlobalOpenness,
   );
   if (!hasPositiveGlobalOpenness) return false;
@@ -845,11 +904,10 @@ function positivelySupportsGlobalOpenness(value: string): boolean {
     return false;
   }
   if (
-    clauses.some(
-      (clause) =>
-        matchesAny(clause, negatedOpennessPatterns) &&
-        (matchesAny(clause, globalScopePatterns) ||
-          matchesAny(clause, opennessActionPatterns)),
+    predicateUnits.some(
+      (unit) =>
+        matchesAny(unit, negatedOpennessPatterns) &&
+        concernsGlobalAccessPolicy(unit),
     )
   ) {
     return false;

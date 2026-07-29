@@ -246,6 +246,11 @@ describe("Global Radar India relevance", () => {
       "manufacturing",
       "The Indian manufacturing facility is no longer actively operating",
     ],
+    [
+      "India_expansion",
+      "distribution",
+      "We do not have plans to expand distribution in India",
+    ],
   ] as const)(
     "rejects negated or abandoned original evidence mislabeled as %s",
     (proposedType, factKind, originalText) => {
@@ -342,6 +347,34 @@ describe("Global Radar India relevance", () => {
       "manufacturing",
       "en",
       "The Indian manufacturing facility is active but not expanding.",
+      null,
+    ],
+    [
+      "explicit_India",
+      "suppliers",
+      "en",
+      "We accept suppliers in India but do not use paper applications",
+      null,
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "en",
+      "Our Indian manufacturing facility is active but does not currently operate on weekends",
+      null,
+    ],
+    [
+      "explicit_India",
+      "suppliers",
+      "en",
+      "We accept suppliers in India and do not use paper application forms",
+      null,
+    ],
+    [
+      "explicit_India",
+      "suppliers",
+      "en",
+      "We accept suppliers in India after a cancelled paper application",
       null,
     ],
   ] as const)(
@@ -455,6 +488,7 @@ describe("Global Radar India relevance", () => {
     "Applications are open worldwide, only research labs are eligible",
     "Applications are open worldwide; only authorized distributors may apply",
     "Applications are open worldwide; only approved partners may apply",
+    "Applications are open worldwide but do not currently accept paper submissions",
     "We only accept applications worldwide.",
     "Applications are open worldwide; the support desk operates daily except Sunday.",
     "Applications are open worldwide; technical support is restricted to business hours.",
@@ -787,6 +821,7 @@ describe("Global Radar India relevance", () => {
     "Applications are open worldwide, only Japanese researchers may apply",
     "Applications are not currently open worldwide",
     "Applications have not been opened worldwide",
+    "Applications are open worldwide but do not currently accept suppliers",
     "We only accept applications from Brazil worldwide.",
     "Applications are open worldwide but restricted to partner region zeta.",
     "申请面向全球供应商开放，但仅限日本",
