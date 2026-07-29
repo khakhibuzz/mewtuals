@@ -1,5 +1,6 @@
 import type { SignalClass } from "./contracts";
 import {
+  executableGlobalRadarLanguagesForCountry,
   GLOBAL_RADAR_QUERY_VERSION,
   stableGlobalRadarFingerprint,
   type GlobalRadarCategorySearchTerms,
@@ -133,15 +134,6 @@ function isChina(country: string): boolean {
   return normalized === "china" || normalized === "cn";
 }
 
-function languagesForCountry(
-  country: string,
-  languages: readonly GlobalRadarLanguage[],
-): readonly GlobalRadarLanguage[] {
-  return isChina(country) && languages.length > 0
-    ? ["en", "zh-CN"]
-    : languages.filter((language) => language !== "zh-CN");
-}
-
 function englishQuery(
   capability: string,
   country: string,
@@ -255,7 +247,10 @@ function plannedWorkItems(plan: RadarPlan): QueryWorkItem[] {
       entry.countries.map((country) => ({
         country,
         theme: entry.theme,
-        languages: languagesForCountry(country, entry.languages),
+        languages: executableGlobalRadarLanguagesForCountry(
+          country,
+          entry.languages,
+        ),
         category: entry.category,
         categorySearchTerms: entry.categorySearchTerms,
       })),
@@ -265,7 +260,10 @@ function plannedWorkItems(plan: RadarPlan): QueryWorkItem[] {
     plan.themes.map((theme) => ({
         country,
         theme,
-        languages: languagesForCountry(country, plan.languages),
+        languages: executableGlobalRadarLanguagesForCountry(
+          country,
+          plan.languages,
+        ),
       })),
   );
 }

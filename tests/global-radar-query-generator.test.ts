@@ -162,6 +162,81 @@ describe("Global Radar query generator", () => {
     );
   });
 
+  it("requires only executable English terms for non-China watchlist work", () => {
+    const watchlistPlan = planGlobalRadarRun({
+      now: new Date("2026-07-29T05:00:00.000Z"),
+      scanMode: "watchlist_refresh",
+      config: {
+        ...planningConfig,
+        countries: ["Japan"],
+        languages: ["en", "zh-CN"],
+        themes: ["robotics_manufacturing"],
+      },
+      coverageState: {
+        countryLastCoveredAt: {},
+        themeLastCoveredAt: {},
+        watchlistLastCoveredAt: {},
+      },
+      watchlist: [
+        {
+          category: "component_suppliers",
+          categorySearchTerms: { en: "component suppliers" },
+          theme: "robotics_manufacturing",
+          countries: ["Japan"],
+          languages: ["en", "zh-CN"],
+          cadenceDays: 7,
+          priority: 100,
+        },
+      ],
+    });
+    const queries = generateGlobalRadarQueries(watchlistPlan);
+
+    expect(watchlistPlan.watchlist[0]).toMatchObject({
+      countries: ["Japan"],
+      languages: ["en"],
+      categorySearchTerms: { en: "component suppliers" },
+    });
+    expect(queries).toHaveLength(3);
+    expect(queries.every((query) =>
+      query.language === "en" &&
+      query.sourceCountry === "Japan" &&
+      query.query.includes("component suppliers"),
+    )).toBe(true);
+  });
+
+  it("removes non-China Chinese-only watchlist entries before query generation", () => {
+    const watchlistPlan = planGlobalRadarRun({
+      now: new Date("2026-07-29T05:00:00.000Z"),
+      scanMode: "watchlist_refresh",
+      config: {
+        ...planningConfig,
+        countries: ["Japan"],
+        languages: ["zh-CN"],
+        themes: ["robotics_manufacturing"],
+      },
+      coverageState: {
+        countryLastCoveredAt: {},
+        themeLastCoveredAt: {},
+        watchlistLastCoveredAt: {},
+      },
+      watchlist: [
+        {
+          category: "component_suppliers",
+          categorySearchTerms: { "zh-CN": "零部件供应商" },
+          theme: "robotics_manufacturing",
+          countries: ["Japan"],
+          languages: ["zh-CN"],
+          cadenceDays: 7,
+          priority: 100,
+        },
+      ],
+    });
+
+    expect(watchlistPlan.watchlist).toEqual([]);
+    expect(watchlistPlan.languages).toEqual([]);
+    expect(generateGlobalRadarQueries(watchlistPlan)).toEqual([]);
+  });
+
   it("keeps distinct China watchlist categories as complete bilingual families", () => {
     const watchlistPlan = planGlobalRadarRun({
       now: new Date("2026-07-29T05:00:00.000Z"),

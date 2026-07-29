@@ -102,6 +102,16 @@ function isChina(country: string): boolean {
   return normalized === "china" || normalized === "cn";
 }
 
+export function executableGlobalRadarLanguagesForCountry(
+  country: string,
+  languages: readonly GlobalRadarLanguage[],
+): GlobalRadarLanguage[] {
+  const selectedLanguages = unique(languages);
+  if (selectedLanguages.length === 0) return [];
+  if (isChina(country)) return ["en", "zh-CN"];
+  return selectedLanguages.includes("en") ? ["en"] : [];
+}
+
 function normalizeChinaLanguages(
   countries: readonly string[],
   languages: readonly GlobalRadarLanguage[],
@@ -295,6 +305,9 @@ function dueWatchlistEntries(
       if (!Number.isInteger(entry.priority)) {
         throw new Error("Global Radar watchlist priority must be an integer.");
       }
+      const countries = unique(entry.countries).filter((country) =>
+        config.countries.includes(country),
+      );
       const configuredLanguages = entry.languages.map((language) =>
         language.trim(),
       );
@@ -305,12 +318,14 @@ function dueWatchlistEntries(
       ) {
         throw new Error("Global Radar watchlist language must be en or zh-CN.");
       }
-      const languages = normalizeChinaLanguages(
-        entry.countries,
-        unique(configuredLanguages as GlobalRadarLanguage[]).filter((language) =>
-          config.languages.includes(language),
-        ),
+      const selectedLanguages = unique(
+        configuredLanguages as GlobalRadarLanguage[],
       ).filter((language) => config.languages.includes(language));
+      const languages = unique(
+        countries.flatMap((country) =>
+          executableGlobalRadarLanguagesForCountry(country, selectedLanguages),
+        ),
+      );
       const categorySearchTerms: Partial<
         Record<GlobalRadarLanguage, string>
       > = {};
@@ -327,9 +342,7 @@ function dueWatchlistEntries(
         category: entry.category.trim(),
         categorySearchTerms,
         theme: entry.theme,
-        countries: unique(entry.countries).filter((country) =>
-          config.countries.includes(country),
-        ),
+        countries,
         languages,
         cadenceDays: entry.cadenceDays,
         priority: entry.priority,
