@@ -226,7 +226,13 @@ Run the Mewtuals Discovery Agent from this repository.
    `npm run discovery:submit -- --claim-file <claim-file> --file <batch-file>`.
    If the request times out or its result is unknown, retry the exact same file;
    do not generate a different batch for the same run.
-7. If a valid batch cannot be submitted, call
+7. If submit returns `duplicate_candidate_in_batch`, keep the run active.
+   Consolidate only the private entries at the returned candidate indexes,
+   rebuild the private batch, validate it, and resubmit.
+   Do not call `discovery:fail` for this recoverable conflict.
+   For any other lease, state, or hash conflict, stop and inspect durable run
+   state without changing the batch or failing the run. If a valid batch cannot
+   be submitted for a known, non-conflict reason, call
    `npm run discovery:fail -- --claim-file <claim-file> --message <bounded safe summary>`.
    Never include a bearer secret, lease, rejected payload, private data, or full
    page contents in the failure summary.
@@ -272,7 +278,8 @@ ceiling and no creators. Use the same evidence, V2 research, validation,
 private-file, submit, exact-file replay, and cleanup steps as the recurring
 task. The seed is accepted only when:
 
-- its durable run reaches a truthful terminal status;
+- its durable run reaches `succeeded` or an honestly underfilled `partial`
+  terminal status;
 - every submitted participant is an evidence-supported company, with honest
   underfill allowed when fewer than 50 credible companies remain;
 - found, new, and duplicate counts agree with the stored candidates;
@@ -288,6 +295,11 @@ task. The seed is accepted only when:
 - **Different body after completion:** do not retry it. The server rejects a
   changed submission for a completed run. Inspect the durable run and queue a
   new manual run only if more discovery is actually needed.
+- **Duplicate candidate conflict:** use only the returned safe indexes to
+  consolidate the corresponding private entries, then validate and resubmit
+  while the run is still active. Do not fail the run for this recoverable case.
+- **Other lease, state, or hash conflict:** stop and inspect durable run state.
+  Do not modify the batch or call `discovery:fail` until the state is known.
 - **Known source failure with usable candidates:** include bounded source
   errors and submit; the run can finish `partial`.
 - **No usable candidates after source failures:** call `discovery:fail` with a

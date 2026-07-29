@@ -1503,6 +1503,66 @@ describe("discovery service", () => {
     );
   });
 
+  it("claims queued legacy runs with the unchanged general-discovery vocabulary", async () => {
+    const repository = createRepositoryDouble();
+    vi.mocked(repository.claimRun).mockResolvedValue({
+      id: "00000000-0000-4000-8000-000000000055",
+      campaignKey: "general_discovery",
+      trigger: "scheduled",
+      geography: "India",
+      candidateType: "both",
+      sourcesUsed: ["codex_web"],
+      requestedCount: 20,
+      companyPercentage: 50,
+    } as never);
+    const service = createDiscoveryService({
+      repository,
+      adminEmails: [],
+      workerSecret: "worker-secret",
+      config: {
+        campaignKey: "robotics_hardware_india",
+        geographies: ["India"],
+        companyCategories: ["robot makers and integrators"],
+        creatorCategories: ["robotics engineering"],
+        totalCandidates: 20,
+        companyPercentage: 75,
+        enabledSources: ["codex_web"],
+      },
+    });
+
+    await expect(service.claimRun({ trigger: "scheduled" })).resolves.toMatchObject({
+      claimed: true,
+      promptVersion: "codex-web-v1",
+      config: {
+        campaignKey: "general_discovery",
+        companyCategories: [
+          "startups",
+          "consumer brands",
+          "AI",
+          "technology",
+          "creator economy",
+          "wellness",
+          "fashion",
+          "hardware",
+          "productivity",
+          "fintech",
+        ],
+        creatorCategories: [
+          "technology",
+          "startups/business",
+          "AI",
+          "consumer products",
+          "lifestyle",
+          "wellness",
+          "fashion",
+          "finance",
+          "podcasts/interviews",
+        ],
+      },
+      outputSchema: discoveryV1OutputSchema,
+    });
+  });
+
   it("claims the explicit 50-company robotics seed and rejects invalid preset selectors", async () => {
     const repository = createRepositoryDouble();
     vi.mocked(repository.claimRun).mockResolvedValue({

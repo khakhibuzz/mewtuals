@@ -45,6 +45,9 @@ describe("discovery configuration", () => {
       "Assessment",
       "Unknown",
       "exact same batch",
+      "duplicate_candidate_in_batch",
+      "Do not call `discovery:fail` for this recoverable conflict",
+      "reaches `succeeded` or an honestly underfilled `partial`",
       "claimed` is false",
       "daily to weekly",
     ]) {

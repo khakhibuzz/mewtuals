@@ -2355,6 +2355,104 @@ describe("PostgreSQL authentication repository", () => {
     );
   });
 
+  it("preserves active V1 duplicate evidence as one candidate with both sources", async () => {
+    await cleanDiscoveryRows();
+    const discoveryRepository = createDiscoveryRepository(db);
+    const queueAndClaim = async (key: string, minute: number) => {
+      const queued = await discoveryRepository.queueRun({
+        externalRunKey: `${key}-${testRun}`,
+        campaignKey: "general_discovery",
+        trigger: "trial",
+        now: new Date(`2026-07-22T06:${minute}:00.000Z`),
+        geography: "India",
+        candidateType: "company",
+        sourcesUsed: ["codex_web"],
+        requestedCount: 2,
+        companyPercentage: 100,
+      });
+      return discoveryRepository.claimRun({
+        now: new Date(`2026-07-22T06:${minute + 1}:00.000Z`),
+        leaseTokenHash: `${key}-lease`,
+        leaseExpiresAt: new Date("2026-07-22T09:00:00.000Z"),
+        externalRunKey: queued.externalRunKey,
+      });
+    };
+    const legacyCandidate = (index: number) => ({
+      type: "company" as const,
+      name: `Legacy duplicate ${index}`,
+      canonicalUrl:
+        index === 0
+          ? "https://legacy-duplicate.example.com"
+          : "https://legacy-duplicate.example.com/robotics",
+      websiteUrl: "https://legacy-duplicate.example.com",
+      primarySocialUrl: null,
+      linkedinUrl: null,
+      discoveredDescription: "Legacy evidence for one public company identity.",
+      category: "technology",
+      subcategory: null,
+      geography: "India",
+      sourceName: `legacy-source-${index}`,
+      sourceUrl: `https://evidence.example.com/legacy-${index}`,
+      discoveryScore: 80 + index,
+      rawMetadata: {},
+    });
+
+    const firstRun = await queueAndClaim("legacy-duplicate-new", 40);
+    const firstResult = await discoveryRepository.completeRun({
+      runId: firstRun!.id,
+      leaseTokenHash: "legacy-duplicate-new-lease",
+      submissionHash: "legacy-duplicate-new-submission",
+      now: new Date("2026-07-22T06:42:00.000Z"),
+      candidates: [legacyCandidate(0), legacyCandidate(1)],
+      sourceErrors: [],
+    });
+
+    expect(firstResult).toMatchObject({
+      outcome: "completed",
+      run: {
+        status: "succeeded",
+        foundCount: 2,
+        newCount: 1,
+        duplicateCount: 1,
+      },
+    });
+    expect(await db.select().from(discoveryCandidates)).toHaveLength(1);
+    expect(await db.select().from(discoveryCandidateSources)).toHaveLength(2);
+
+    const secondRun = await queueAndClaim("legacy-duplicate-existing", 43);
+    const secondResult = await discoveryRepository.completeRun({
+      runId: secondRun!.id,
+      leaseTokenHash: "legacy-duplicate-existing-lease",
+      submissionHash: "legacy-duplicate-existing-submission",
+      now: new Date("2026-07-22T06:45:00.000Z"),
+      candidates: [
+        {
+          ...legacyCandidate(0),
+          sourceName: "legacy-source-2",
+          sourceUrl: "https://evidence.example.com/legacy-2",
+        },
+        {
+          ...legacyCandidate(1),
+          sourceName: "legacy-source-3",
+          sourceUrl: "https://evidence.example.com/legacy-3",
+        },
+      ],
+      sourceErrors: [],
+    });
+
+    expect(secondResult).toMatchObject({
+      outcome: "completed",
+      run: {
+        status: "succeeded",
+        foundCount: 2,
+        newCount: 0,
+        duplicateCount: 2,
+      },
+    });
+    expect(await db.select().from(discoveryCandidates)).toHaveLength(1);
+    expect(await db.select().from(discoveryCandidateSources)).toHaveLength(4);
+  });
+
   it("fails a leased discovery run and safely replays the same failure", async () => {
     await cleanDiscoveryRows();
     const discoveryRepository = createDiscoveryRepository(db);

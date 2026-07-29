@@ -619,24 +619,45 @@ export function createDiscoveryRepository(
           (typeof preparedCandidates)[number] & {
             candidateId: string | null;
             existing: StoredDiscoveryCandidate | null;
+            newCandidateGroupIndex: number | null;
           }
         > = [];
+        const strictDuplicateCandidates = input.candidates.some(
+          (candidate) => "research" in candidate,
+        );
         const firstCandidateIndexByStoredId = new Map<string, number>();
+        const firstNewCandidateGroupByIdentifier = new Map<string, number>();
         for (const prepared of preparedCandidates) {
+          const identifierKeys = prepared.identifiers.map(
+            ({ value }) => `${prepared.candidate.type}:${value}`,
+          );
           const resolvedCandidateIds = [
             ...new Set(
-              prepared.identifiers
-                .map(({ value }) =>
-                  candidateIdByIdentifier.get(
-                    `${prepared.candidate.type}:${value}`,
-                  ),
+              identifierKeys
+                .map((identifierKey) =>
+                  candidateIdByIdentifier.get(identifierKey),
                 )
                 .filter((candidateId): candidateId is string =>
                   Boolean(candidateId),
                 ),
             ),
           ].sort();
-          if (resolvedCandidateIds.length > 1) {
+          const newCandidateGroupIndexes = [
+            ...new Set(
+              identifierKeys
+                .map((identifierKey) =>
+                  firstNewCandidateGroupByIdentifier.get(identifierKey),
+                )
+                .filter((candidateIndex): candidateIndex is number =>
+                  candidateIndex !== undefined,
+                ),
+            ),
+          ].sort((left, right) => left - right);
+          if (
+            resolvedCandidateIds.length > 1 ||
+            (resolvedCandidateIds.length > 0 &&
+              newCandidateGroupIndexes.length > 0)
+          ) {
             if (identityConflicts.length < 20) {
               identityConflicts.push({
                 candidateType: prepared.candidate.type,
@@ -654,22 +675,67 @@ export function createDiscoveryRepository(
             const firstCandidateIndex =
               firstCandidateIndexByStoredId.get(candidateId);
             if (firstCandidateIndex !== undefined) {
-              return {
-                outcome: "conflict" as const,
-                reason: "duplicate_candidate_in_batch" as const,
-                details: {
-                  candidateIndexes: [
-                    firstCandidateIndex,
-                    prepared.candidateIndex,
-                  ] as [number, number],
-                },
-                run,
-              };
+              if (strictDuplicateCandidates) {
+                return {
+                  outcome: "conflict" as const,
+                  reason: "duplicate_candidate_in_batch" as const,
+                  details: {
+                    candidateIndexes: [
+                      firstCandidateIndex,
+                      prepared.candidateIndex,
+                    ] as [number, number],
+                  },
+                  run,
+                };
+              }
+            } else {
+              firstCandidateIndexByStoredId.set(
+                candidateId,
+                prepared.candidateIndex,
+              );
             }
-            firstCandidateIndexByStoredId.set(
-              candidateId,
-              prepared.candidateIndex,
-            );
+          }
+
+          if (!candidateId && newCandidateGroupIndexes.length > 1) {
+            if (identityConflicts.length < 20) {
+              identityConflicts.push({
+                candidateType: prepared.candidate.type,
+                identifiers: prepared.identifiers
+                  .map(({ value }) => value.slice(0, 512))
+                  .slice(0, 4),
+                candidateIds: [],
+              });
+            }
+            continue;
+          }
+
+          const newCandidateGroupIndex = candidateId
+            ? null
+            : (newCandidateGroupIndexes[0] ?? prepared.candidateIndex);
+          if (
+            !candidateId &&
+            newCandidateGroupIndexes.length === 1 &&
+            strictDuplicateCandidates
+          ) {
+            return {
+              outcome: "conflict" as const,
+              reason: "duplicate_candidate_in_batch" as const,
+              details: {
+                candidateIndexes: [
+                  newCandidateGroupIndexes[0]!,
+                  prepared.candidateIndex,
+                ] as [number, number],
+              },
+              run,
+            };
+          }
+          if (newCandidateGroupIndex !== null) {
+            for (const identifierKey of identifierKeys) {
+              firstNewCandidateGroupByIdentifier.set(
+                identifierKey,
+                newCandidateGroupIndex,
+              );
+            }
           }
           resolutions.push({
             ...prepared,
@@ -677,11 +743,14 @@ export function createDiscoveryRepository(
             existing: candidateId
               ? (lockedCandidateById.get(candidateId) ?? null)
               : null,
+            newCandidateGroupIndex,
           });
         }
 
         const newResolutions = resolutions.filter(
-          (resolution) => resolution.candidateId === null,
+          (resolution) =>
+            resolution.candidateId === null &&
+            resolution.newCandidateGroupIndex === resolution.candidateIndex,
         );
         const createdCandidates =
           newResolutions.length === 0
@@ -730,12 +799,26 @@ export function createDiscoveryRepository(
             candidate.id,
           ]),
         );
+        const createdCandidateIdByGroupIndex = new Map<number, string>();
         for (const resolution of newResolutions) {
           const createdId = createdCandidateIdByKey.get(
             `${resolution.candidate.type}:${canonicalIdentityKey(resolution.primaryIdentifier)}`,
           );
           if (!createdId) {
             throw new Error("Discovery candidate was not created.");
+          }
+          createdCandidateIdByGroupIndex.set(
+            resolution.candidateIndex,
+            createdId,
+          );
+        }
+        for (const resolution of resolutions) {
+          if (resolution.candidateId) continue;
+          const createdId = createdCandidateIdByGroupIndex.get(
+            resolution.newCandidateGroupIndex!,
+          );
+          if (!createdId) {
+            throw new Error("Discovery candidate group was not created.");
           }
           resolution.candidateId = createdId;
         }
@@ -872,7 +955,7 @@ export function createDiscoveryRepository(
         }
 
         const newCount = newResolutions.length;
-        const duplicateCount = existingResolutions.length;
+        const duplicateCount = persistedResolutions.length - newCount;
 
         const sourceErrors = boundedSourceErrors(input.sourceErrors);
         const status =

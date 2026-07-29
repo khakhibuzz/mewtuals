@@ -134,6 +134,7 @@ export function DiscoveryResearchContext({
   const [selectedVersionId, setSelectedVersionId] = useState<string>();
   const [showFindings, setShowFindings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [requestAttempt, setRequestAttempt] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -169,7 +170,7 @@ export function DiscoveryResearchContext({
       active = false;
       controller.abort();
     };
-  }, [candidateId]);
+  }, [candidateId, requestAttempt]);
 
   const currentState: ResearchState =
     state.candidateId === candidateId
@@ -191,6 +192,16 @@ export function DiscoveryResearchContext({
         <p className={styles.error} role="alert">
           Systems context could not be loaded.
         </p>
+        <button
+          className={styles.discoveryDetailButton}
+          type="button"
+          onClick={() => {
+            setState({ candidateId, status: "loading" });
+            setRequestAttempt((attempt) => attempt + 1);
+          }}
+        >
+          Retry systems context
+        </button>
       </section>
     );
   }

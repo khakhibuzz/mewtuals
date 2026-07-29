@@ -620,6 +620,24 @@ describe("discovery batch validation", () => {
     }
   });
 
+  it("preserves V1 duplicate-evidence compatibility", () => {
+    expect(
+      discoveryBatchSchema.safeParse(
+        batch({
+          candidates: [
+            candidate(),
+            candidate({
+              name: "Signal Studio Robotics",
+              canonicalUrl: "https://signal-studio.com/robotics",
+              sourceUrl:
+                "https://directory.example.com/companies/signal-studio-robotics",
+            }),
+          ],
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
   it("accepts the approved worker completion envelope", () => {
     expect(discoveryBatchSchema.parse(batch())).toMatchObject({
       runId: "019f85b2-f34f-7bf3-85a6-f84446175371",

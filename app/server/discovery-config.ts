@@ -22,6 +22,32 @@ const defaultCreatorCategories = [
 ] as const;
 
 export const PHYSICAL_AI_CAMPAIGN_KEY = "robotics_hardware_india" as const;
+export const GENERAL_DISCOVERY_CAMPAIGN_KEY = "general_discovery" as const;
+
+export const GENERAL_DISCOVERY_COMPANY_CATEGORIES = [
+  "startups",
+  "consumer brands",
+  "AI",
+  "technology",
+  "creator economy",
+  "wellness",
+  "fashion",
+  "hardware",
+  "productivity",
+  "fintech",
+] as const;
+
+export const GENERAL_DISCOVERY_CREATOR_CATEGORIES = [
+  "technology",
+  "startups/business",
+  "AI",
+  "consumer products",
+  "lifestyle",
+  "wellness",
+  "fashion",
+  "finance",
+  "podcasts/interviews",
+] as const;
 
 const discoveryEnvironments = new Set(["development", "test", "production"]);
 

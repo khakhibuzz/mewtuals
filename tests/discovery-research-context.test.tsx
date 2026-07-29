@@ -151,10 +151,26 @@ describe("discovery research context", () => {
   });
 
   it("shows a bounded error without rendering an untrusted response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => response({ error: "<script>private payload</script>" }, { status: 500 })),
-    );
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        response(
+          { error: "<script>private payload</script>" },
+          { status: 500 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        response({
+          ok: true,
+          research: {
+            candidateId: "candidate-1",
+            latest,
+            history: [],
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
 
     render(
       <DiscoveryResearchContext candidateId="candidate-1" candidateName="Aster Labs" />,
@@ -164,5 +180,9 @@ describe("discovery research context", () => {
       "Systems context could not be loaded.",
     );
     expect(screen.queryByText(/private payload/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Retry systems context" }));
+    expect(await screen.findByText(latest.summary)).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

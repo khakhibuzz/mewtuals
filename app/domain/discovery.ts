@@ -319,37 +319,39 @@ export const discoveryBatchSchema = z
       });
     }
 
-    const firstCandidateIndexByIdentifier = new Map<string, number>();
-    batch.candidates.forEach((candidate, candidateIndex) => {
-      let duplicateCandidateIndex: number | undefined;
-      for (const identifier of candidateIdentifiers(candidate)) {
-        const identifierKey = `${candidate.type}:${identifier.kind}:${identifier.value}`;
-        const firstCandidateIndex =
-          firstCandidateIndexByIdentifier.get(identifierKey);
-        if (firstCandidateIndex !== undefined) {
-          duplicateCandidateIndex = Math.min(
-            duplicateCandidateIndex ?? firstCandidateIndex,
-            firstCandidateIndex,
-          );
-          continue;
+    if (batch.promptVersion === DISCOVERY_V2_PROMPT_VERSION) {
+      const firstCandidateIndexByIdentifier = new Map<string, number>();
+      batch.candidates.forEach((candidate, candidateIndex) => {
+        let duplicateCandidateIndex: number | undefined;
+        for (const identifier of candidateIdentifiers(candidate)) {
+          const identifierKey = `${candidate.type}:${identifier.kind}:${identifier.value}`;
+          const firstCandidateIndex =
+            firstCandidateIndexByIdentifier.get(identifierKey);
+          if (firstCandidateIndex !== undefined) {
+            duplicateCandidateIndex = Math.min(
+              duplicateCandidateIndex ?? firstCandidateIndex,
+              firstCandidateIndex,
+            );
+            continue;
+          }
+          firstCandidateIndexByIdentifier.set(identifierKey, candidateIndex);
         }
-        firstCandidateIndexByIdentifier.set(identifierKey, candidateIndex);
-      }
 
-      if (duplicateCandidateIndex !== undefined) {
-        context.addIssue({
-          code: "custom",
-          path: ["candidates", candidateIndex],
-          message: "Candidate duplicates another candidate in this batch.",
-          params: {
-            duplicateCandidateIndexes: [
-              duplicateCandidateIndex,
-              candidateIndex,
-            ],
-          },
-        });
-      }
-    });
+        if (duplicateCandidateIndex !== undefined) {
+          context.addIssue({
+            code: "custom",
+            path: ["candidates", candidateIndex],
+            message: "Candidate duplicates another candidate in this batch.",
+            params: {
+              duplicateCandidateIndexes: [
+                duplicateCandidateIndex,
+                candidateIndex,
+              ],
+            },
+          });
+        }
+      });
+    }
   });
 
 export type DiscoveryCandidateInput = z.input<

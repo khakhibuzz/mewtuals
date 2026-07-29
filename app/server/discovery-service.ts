@@ -13,6 +13,9 @@ import {
   MAX_DISCOVERY_BATCH_BYTES,
 } from "../domain/discovery";
 import {
+  GENERAL_DISCOVERY_CAMPAIGN_KEY,
+  GENERAL_DISCOVERY_COMPANY_CATEGORIES,
+  GENERAL_DISCOVERY_CREATOR_CATEGORIES,
   PHYSICAL_AI_CAMPAIGN_KEY,
   physicalAiSeedConfig,
   publicDiscoveryWorkerConfig,
@@ -377,10 +380,20 @@ export function createDiscoveryService(
   }
 
   function workerConfigForRun(run: DiscoveryRun) {
+    const campaignKey = run.campaignKey ?? GENERAL_DISCOVERY_CAMPAIGN_KEY;
+    const needsLegacyGeneralVocabulary =
+      campaignKey === GENERAL_DISCOVERY_CAMPAIGN_KEY &&
+      dependencies.config.campaignKey !== GENERAL_DISCOVERY_CAMPAIGN_KEY;
     return publicDiscoveryWorkerConfig({
       ...dependencies.config,
-      campaignKey: run.campaignKey ?? "general_discovery",
+      campaignKey,
       geographies: [run.geography],
+      companyCategories: needsLegacyGeneralVocabulary
+        ? GENERAL_DISCOVERY_COMPANY_CATEGORIES
+        : dependencies.config.companyCategories,
+      creatorCategories: needsLegacyGeneralVocabulary
+        ? GENERAL_DISCOVERY_CREATOR_CATEGORIES
+        : dependencies.config.creatorCategories,
       enabledSources: run.sourcesUsed,
       totalCandidates: run.requestedCount,
       companyPercentage: run.companyPercentage,
