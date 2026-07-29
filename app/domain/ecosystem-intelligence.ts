@@ -480,6 +480,9 @@ export function activeUntilForSignal(signal: PublicSignalInput): Date | undefine
 }
 
 export function isActiveSignal(signal: PublicSignalInput, now: Date): boolean {
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new Error("Public signal now must be a valid Date.");
+  }
   const occurredAt = signalDate(signal.occurredAt, "occurredAt");
   const activeUntil = activeUntilForSignal(signal);
   return occurredAt !== undefined && occurredAt <= now && activeUntil !== undefined && activeUntil > now;
@@ -541,6 +544,7 @@ export type RepresentationGapInput = InsightMeasure & {
 export type GeographicConcentrationInput = InsightMeasure & { stateKey: string };
 export type MissingDataGapInput = InsightMeasure & { dimension: MissingDataDimension };
 export type ResearchGapInsightInput = {
+  baseFilters: EcosystemFilters;
   representation?: RepresentationGapInput;
   geographicConcentration?: GeographicConcentrationInput;
   missingData?: MissingDataGapInput;
@@ -586,29 +590,55 @@ function insight(
   };
 }
 
-function filtersForUnknownDimension(dimension: InsightUnknownDimension): EcosystemFilters {
+function canonicalBaseFilters(baseFilters: EcosystemFilters | undefined): EcosystemFilters {
+  if (!baseFilters) {
+    throw new Error("Research-gap insights require canonical base filters.");
+  }
+  return filtersFromSearchParams(
+    new URLSearchParams(serializeEcosystemFilters(baseFilters)),
+  );
+}
+
+function withRuleFacet(
+  baseFilters: EcosystemFilters,
+  changes: Partial<EcosystemFilters>,
+): EcosystemFilters {
+  return filtersFromSearchParams(
+    new URLSearchParams(
+      serializeEcosystemFilters({ ...baseFilters, ...changes, page: 1 }),
+    ),
+  );
+}
+
+function filtersForUnknownDimension(
+  baseFilters: EcosystemFilters,
+  dimension: InsightUnknownDimension,
+): EcosystemFilters {
   switch (dimension) {
-    case "ecosystem_domain": return parseEcosystemFilters({ ecosystemDomain: "unknown" });
-    case "organisation_subtype": return parseEcosystemFilters({ organisationSubtype: "unknown" });
-    case "ecosystem_role": return parseEcosystemFilters({ ecosystemRole: "unknown" });
-    case "business_stage": return parseEcosystemFilters({ businessStage: "unknown" });
-    case "technical_layer": return parseEcosystemFilters({ technicalLayer: "unknown" });
-    case "capability": return parseEcosystemFilters({ capability: "unknown" });
-    case "component_category": return parseEcosystemFilters({ componentCategory: "unknown" });
-    case "robotics_vertical": return parseEcosystemFilters({ roboticsVertical: "unknown" });
+    case "ecosystem_domain": return withRuleFacet(baseFilters, { ecosystemDomains: ["unknown"] });
+    case "organisation_subtype": return withRuleFacet(baseFilters, { organisationSubtypes: ["unknown"] });
+    case "ecosystem_role": return withRuleFacet(baseFilters, { ecosystemRoles: ["unknown"] });
+    case "business_stage": return withRuleFacet(baseFilters, { businessStages: ["unknown"] });
+    case "technical_layer": return withRuleFacet(baseFilters, { technicalLayers: ["unknown"] });
+    case "capability": return withRuleFacet(baseFilters, { capabilities: ["unknown"] });
+    case "component_category": return withRuleFacet(baseFilters, { componentCategories: ["unknown"] });
+    case "robotics_vertical": return withRuleFacet(baseFilters, { roboticsVerticals: ["unknown"] });
     default: throw new Error(`Unsupported representation dimension: ${dimension}.`);
   }
 }
 
-function filtersForMissingDimension(dimension: MissingDataDimension): EcosystemFilters {
+function filtersForMissingDimension(
+  baseFilters: EcosystemFilters,
+  dimension: MissingDataDimension,
+): EcosystemFilters {
   if (dimension in unknownDimensionFilterBuilders) {
-    return filtersForUnknownDimension(dimension as InsightUnknownDimension);
+    return filtersForUnknownDimension(baseFilters, dimension as InsightUnknownDimension);
   }
   switch (dimension) {
-    case "headquarters_state": return parseEcosystemFilters({ headquartersState: "unknown" });
-    case "headquarters_city": return parseEcosystemFilters({ headquartersCity: "unknown" });
-    case "public_contact": return parseEcosystemFilters({ publicContact: "missing" });
-    case "evidence_coverage": return parseEcosystemFilters({ evidenceCoverageBand: "unknown" });
+    case "headquarters_state": return withRuleFacet(baseFilters, { headquartersStates: ["unknown"] });
+    case "headquarters_city": return withRuleFacet(baseFilters, { headquartersCities: ["unknown"] });
+    case "public_contact": return withRuleFacet(baseFilters, { publicContactAvailability: "missing" });
+    case "evidence_coverage": return withRuleFacet(baseFilters, { evidenceCoverageBand: "unknown" });
     default: throw new Error(`Unsupported missing-data dimension: ${dimension}.`);
   }
 }
@@ -624,8 +654,11 @@ const unknownDimensionFilterBuilders: Record<InsightUnknownDimension, true> = {
   robotics_vertical: true,
 };
 
-function geographicSupportingFilters(stateKey: string): EcosystemFilters {
-  const filters = parseEcosystemFilters({ headquartersState: stateKey });
+function geographicSupportingFilters(
+  baseFilters: EcosystemFilters,
+  stateKey: string,
+): EcosystemFilters {
+  const filters = withRuleFacet(baseFilters, { headquartersStates: [stateKey] });
   if (!filters.headquartersStates.some((state) => state !== "unknown")) {
     throw new Error("Geographic concentration requires an explicit headquarters state filter.");
   }
@@ -643,29 +676,30 @@ function isBelow(measure: InsightMeasure, numerator: number, denominator: number
 export function buildResearchGapInsights(input: ResearchGapInsightInput): readonly ResearchGapInsight[] {
   const insights: ResearchGapInsight[] = [];
   const thresholds = ECOSYSTEM_INTELLIGENCE_THRESHOLDS;
+  const baseFilters = canonicalBaseFilters(input.baseFilters);
   const representation = input.representation;
   if (representation && isBelow(representation, thresholds.representationCoverageTargetPercent, 100)) {
-    insights.push(insight("representation_below_target", "Map representation needs research", `${representation.numerator} of ${representation.denominator} ${representation.label.toLowerCase()} are represented, below the ${thresholds.representationCoverageTargetPercent}% coverage target.`, representation, filtersForUnknownDimension(representation.dimension)));
+    insights.push(insight("representation_below_target", "Map representation needs research", `${representation.numerator} of ${representation.denominator} ${representation.label.toLowerCase()} are represented, below the ${thresholds.representationCoverageTargetPercent}% coverage target.`, representation, filtersForUnknownDimension(baseFilters, representation.dimension)));
   }
   const geographic = input.geographicConcentration;
   if (geographic && geographic.denominator >= thresholds.geographicConcentration.minimumResolvedCandidates && isAtLeast(geographic, thresholds.geographicConcentration.minimumSharePercent, 100)) {
-    insights.push(insight("geographic_concentration", "Map coverage is concentrated", `${geographic.label} accounts for ${geographic.numerator} of ${geographic.denominator} resolved locations.`, geographic, geographicSupportingFilters(geographic.stateKey)));
+    insights.push(insight("geographic_concentration", "Map coverage is concentrated", `${geographic.label} accounts for ${geographic.numerator} of ${geographic.denominator} resolved locations.`, geographic, geographicSupportingFilters(baseFilters, geographic.stateKey)));
   }
   const missingData = input.missingData;
   if (missingData && missingData.numerator >= thresholds.missingData.minimumAffectedCandidates && isAtLeast(missingData, thresholds.missingData.minimumRatePercent, 100)) {
-    insights.push(insight("missing_data", "More evidence can improve map quality", `${missingData.numerator} of ${missingData.denominator} records are missing ${missingData.label.toLowerCase()}.`, missingData, filtersForMissingDimension(missingData.dimension)));
+    insights.push(insight("missing_data", "More evidence can improve map quality", `${missingData.numerator} of ${missingData.denominator} records are missing ${missingData.label.toLowerCase()}.`, missingData, filtersForMissingDimension(baseFilters, missingData.dimension)));
   }
   const contacts = input.publicContacts;
   if (contacts && contacts.denominator >= thresholds.publicContacts.minimumGroupSize && isBelow(contacts, thresholds.publicContacts.maximumAvailabilityPercentExclusive, 100)) {
-    insights.push(insight("low_public_contact_coverage", "Public contact coverage is limited", `${contacts.numerator} of ${contacts.denominator} records have ${contacts.label.toLowerCase()}.`, contacts, parseEcosystemFilters({ publicContact: "missing" })));
+    insights.push(insight("low_public_contact_coverage", "Public contact coverage is limited", `${contacts.numerator} of ${contacts.denominator} records have ${contacts.label.toLowerCase()}.`, contacts, withRuleFacet(baseFilters, { publicContactAvailability: "missing" })));
   }
   const dependencySignals = input.dependencySignals;
   if (dependencySignals && dependencySignals.numerator >= thresholds.dependencySignals.minimumSignals) {
-    insights.push(insight("dependency_related_signals", "Dependency-related signals merit review", `${dependencySignals.numerator} active dependency-related signals are represented across ${dependencySignals.denominator} organisations.`, dependencySignals, parseEcosystemFilters({ activeSignalType: dependencyRelatedSignalTypes })));
+    insights.push(insight("dependency_related_signals", "Dependency-related signals merit review", `${dependencySignals.numerator} active dependency-related signals are represented across ${dependencySignals.denominator} organisations.`, dependencySignals, withRuleFacet(baseFilters, { activeSignalTypes: dependencyRelatedSignalTypes })));
   }
   const staleEvidence = input.staleEvidence;
   if (staleEvidence && isAtLeast(staleEvidence, thresholds.staleEvidence.minimumAffectedSharePercent, 100)) {
-    insights.push(insight("stale_evidence", "Evidence freshness needs review", `${staleEvidence.numerator} of ${staleEvidence.denominator} records have evidence older than the ${thresholds.staleEvidence.maximumAgeDays}-day freshness threshold.`, staleEvidence, parseEcosystemFilters({ evidenceFreshness: "stale" })));
+    insights.push(insight("stale_evidence", "Evidence freshness needs review", `${staleEvidence.numerator} of ${staleEvidence.denominator} records have evidence older than the ${thresholds.staleEvidence.maximumAgeDays}-day freshness threshold.`, staleEvidence, withRuleFacet(baseFilters, { evidenceFreshness: "stale" })));
   }
   return insights;
 }

@@ -6,6 +6,7 @@ import {
   PHYSICAL_AI_ANALYSIS_VERSION,
   PHYSICAL_AI_CAMPAIGN_KEY,
   categoryInferencesFor,
+  indiaStateAndUnionTerritoryKeys,
   normalizeIndiaCity,
   normalizeIndiaState,
 } from "../app/domain/ecosystem-intelligence-taxonomy";
@@ -172,7 +173,7 @@ describe("ecosystem intelligence filters", () => {
     expect(parseEcosystemFilters({ headquartersState: "unknown", headquartersCity: "unknown" }))
       .toMatchObject({ headquartersStates: ["unknown"], headquartersCities: ["unknown"] });
     expect(() => parseEcosystemFilters({ headquartersState: "somewhere" })).toThrow();
-    expect(() => parseEcosystemFilters({ headquartersCity: "somewhere" })).toThrow();
+    expect(() => parseEcosystemFilters({ headquartersCity: "Somewhere City" })).toThrow();
   });
 
   it("round-trips registered headquarters aliases, canonical keys, and unknown", () => {
@@ -214,6 +215,23 @@ describe("ecosystem intelligence filters", () => {
     ]);
     expect(reparsed.headquartersCities).toEqual(["greater_noida", "mumbai", "unknown"]);
     expect(() => parseEcosystemFilters({ headquartersCity: "free text city" })).toThrow();
+  });
+
+  it("keeps the state registry closed and city canonical keys prototype-safe", () => {
+    expect(indiaStateAndUnionTerritoryKeys).toHaveLength(36);
+    expect(new Set(indiaStateAndUnionTerritoryKeys).size).toBe(36);
+    for (const stateKey of indiaStateAndUnionTerritoryKeys) {
+      const reparsed = filtersFromSearchParams(
+        new URLSearchParams(serializeEcosystemFilters(parseEcosystemFilters({ headquartersState: stateKey }))),
+      );
+      expect(reparsed.headquartersStates).toEqual([stateKey]);
+    }
+    expect(parseEcosystemFilters({ headquartersCity: ["ahmedabad", "greater_noida"] }).headquartersCities)
+      .toEqual(["ahmedabad", "greater_noida"]);
+    for (const value of ["__proto__", "constructor", "prototype"]) {
+      expect(() => filtersFromSearchParams(new URLSearchParams(`headquartersState=${value}`))).toThrow();
+      expect(() => filtersFromSearchParams(new URLSearchParams(`headquartersCity=${value}`))).toThrow();
+    }
   });
 
   it("rejects invalid taxonomy keys, unknown fields, invalid confidence, reversed dates, and page sizes above 100", () => {
@@ -332,6 +350,10 @@ describe("ecosystem intelligence evidence and readiness", () => {
         new Date("2026-01-31T00:00:00.000Z"),
       ),
     ).toBe(false);
+    expect(() => isActiveSignal(
+      { type: "product_launch", occurredAt: "2026-01-01" },
+      new Date("invalid"),
+    )).toThrow("now");
     expect(() => activeUntilForSignal({ type: "product_launch", occurredAt: "not-a-date" })).toThrow("occurredAt");
     expect(() => activeUntilForSignal({ type: "product_launch", occurredAt: "2026-01-01", expiresAt: "not-a-date" })).toThrow("expiresAt");
   });
@@ -347,6 +369,7 @@ describe("ecosystem intelligence evidence and readiness", () => {
 
   it("uses exact ratios rather than rounded display percentages for threshold rules", () => {
     const insights = buildResearchGapInsights({
+      baseFilters: parseEcosystemFilters({}),
       representation: {
         numerator: 198,
         denominator: 500,
@@ -357,6 +380,7 @@ describe("ecosystem intelligence evidence and readiness", () => {
     expect(insights.map((insight) => insight.ruleKey)).toContain("representation_below_target");
 
     const concentration = buildResearchGapInsights({
+      baseFilters: parseEcosystemFilters({}),
       geographicConcentration: {
         numerator: 37,
         denominator: 62,
@@ -368,7 +392,14 @@ describe("ecosystem intelligence evidence and readiness", () => {
   });
 
   it("builds thresholded, safe research-gap insights with preserved counts", () => {
+    const baseFilters = parseEcosystemFilters({
+      participantType: "creator",
+      headquartersState: "karnataka",
+      reviewStatus: "shortlisted",
+      discoveredAfter: "2026-01-01",
+    });
     const insights = buildResearchGapInsights({
+      baseFilters,
       representation: {
         numerator: 2,
         denominator: 10,
@@ -417,23 +448,25 @@ describe("ecosystem intelligence evidence and readiness", () => {
       expect(insight.copy).toContain(insight.ruleKey);
       expect(insight.supportingFilters.page).toBe(1);
     }
-    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "representation_below_target")!.supportingFilters)).toBe("ecosystemRole=unknown");
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "representation_below_target")!.supportingFilters)).toBe("participantType=creator&ecosystemRole=unknown&headquartersState=karnataka&reviewStatus=shortlisted&discoveredAfter=2026-01-01");
     const geographicInsight = insights.find((insight) => insight.ruleKey === "geographic_concentration");
-    expect(serializeEcosystemFilters(geographicInsight!.supportingFilters)).toBe("headquartersState=karnataka");
-    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "missing_data")!.supportingFilters)).toBe("technicalLayer=unknown");
-    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "low_public_contact_coverage")!.supportingFilters)).toBe("publicContact=missing");
-    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "dependency_related_signals")!.supportingFilters)).toBe("activeSignalType=partnership");
-    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "stale_evidence")!.supportingFilters)).toBe("evidenceFreshness=stale");
+    expect(serializeEcosystemFilters(geographicInsight!.supportingFilters)).toBe("participantType=creator&headquartersState=karnataka&reviewStatus=shortlisted&discoveredAfter=2026-01-01");
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "missing_data")!.supportingFilters)).toBe("participantType=creator&technicalLayer=unknown&headquartersState=karnataka&reviewStatus=shortlisted&discoveredAfter=2026-01-01");
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "low_public_contact_coverage")!.supportingFilters)).toBe("participantType=creator&headquartersState=karnataka&reviewStatus=shortlisted&publicContact=missing&discoveredAfter=2026-01-01");
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "dependency_related_signals")!.supportingFilters)).toBe("participantType=creator&headquartersState=karnataka&activeSignalType=partnership&reviewStatus=shortlisted&discoveredAfter=2026-01-01");
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "stale_evidence")!.supportingFilters)).toBe("participantType=creator&headquartersState=karnataka&reviewStatus=shortlisted&evidenceFreshness=stale&discoveredAfter=2026-01-01");
   });
 
   it("rejects unsupported missing-data dimensions", () => {
     expect(() => buildResearchGapInsights({
+      baseFilters: parseEcosystemFilters({}),
       missingData: { numerator: 3, denominator: 10, label: "Unsupported", dimension: "systems_context" } as never,
     })).toThrow("Unsupported missing-data dimension");
   });
 
   it("rejects unregistered representation dimensions", () => {
     expect(() => buildResearchGapInsights({
+      baseFilters: parseEcosystemFilters({}),
       representation: { numerator: 2, denominator: 10, label: "Unsupported", dimension: "systems_context" } as never,
     })).toThrow("Unsupported representation dimension");
   });

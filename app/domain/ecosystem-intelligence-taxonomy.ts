@@ -351,18 +351,27 @@ const INDIA_CITY_ALIASES: Record<string, string> = {
 
 const INDIA_STATE_CANONICAL_KEYS = new Set(Object.values(INDIA_STATE_ALIASES));
 const INDIA_CITY_CANONICAL_KEYS = new Set(Object.values(INDIA_CITY_ALIASES));
+const RESERVED_LOCATION_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+const MAX_CANONICAL_CITY_KEY_LENGTH = 100;
 
 export function normalizeIndiaState(value: string): string | undefined {
   const normalized = normalizedAlias(value);
-  return INDIA_STATE_ALIASES[normalized] ?? (
-    INDIA_STATE_CANONICAL_KEYS.has(normalized) ? normalized : undefined
-  );
+  if (RESERVED_LOCATION_KEYS.has(normalized)) return undefined;
+  return (Object.hasOwn(INDIA_STATE_ALIASES, normalized)
+    ? INDIA_STATE_ALIASES[normalized]
+    : undefined) ?? (INDIA_STATE_CANONICAL_KEYS.has(normalized) ? normalized : undefined);
 }
 
 export function normalizeIndiaCity(value: string): string | undefined {
   const normalized = normalizedAlias(value);
-  return INDIA_CITY_ALIASES[normalized] ?? (
-    INDIA_CITY_CANONICAL_KEYS.has(normalized) || /^[a-z0-9]+(?:_[a-z0-9]+)+$/.test(normalized)
+  if (RESERVED_LOCATION_KEYS.has(normalized)) return undefined;
+  return (Object.hasOwn(INDIA_CITY_ALIASES, normalized)
+    ? INDIA_CITY_ALIASES[normalized]
+    : undefined) ?? (
+    INDIA_CITY_CANONICAL_KEYS.has(normalized) || (
+      normalized.length <= MAX_CANONICAL_CITY_KEY_LENGTH &&
+      /^[a-z0-9]+(?:_[a-z0-9]+)*$/.test(normalized)
+    )
       ? normalized
       : undefined
   );
