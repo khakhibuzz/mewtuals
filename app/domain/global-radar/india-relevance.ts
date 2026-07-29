@@ -327,7 +327,8 @@ const phraseLevelRelevantNegativePatterns = [
   /不(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放|欢迎)|未(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放)/u,
 ] as const;
 const abandonedPlanContinuationPatterns = [
-  /^(?:(?:we|they|the\s+(?:company|organisation|organization))\s+)?(?:(?:later|subsequently)\s+)?(?:abandoned|cancelled|canceled|withdrew|withdrawn)\s+(?:(?:the|this|that|our|their|those)\s+)?(?:expansion|initiative|plan|plans|proposal)\b/iu,
+  /^(?:(?:we|they|the\s+(?:company|organisation|organization))\s+)?(?:(?:later|subsequently)\s+)?(?:(?:had|has|have)\s+)?(?:abandoned|cancelled|canceled|withdrew|withdrawn)\s+(?:(?:the|this|that|our|their|those)\s+)?(?:expansion|initiative|plan|plans|proposal)\b/iu,
+  /^(?:(?:the|this|that|our|their|those)\s+)?(?:expansion|initiative|plan|plans|proposal)\s+(?:(?:is|was)\s+|(?:had|has)\s+been\s+)(?:abandoned|cancelled|canceled|withdrawn)\b/iu,
 ] as const;
 const negatedOpennessPatterns = [
   ...negatedEnglishSupportPatterns(englishOpennessSupportTerms),
@@ -382,6 +383,19 @@ const englishGlobalAccessActorTerms = [
   "vendor",
   "vendors",
 ] as const;
+const englishAccessChannelTerms = [
+  "digital",
+  "email",
+  "offline",
+  "online",
+  "paper",
+  "physical",
+  "portal",
+  "postal",
+  "web",
+] as const;
+const englishAccessClaimNounSource =
+  "(?:application\\s+forms?|applications?|submission\\s+forms?|submissions?|forms?)";
 const englishEligibilityQualifierTerms = [
   "accredited",
   "approved",
@@ -448,16 +462,27 @@ const englishGlobalAccessActorSource = termsPatternSource(
 const chineseGlobalAccessActorSource = termsPatternSource(
   chineseGlobalAccessActorTerms,
 );
-const globalAccessPolicySubjectPatterns = [
-  boundedEnglishTermsPattern([
-    ...englishGlobalAccessActorTerms,
-    "application",
-    "applications",
-    "eligibility",
-    "eligible",
-  ]),
-  new RegExp(`(?:${chineseGlobalAccessActorSource}|申请|资格)`, "u"),
+const globalAccessCounterpartyPatterns = [
+  boundedEnglishTermsPattern(englishGlobalAccessActorTerms),
+  new RegExp(`(?:${chineseGlobalAccessActorSource})`, "u"),
 ] as const;
+const globalAccessPolicyTermPatterns = [
+  boundedEnglishTermsPattern(["eligibility", "eligible"]),
+  /申请|资格/u,
+] as const;
+const englishAccessChannelSource = `(?:${termsPatternSource(englishAccessChannelTerms)})`;
+const leadingChannelAccessClaimPattern = new RegExp(
+  `\\b${englishAccessChannelSource}\\s+${englishAccessClaimNounSource}\\b`,
+  "giu",
+);
+const trailingChannelAccessClaimPattern = new RegExp(
+  `\\b${englishAccessClaimNounSource}\\s+(?:by|through|via)\\s+(?:(?:a|an|the)\\s+)?${englishAccessChannelSource}\\b`,
+  "giu",
+);
+const englishAccessClaimNounPattern = new RegExp(
+  `\\b${englishAccessClaimNounSource}\\b`,
+  "iu",
+);
 const allowedEnglishEligibilityScopeTargetPattern =
   new RegExp(
     `^(?:only\\s+)?(?:(?:${termsPatternSource(englishEligibilityQualifierTerms)})\\s+)?(?:${englishGlobalAccessActorSource})$`,
@@ -666,6 +691,12 @@ function semanticPredicateUnits(clause: string): readonly string[] {
   );
 }
 
+function claimPredicateUnits(value: string): readonly string[] {
+  return Object.freeze(
+    claimClauses(value).flatMap((clause) => semanticPredicateUnits(clause)),
+  );
+}
+
 function hasIndiaMarker(value: string): boolean {
   return (
     latinIndiaMarkerPattern.test(value) ||
@@ -673,10 +704,19 @@ function hasIndiaMarker(value: string): boolean {
   );
 }
 
-function concernsGlobalAccessPolicy(clause: string): boolean {
+function hasUnqualifiedEnglishAccessClaim(value: string): boolean {
+  const withoutChannelFormats = value
+    .replace(leadingChannelAccessClaimPattern, " ")
+    .replace(trailingChannelAccessClaimPattern, " ");
+  return englishAccessClaimNounPattern.test(withoutChannelFormats);
+}
+
+function concernsGlobalAccessPolicy(unit: string): boolean {
   return (
-    matchesAny(clause, globalScopePatterns) ||
-    matchesAny(clause, globalAccessPolicySubjectPatterns)
+    matchesAny(unit, globalScopePatterns) ||
+    matchesAny(unit, globalAccessCounterpartyPatterns) ||
+    matchesAny(unit, globalAccessPolicyTermPatterns) ||
+    hasUnqualifiedEnglishAccessClaim(unit)
   );
 }
 
@@ -687,19 +727,19 @@ function positivelyClaimsGlobalOpenness(clause: string): boolean {
   );
 }
 
-function isGlobalAccessPolicyRestrictionClause(
-  clauses: readonly string[],
+function isGlobalAccessPolicyRestrictionUnit(
+  units: readonly string[],
   index: number,
 ): boolean {
-  const clause = clauses[index];
-  if (clause === undefined) return false;
-  if (concernsGlobalAccessPolicy(clause)) return true;
+  const unit = units[index];
+  if (unit === undefined) return false;
+  if (concernsGlobalAccessPolicy(unit)) return true;
   if (index === 0) return false;
-  const previousClause = clauses[index - 1];
+  const previousUnit = units[index - 1];
   return (
-    previousClause !== undefined &&
-    positivelyClaimsGlobalOpenness(previousClause) &&
-    matchesAny(clause, globalAccessRestrictionContinuationPatterns)
+    previousUnit !== undefined &&
+    positivelyClaimsGlobalOpenness(previousUnit) &&
+    matchesAny(unit, globalAccessRestrictionContinuationPatterns)
   );
 }
 
@@ -886,19 +926,16 @@ function positivelySupportsExactIndiaFact(
 }
 
 function positivelySupportsGlobalOpenness(value: string): boolean {
-  const clauses = claimClauses(value);
-  const predicateUnits = clauses.flatMap((clause) =>
-    semanticPredicateUnits(clause),
-  );
+  const predicateUnits = claimPredicateUnits(value);
   const hasPositiveGlobalOpenness = predicateUnits.some(
     positivelyClaimsGlobalOpenness,
   );
   if (!hasPositiveGlobalOpenness) return false;
   if (
-    clauses.some(
-      (clause, index) =>
-        isGlobalAccessPolicyRestrictionClause(clauses, index) &&
-        hasDisallowedGlobalScopeRestriction(clause),
+    predicateUnits.some(
+      (unit, index) =>
+        isGlobalAccessPolicyRestrictionUnit(predicateUnits, index) &&
+        hasDisallowedGlobalScopeRestriction(unit),
     )
   ) {
     return false;
