@@ -53,6 +53,7 @@ describe("Ecosystem Intelligence administrator page", () => {
   it("redirects signed-in non-administrators to the member dashboard", async () => {
     vi.mocked(getCurrentSession).mockResolvedValue(session);
     vi.mocked(getEcosystemIntelligenceService).mockReturnValue({
+      isAdministrator: vi.fn(() => false),
       getSnapshot: vi.fn(async () => ({ ok: false, status: 403, error: "No." })),
     } as never);
 
@@ -65,7 +66,10 @@ describe("Ecosystem Intelligence administrator page", () => {
     const getSnapshot = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 400, error: "Invalid." })
       .mockResolvedValueOnce({ ok: true, filters, snapshot: { private: true } });
-    vi.mocked(getEcosystemIntelligenceService).mockReturnValue({ getSnapshot } as never);
+    vi.mocked(getEcosystemIntelligenceService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
+      getSnapshot,
+    } as never);
 
     await expect(EcosystemIntelligenceAdminPage({
       searchParams: Promise.resolve({ participantType: "person" }),
@@ -78,6 +82,7 @@ describe("Ecosystem Intelligence administrator page", () => {
   it("renders a retryable safe error inside the wide admin shell", async () => {
     vi.mocked(getCurrentSession).mockResolvedValue(session);
     vi.mocked(getEcosystemIntelligenceService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
       getSnapshot: vi.fn(async () => ({ ok: false, status: 500, error: "Safe." })),
     } as never);
 
@@ -90,9 +95,26 @@ describe("Ecosystem Intelligence administrator page", () => {
     expect(screen.getByRole("link", { name: "Discovery" })).toBeInTheDocument();
   });
 
+  it("preserves canonical filters in the retry URL", async () => {
+    vi.mocked(getCurrentSession).mockResolvedValue(session);
+    vi.mocked(getEcosystemIntelligenceService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
+      getSnapshot: vi.fn(async () => ({ ok: false, status: 500, error: "Safe." })),
+    } as never);
+
+    render(await EcosystemIntelligenceAdminPage({
+      searchParams: Promise.resolve({ participantType: "creator" }),
+    }));
+    expect(screen.getByRole("link", { name: "Retry" })).toHaveAttribute(
+      "href",
+      "/admin/ecosystem-intelligence?participantType=creator",
+    );
+  });
+
   it("server-renders the first safe snapshot and canonical query", async () => {
     vi.mocked(getCurrentSession).mockResolvedValue(session);
     vi.mocked(getEcosystemIntelligenceService).mockReturnValue({
+      isAdministrator: vi.fn(() => true),
       getSnapshot: vi.fn(async () => ({ ok: true, filters, snapshot: { private: true } })),
     } as never);
 
@@ -102,6 +124,10 @@ describe("Ecosystem Intelligence administrator page", () => {
     expect(screen.getByTestId("ecosystem-initial-snapshot")).toHaveAttribute(
       "data-canonical-query",
       "",
+    );
+    expect(screen.getByTestId("ecosystem-initial-snapshot")).toHaveAttribute(
+      "data-generated-at",
+      "2026-07-29T08:30:00.000Z",
     );
     expect(serializeMock).toHaveBeenCalledWith({ private: true });
   });

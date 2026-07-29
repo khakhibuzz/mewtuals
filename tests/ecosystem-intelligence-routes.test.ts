@@ -120,6 +120,30 @@ describe("Ecosystem Intelligence route adapters", () => {
     await expect(response.json()).resolves.toEqual({ ok: false, error: `safe ${status}` });
   });
 
+  it("maps unexpected adapter failures to a private safe 500", async () => {
+    const sessionFailure = createEcosystemIntelligenceGetHandler({
+      getSession: async () => {
+        throw new Error("session secret leaked");
+      },
+      getSnapshot: vi.fn(),
+    });
+    const serviceFailure = createEcosystemIntelligenceGetHandler({
+      getSession: async () => session,
+      getSnapshot: async () => {
+        throw new Error("database url leaked");
+      },
+    });
+    for (const handler of [sessionFailure, serviceFailure]) {
+      const response = await handler(new Request("https://mewtuals.com/api/admin/ecosystem-intelligence"));
+      expect(response.status).toBe(500);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      await expect(response.json()).resolves.toEqual({
+        ok: false,
+        error: "We could not load Ecosystem Intelligence. Please try again.",
+      });
+    }
+  });
+
   it("serializes candidate detail and maps invalid/missing results", async () => {
     const getCandidateDetail = vi.fn(async (actor: unknown, candidateId: string) => {
       void actor;
@@ -177,5 +201,18 @@ describe("Ecosystem Intelligence route adapters", () => {
       );
       expect(failed.status).toBe(status);
     }
+
+    const unexpected = createEcosystemIntelligenceCandidateGetHandler({
+      getSession: async () => session,
+      getCandidateDetail: async () => {
+        throw new Error("private detail failure");
+      },
+    });
+    const unexpectedResponse = await unexpected(
+      new Request("https://mewtuals.com/api/admin/ecosystem-intelligence/candidates/bad"),
+      { params: Promise.resolve({ candidateId: CANDIDATE_ID }) },
+    );
+    expect(unexpectedResponse.status).toBe(500);
+    expect(unexpectedResponse.headers.get("cache-control")).toBe("private, no-store");
   });
 });

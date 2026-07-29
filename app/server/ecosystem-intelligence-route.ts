@@ -15,6 +15,7 @@ import type {
 
 type SessionReader = () => Promise<AuthenticatedSession | null>;
 const PRIVATE_RESPONSE_HEADERS = { "Cache-Control": "private, no-store" } as const;
+const SAFE_LOAD_ERROR = "We could not load Ecosystem Intelligence. Please try again.";
 
 const actorFrom = (session: AuthenticatedSession): EcosystemIntelligenceActor => ({
   userId: session.user.id,
@@ -165,20 +166,24 @@ export function createEcosystemIntelligenceGetHandler(dependencies: {
   >;
 }) {
   return async function GET(request: Request) {
-    const session = await dependencies.getSession();
-    if (!session) return failure(401, "Sign in to continue.");
-    const result = await dependencies.getSnapshot(
-      actorFrom(session),
-      new URL(request.url).searchParams,
-    );
-    if (!result.ok) return failure(result.status, result.error);
-    return NextResponse.json(
-      {
-        ok: true,
-        snapshot: serializeEcosystemSnapshot(result.snapshot),
-      },
-      { headers: PRIVATE_RESPONSE_HEADERS },
-    );
+    try {
+      const session = await dependencies.getSession();
+      if (!session) return failure(401, "Sign in to continue.");
+      const result = await dependencies.getSnapshot(
+        actorFrom(session),
+        new URL(request.url).searchParams,
+      );
+      if (!result.ok) return failure(result.status, result.error);
+      return NextResponse.json(
+        {
+          ok: true,
+          snapshot: serializeEcosystemSnapshot(result.snapshot),
+        },
+        { headers: PRIVATE_RESPONSE_HEADERS },
+      );
+    } catch {
+      return failure(500, SAFE_LOAD_ERROR);
+    }
   };
 }
 
@@ -196,20 +201,24 @@ export function createEcosystemIntelligenceCandidateGetHandler(dependencies: {
     _request: Request,
     context: { params: Promise<{ candidateId: string }> },
   ) {
-    const session = await dependencies.getSession();
-    if (!session) return failure(401, "Sign in to continue.");
-    const { candidateId } = await context.params;
-    const result = await dependencies.getCandidateDetail(
-      actorFrom(session),
-      candidateId,
-    );
-    if (!result.ok) return failure(result.status, result.error);
-    return NextResponse.json(
-      {
-        ok: true,
-        candidate: serializeEcosystemCandidateDetail(result.candidate),
-      },
-      { headers: PRIVATE_RESPONSE_HEADERS },
-    );
+    try {
+      const session = await dependencies.getSession();
+      if (!session) return failure(401, "Sign in to continue.");
+      const { candidateId } = await context.params;
+      const result = await dependencies.getCandidateDetail(
+        actorFrom(session),
+        candidateId,
+      );
+      if (!result.ok) return failure(result.status, result.error);
+      return NextResponse.json(
+        {
+          ok: true,
+          candidate: serializeEcosystemCandidateDetail(result.candidate),
+        },
+        { headers: PRIVATE_RESPONSE_HEADERS },
+      );
+    } catch {
+      return failure(500, SAFE_LOAD_ERROR);
+    }
   };
 }

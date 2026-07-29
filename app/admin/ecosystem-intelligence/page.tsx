@@ -3,8 +3,12 @@ import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { ADMIN_HEADER_LINKS } from "../../components/product/admin-navigation";
+import { EcosystemIntelligenceWorkspace } from "../../components/product/ecosystem-intelligence/EcosystemIntelligenceWorkspace";
 import { ProductShell } from "../../components/product/ProductShell";
-import { serializeEcosystemFilters } from "../../domain/ecosystem-intelligence";
+import {
+  filtersFromSearchParams,
+  serializeEcosystemFilters,
+} from "../../domain/ecosystem-intelligence";
 import { getEcosystemIntelligenceService } from "../../server/ecosystem-intelligence";
 import { serializeEcosystemSnapshot } from "../../server/ecosystem-intelligence-route";
 import { getCurrentSession } from "../../server/session";
@@ -52,10 +56,18 @@ export default async function EcosystemIntelligenceAdminPage({
   if (!session) redirect("/login");
 
   const incoming = pageSearchParams(await searchParams);
-  const result = await getEcosystemIntelligenceService().getSnapshot(
-    { userId: session.user.id, email: session.user.email },
-    incoming,
-  );
+  const service = getEcosystemIntelligenceService();
+  const actor = { userId: session.user.id, email: session.user.email };
+  if (!service.isAdministrator(actor)) redirect("/dashboard");
+  let canonicalQuery: string;
+  try {
+    canonicalQuery = serializeEcosystemFilters(filtersFromSearchParams(incoming));
+  } catch {
+    redirect("/admin/ecosystem-intelligence");
+  }
+  if (incoming.toString() !== canonicalQuery) redirect(canonicalPath(canonicalQuery));
+
+  const result = await service.getSnapshot(actor, incoming);
   if (!result.ok) {
     if (result.status === 400) redirect("/admin/ecosystem-intelligence");
     if (result.status === 403) redirect("/dashboard");
@@ -64,27 +76,20 @@ export default async function EcosystemIntelligenceAdminPage({
         <section role="alert">
           <h2>We could not load Ecosystem Intelligence.</h2>
           <p>The research workspace is temporarily unavailable.</p>
-          <Link href="/admin/ecosystem-intelligence">Retry</Link>
+          <Link href={canonicalPath(canonicalQuery)}>Retry</Link>
         </section>
       </EcosystemIntelligenceShell>
     );
   }
 
-  const canonicalQuery = serializeEcosystemFilters(result.filters);
-  if (incoming.toString() !== canonicalQuery) redirect(canonicalPath(canonicalQuery));
   const snapshot = serializeEcosystemSnapshot(result.snapshot);
 
   return (
     <EcosystemIntelligenceShell>
-      <section
-        data-testid="ecosystem-initial-snapshot"
-        data-canonical-query={canonicalQuery}
-        aria-labelledby="ecosystem-initial-title"
-      >
-        <h2 id="ecosystem-initial-title">Current Physical AI view</h2>
-        <p>{snapshot.population.total} Physical AI participants in this view.</p>
-        <p>Interactive analysis is loading from this server-rendered snapshot.</p>
-      </section>
+      <EcosystemIntelligenceWorkspace
+        initialSnapshot={snapshot}
+        canonicalQuery={canonicalQuery}
+      />
     </EcosystemIntelligenceShell>
   );
 }
