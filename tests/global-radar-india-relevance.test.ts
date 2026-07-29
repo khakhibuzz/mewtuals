@@ -211,6 +211,41 @@ describe("Global Radar India relevance", () => {
       "manufacturing",
       "The Indian manufacturing facility is no longer active",
     ],
+    [
+      "India_expansion",
+      "distribution",
+      "We will not be entering distribution in India",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We do not plan to expand distribution in India",
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "The Indian manufacturing facility has not been active",
+    ],
+    [
+      "explicit_India",
+      "suppliers",
+      "We will not be accepting suppliers from India",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are not planning to expand distribution in India",
+    ],
+    [
+      "India_expansion",
+      "distribution",
+      "We are not planning to be entering distribution in India",
+    ],
+    [
+      "existing_India_presence",
+      "manufacturing",
+      "The Indian manufacturing facility is no longer actively operating",
+    ],
   ] as const)(
     "rejects negated or abandoned original evidence mislabeled as %s",
     (proposedType, factKind, originalText) => {
@@ -418,6 +453,8 @@ describe("Global Radar India relevance", () => {
     "Applications are open worldwide, only participants may apply",
     "Applications are open worldwide, only research institutions are eligible",
     "Applications are open worldwide, only research labs are eligible",
+    "Applications are open worldwide; only authorized distributors may apply",
+    "Applications are open worldwide; only approved partners may apply",
     "We only accept applications worldwide.",
     "Applications are open worldwide; the support desk operates daily except Sunday.",
     "Applications are open worldwide; technical support is restricted to business hours.",
@@ -427,6 +464,7 @@ describe("Global Radar India relevance", () => {
     "申请面向全球供应商开放，但只限已注册企业",
     "申请面向全球供应商开放，但仅限大学",
     "申请面向全球供应商开放，但仅限合格研究人员",
+    "申请面向全球开放；仅限合格合作方",
   ])(
     "allows a bounded non-geographic eligibility qualifier beside global openness: %s",
     (originalText) => {
@@ -747,6 +785,8 @@ describe("Global Radar India relevance", () => {
     "Applications are open worldwide; only brazilian companies are eligible.",
     "Applications are open worldwide; only Japanese researchers may apply",
     "Applications are open worldwide, only Japanese researchers may apply",
+    "Applications are not currently open worldwide",
+    "Applications have not been opened worldwide",
     "We only accept applications from Brazil worldwide.",
     "Applications are open worldwide but restricted to partner region zeta.",
     "申请面向全球供应商开放，但仅限日本",

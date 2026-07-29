@@ -188,11 +188,66 @@ const globalScopePatterns = [
   /\baround\s+the\s+world\b/iu,
   /全球|国际|世界各地|任何国家|各国/u,
 ] as const;
+const englishOpennessSupportTerms = [
+  "accept",
+  "accepts",
+  "accepted",
+  "accepting",
+  "apply",
+  "applies",
+  "applying",
+  "available",
+  "eligible",
+  "invite",
+  "invites",
+  "inviting",
+  "open",
+  "opened",
+  "opens",
+  "permit",
+  "permits",
+  "permitted",
+  "welcome",
+  "welcomes",
+  "welcoming",
+] as const;
 const opennessActionPatterns = [
-  /\b(?:accept|accepts|accepted|accepting|apply|applies|applying|available|eligible|invite|invites|inviting|open|opened|opens|permit|permits|permitted|welcome|welcomes|welcoming)\b/iu,
-  /\b(?:can|may)\s+apply\b/iu,
+  boundedEnglishTermsPattern(englishOpennessSupportTerms),
   /开放|接受|欢迎|可申请|面向/u,
 ] as const;
+
+const englishNegationAdverbs = [
+  "actively",
+  "currently",
+  "now",
+  "presently",
+  "yet",
+] as const;
+const englishNegationIntentTerms = [
+  "continue",
+  "continued",
+  "continuing",
+  "expect",
+  "expected",
+  "expecting",
+  "going",
+  "intend",
+  "intended",
+  "intending",
+  "plan",
+  "planned",
+  "planning",
+] as const;
+const englishNegationAdverbSource = `(?:${termsPatternSource(englishNegationAdverbs)})`;
+const englishNegationIntentSource = `(?:${termsPatternSource(englishNegationIntentTerms)})`;
+const englishNegationBridgeSource =
+  `(?:${englishNegationAdverbSource}\\s+)?` +
+  `(?:(?:be|been|being)\\s+)?` +
+  `(?:${englishNegationAdverbSource}\\s+)?` +
+  `(?:${englishNegationIntentSource}\\s+to\\s+` +
+  `(?:${englishNegationAdverbSource}\\s+)?` +
+  `(?:(?:be|been|being)\\s+)?)?` +
+  `(?:${englishNegationAdverbSource}\\s+)?`;
 
 function negatedEnglishSupportPatterns(
   terms: readonly string[],
@@ -200,16 +255,25 @@ function negatedEnglishSupportPatterns(
   const termSource = termsPatternSource(terms);
   return Object.freeze([
     new RegExp(
-      `\\b(?:are|can|could|did|do|does|had|has|have|is|must|shall|should|was|were|will|would)\\s+not\\s+(?!only\\b)(?:currently\\s+)?(?:${termSource})\\b`,
+      `\\b(?:are|can|could|did|do|does|had|has|have|is|must|shall|should|was|were|will|would)\\s+not\\s+(?!only\\b)${englishNegationBridgeSource}(?:${termSource})\\b`,
       "iu",
     ),
-    new RegExp(`\\b(?:cannot|never)\\s+(?:${termSource})\\b`, "iu"),
-    new RegExp(`\\bnot\\s+(?!only\\b)(?:${termSource})\\b`, "iu"),
+    new RegExp(
+      `\\b(?:cannot|never)\\s+${englishNegationBridgeSource}(?:${termSource})\\b`,
+      "iu",
+    ),
+    new RegExp(
+      `\\bnot\\s+(?!only\\b)${englishNegationBridgeSource}(?:${termSource})\\b`,
+      "iu",
+    ),
     new RegExp(
       `\\b(?:decided\\s+)?against\\s+(?:${termSource})\\b`,
       "iu",
     ),
-    new RegExp(`\\bno\\s+longer\\s+(?:${termSource})\\b`, "iu"),
+    new RegExp(
+      `\\bno\\s+longer\\s+${englishNegationBridgeSource}(?:${termSource})\\b`,
+      "iu",
+    ),
   ]);
 }
 
@@ -241,8 +305,7 @@ const abandonedIntentPatterns = [
   /\b(?:abandon|abandoned|cancelled|canceled|ceased|withdraw|withdrawn)\b/iu,
 ] as const;
 const negatedOpennessPatterns = [
-  /\b(?:are|can|could|did|do|does|had|has|have|is|must|shall|should|was|were|will|would)\s+not\s+(?!only\b)(?:accept|accepted|accepting|apply|available|eligible|invite|open|opened|permit|permitted|welcome)\b/iu,
-  /\b(?:cannot|never)\s+(?:accept|apply|invite|open|permit|welcome)\b/iu,
+  ...negatedEnglishSupportPatterns(englishOpennessSupportTerms),
   /\b(?:closed|ineligible|unavailable)\b/iu,
   /不(?:开放|接受|欢迎)|未开放|不可申请|关闭/u,
 ] as const;
@@ -265,6 +328,8 @@ const englishGlobalAccessActorTerms = [
   "companies",
   "counterparty",
   "counterparties",
+  "distributor",
+  "distributors",
   "entity",
   "entities",
   "laboratory",
@@ -273,6 +338,8 @@ const englishGlobalAccessActorTerms = [
   "organisations",
   "organization",
   "organizations",
+  "partner",
+  "partners",
   "participant",
   "participants",
   "research institution",
@@ -319,6 +386,9 @@ const chineseGlobalAccessActorTerms = [
   "供应商",
   "供货商",
   "厂商",
+  "合作方",
+  "经销商",
+  "分销商",
   "申请人",
   "申请者",
   "研究人员",
@@ -361,7 +431,7 @@ const globalAccessPolicySubjectPatterns = [
     "eligibility",
     "eligible",
   ]),
-  new RegExp(`(?:${chineseGlobalAccessActorSource}|申请|资格|合作方)`, "u"),
+  new RegExp(`(?:${chineseGlobalAccessActorSource}|申请|资格)`, "u"),
 ] as const;
 const allowedEnglishEligibilityScopeTargetPattern =
   new RegExp(
