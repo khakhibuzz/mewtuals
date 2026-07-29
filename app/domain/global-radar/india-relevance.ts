@@ -323,6 +323,9 @@ const indiaSpecificExclusionPatterns = [
   /(?:भारत|भारतीय).{0,60}(?:नहीं|नही|बहिष्कृत|बंद|प्रतिबंधित)|(?:नहीं|नही|बहिष्कृत|बंद|प्रतिबंधित).{0,60}(?:भारत|भारतीय)/u,
   /(?:不接受|不包括|不向|不在|排除)印度|印度(?:除外|被排除|不接受|不包括|不可|不允许)/u,
 ] as const;
+const negatedIndiaSpecificExclusionPatterns = [
+  /\b(?:never|no\s+longer|not(?:\s+(?:currently|explicitly|formally|officially))?)\s+(?:banned|excluded|ineligible|prohibited|unavailable|unwelcome)\b/iu,
+] as const;
 const phraseLevelRelevantNegativePatterns = [
   /不(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放|欢迎)|未(?:接受|招募|运营|制造|分销|收集|采集|安装|部署|服务|维护|扩大|扩张|拓展|开放)/u,
 ] as const;
@@ -744,6 +747,20 @@ function hasIndiaMarker(value: string): boolean {
   );
 }
 
+function originalEvidenceExcludesIndia(
+  item: z.output<typeof candidateEvidenceSchema>,
+): boolean {
+  if (item.sourceKind !== "original" || !hasIndiaMarker(item.originalText)) {
+    return false;
+  }
+  return claimPredicateUnits(item.originalText).some(
+    (unit) =>
+      hasIndiaMarker(unit) &&
+      !matchesAny(unit, negatedIndiaSpecificExclusionPatterns) &&
+      matchesAny(unit, indiaSpecificExclusionPatterns),
+  );
+}
+
 function hasDisallowedResidualAccessScope(value: string): boolean {
   for (const match of value.matchAll(englishResidualAccessScopePattern)) {
     const target = value
@@ -1147,10 +1164,11 @@ export function assessIndiaRelevance(
     ].some((evidenceItems) =>
       evidenceItems.some(
         (item) =>
-          item.sourceKind === "original" &&
-          item.supportedFieldPaths.some((path) =>
-            path.startsWith("indiaRelevance.no_current_India_fit."),
-          ),
+          (item.sourceKind === "original" &&
+            item.supportedFieldPaths.some((path) =>
+              path.startsWith("indiaRelevance.no_current_India_fit."),
+            )) ||
+          originalEvidenceExcludesIndia(item),
       ),
     );
     if (hasOriginalExclusion) {

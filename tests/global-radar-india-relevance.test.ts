@@ -809,6 +809,59 @@ describe("Global Radar India relevance", () => {
     });
   });
 
+  it.each(["evidence", "exclusionEvidence"] as const)(
+    "blocks inferred compatibility when first-party India exclusion appears in %s under a mismatched path",
+    (collection) => {
+      const originalText = "India is excluded from this opportunity.";
+      const exclusionItem = evidence(
+        "worker.mismatchedIndiaRelevance",
+        "original",
+        { originalText, englishSummary: originalText },
+      );
+
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType: "inferred_India_compatible",
+            evidence: collection === "evidence" ? [exclusionItem] : [],
+            exclusionEvidence:
+              collection === "exclusionEvidence" ? [exclusionItem] : [],
+          }),
+        ),
+      ).toEqual({
+        assessed: false,
+        reason: "india_exclusion_present",
+      });
+    },
+  );
+
+  it.each([
+    "India is not excluded from this opportunity; qualified Indian suppliers may apply.",
+    "India is never excluded from this opportunity; qualified Indian suppliers may apply.",
+    "India is no longer excluded from this opportunity; qualified Indian suppliers may apply.",
+  ])(
+    "allows inferred compatibility when original evidence negates India exclusion: %s",
+    (originalText) => {
+      expect(
+        assessIndiaRelevance(
+          assessmentInput({
+            proposedType: "inferred_India_compatible",
+            evidence: [
+              evidence("worker.mismatchedIndiaRelevance", "original", {
+                originalText,
+                englishSummary: "India is excluded from this opportunity.",
+              }),
+            ],
+          }),
+        ),
+      ).toMatchObject({
+        assessed: true,
+        relevanceType: "inferred_India_compatible",
+        basis: "mewtuals_interpretation",
+      });
+    },
+  );
+
   it("preserves an honest no-current-fit result as monitorable with null unknown facts", () => {
     const result = assessIndiaRelevance(
       assessmentInput({
