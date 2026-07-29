@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   publicDiscoveryWorkerConfig,
   readDiscoveryConfig,
 } from "../app/server/discovery-config";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("discovery configuration", () => {
   it("uses the approved India and category defaults", () => {
@@ -135,52 +139,20 @@ describe("discovery configuration", () => {
   );
 
   it("reads process.env when no source is injected", () => {
-    const previousNodeEnv = process.env.NODE_ENV;
-    const previousWorkerSecret = process.env.DISCOVERY_WORKER_SECRET;
-    const previousGeographies = process.env.DISCOVERY_GEOGRAPHIES;
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("DISCOVERY_WORKER_SECRET", undefined);
+    vi.stubEnv("DISCOVERY_GEOGRAPHIES", "India,Singapore");
 
-    try {
-      process.env.NODE_ENV = "test";
-      delete process.env.DISCOVERY_WORKER_SECRET;
-      process.env.DISCOVERY_GEOGRAPHIES = "India,Singapore";
-
-      expect(readDiscoveryConfig().geographies).toEqual(["India", "Singapore"]);
-    } finally {
-      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
-      else process.env.NODE_ENV = previousNodeEnv;
-      if (previousWorkerSecret === undefined) {
-        delete process.env.DISCOVERY_WORKER_SECRET;
-      } else {
-        process.env.DISCOVERY_WORKER_SECRET = previousWorkerSecret;
-      }
-      if (previousGeographies === undefined) {
-        delete process.env.DISCOVERY_GEOGRAPHIES;
-      } else {
-        process.env.DISCOVERY_GEOGRAPHIES = previousGeographies;
-      }
-    }
+    expect(readDiscoveryConfig().geographies).toEqual(["India", "Singapore"]);
   });
 
   it("requires the worker secret for a no-arg default-production read", () => {
-    const previousNodeEnv = process.env.NODE_ENV;
-    const previousWorkerSecret = process.env.DISCOVERY_WORKER_SECRET;
+    vi.stubEnv("NODE_ENV", undefined);
+    vi.stubEnv("DISCOVERY_WORKER_SECRET", undefined);
 
-    try {
-      delete process.env.NODE_ENV;
-      delete process.env.DISCOVERY_WORKER_SECRET;
-
-      expect(() => readDiscoveryConfig()).toThrow(
-        "Invalid discovery configuration: DISCOVERY_WORKER_SECRET is required in production.",
-      );
-    } finally {
-      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
-      else process.env.NODE_ENV = previousNodeEnv;
-      if (previousWorkerSecret === undefined) {
-        delete process.env.DISCOVERY_WORKER_SECRET;
-      } else {
-        process.env.DISCOVERY_WORKER_SECRET = previousWorkerSecret;
-      }
-    }
+    expect(() => readDiscoveryConfig()).toThrow(
+      "Invalid discovery configuration: DISCOVERY_WORKER_SECRET is required in production.",
+    );
   });
 
   it("returns a public worker config without the secret", () => {

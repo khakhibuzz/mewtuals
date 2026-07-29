@@ -234,8 +234,10 @@ function publicShellResponder(
   }
   if (pathname === "/offline") return new Response("offline page", { status: 200 });
   if (pathname === "/app/globals.css") {
-    const accept = !request || typeof request === "string" ? null :
-      "headers" in request ? request.headers.get("accept") : null;
+    const accept =
+      !request || typeof request === "string"
+        ? null
+        : new Headers(request.headers).get("accept");
     return new Response(
       accept?.includes("text/css") ? "public styles" : "development css module",
       { headers: { Vary: "Accept" }, status: 200 },

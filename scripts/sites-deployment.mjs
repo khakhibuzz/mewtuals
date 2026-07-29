@@ -17,6 +17,69 @@ import {
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
+/** @typedef {Readonly<Record<string, string | undefined>>} EnvironmentSource */
+
+/**
+ * @typedef {object} CommandOptions
+ * @property {string} [cwd]
+ * @property {EnvironmentSource} [env]
+ * @property {AbortSignal} [signal]
+ */
+
+/**
+ * @typedef {object} CommandResult
+ * @property {string} stdout
+ * @property {string} [stderr]
+ */
+
+/**
+ * @callback CommandRunner
+ * @param {string} command
+ * @param {string[]} args
+ * @param {CommandOptions} options
+ * @returns {Promise<CommandResult>}
+ */
+
+/**
+ * @typedef {object} SitesDependencies
+ * @property {CommandRunner} run
+ * @property {(message: string) => void} warn
+ * @property {() => Date} now
+ * @property {(size: number) => Buffer} randomBytes
+ * @property {string} temporaryRoot
+ * @property {(source: string, destination: string) => Promise<void>} rename
+ * @property {(pid: number) => boolean} isProcessAlive
+ */
+
+/**
+ * @typedef {object} PreparedSitesDeployment
+ * @property {string} requestPath
+ * @property {string} archivePath
+ * @property {string} sha
+ * @property {string} subject
+ */
+
+/**
+ * @typedef {object} TimerHandle
+ * @property {() => unknown} [unref]
+ */
+
+/**
+ * @typedef {object} ChildControl
+ * @property {(signal?: NodeJS.Signals) => unknown} kill
+ * @property {import("node:events").EventEmitter["once"]} once
+ * @property {import("node:events").EventEmitter["removeListener"]} removeListener
+ * @property {number | null} exitCode
+ */
+
+/**
+ * @callback SpawnProcess
+ * @param {string} command
+ * @param {string[]} args
+ * @param {import("node:child_process").SpawnOptions} options
+ * @returns {import("node:events").EventEmitter}
+ */
+
 export const EXPECTED_PROJECT_ID = "appgprj_6a56979ca26c8191b26abf2a5cd9dc51";
 
 const MARKER_VERSION = 1;
@@ -62,6 +125,17 @@ function waitForCloseOrGrace({
   });
 }
 
+/**
+ * @param {object} options
+ * @param {string} [options.platform]
+ * @param {number} [options.pid]
+ * @param {ChildControl} options.child
+ * @param {SpawnProcess} [options.spawnProcess]
+ * @param {(pid: number, signal?: NodeJS.Signals) => unknown} [options.killProcess]
+ * @param {number} [options.graceMs]
+ * @param {(callback: () => void, milliseconds: number) => TimerHandle} [options.setTimer]
+ * @param {(timer: TimerHandle) => void} [options.clearTimer]
+ */
 export async function terminateChildTree({
   platform = process.platform,
   pid,
@@ -69,8 +143,8 @@ export async function terminateChildTree({
   spawnProcess = spawn,
   killProcess = process.kill.bind(process),
   graceMs = TERMINATION_GRACE_MS,
-  setTimer = setTimeout,
-  clearTimer = clearTimeout,
+  setTimer = (callback, milliseconds) => setTimeout(callback, milliseconds),
+  clearTimer = (timer) => clearTimeout(timer),
 }) {
   if (!pid) {
     killDirectChild(child);
@@ -119,7 +193,17 @@ export async function terminateChildTree({
   }
 }
 
-async function runChild(command, args, { cwd, env = process.env, signal } = {}) {
+/**
+ * @param {string} command
+ * @param {string[]} args
+ * @param {CommandOptions} [options]
+ * @returns {Promise<CommandResult>}
+ */
+async function runChild(
+  command,
+  args,
+  { cwd, env = process.env, signal } = {},
+) {
   const useProcessGroup = process.platform !== "win32";
   const child = spawn(command, args, {
     cwd,
@@ -180,6 +264,7 @@ function isProcessAlive(pid) {
   }
 }
 
+/** @type {Readonly<SitesDependencies>} */
 export const defaultDependencies = Object.freeze({
   run: runChild,
   warn: (message) => console.warn(message),
@@ -300,6 +385,9 @@ async function requireExecutableRegularFile(filePath) {
   return filePath;
 }
 
+/**
+ * @param {{ env?: EnvironmentSource }} [options]
+ */
 export async function resolveSitesPackageScript({ env = process.env } = {}) {
   if (env.SITES_PACKAGE_SCRIPT) {
     return requireExecutableRegularFile(path.resolve(env.SITES_PACKAGE_SCRIPT));
@@ -552,6 +640,16 @@ async function createArtifactAttempt({
   throw new Error("Could not allocate a unique Sites deployment attempt directory.");
 }
 
+/**
+ * @param {object} [options]
+ * @param {string} [options.commitish]
+ * @param {string} [options.repoRoot]
+ * @param {string} [options.outputRoot]
+ * @param {EnvironmentSource} [options.env]
+ * @param {AbortSignal} [options.signal]
+ * @param {Partial<SitesDependencies>} [options.dependencies]
+ * @returns {Promise<PreparedSitesDeployment>}
+ */
 export async function prepareSitesDeployment({
   commitish = "HEAD",
   repoRoot = process.cwd(),

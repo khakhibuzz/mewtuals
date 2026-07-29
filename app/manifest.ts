@@ -1,6 +1,17 @@
 import type { MetadataRoute } from "next";
 
-export default function manifest(): MetadataRoute.Manifest {
+type MewtualsManifestIcon = Omit<
+  NonNullable<MetadataRoute.Manifest["icons"]>[number],
+  "purpose"
+> & {
+  purpose: "any maskable";
+};
+
+type MewtualsManifest = Omit<MetadataRoute.Manifest, "icons"> & {
+  icons: MewtualsManifestIcon[];
+};
+
+export default function manifest(): MewtualsManifest {
   return {
     name: "Mewtuals",
     short_name: "Mewtuals",

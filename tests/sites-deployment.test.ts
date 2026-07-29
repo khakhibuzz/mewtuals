@@ -145,6 +145,13 @@ function processIsAlive(pid: number) {
   }
 }
 
+function createChildProcessDouble() {
+  return Object.assign(new EventEmitter(), {
+    exitCode: null,
+    kill: vi.fn(),
+  });
+}
+
 async function waitForProcessesToExit(pids: number[]) {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     if (pids.every((pid) => !processIsAlive(pid))) return;
@@ -225,7 +232,7 @@ describe("child-tree cancellation", () => {
   test("uses taskkill without a shell for Windows child trees", async () => {
     const taskkill = new EventEmitter();
     const spawnProcess = vi.fn(() => taskkill);
-    const child = { kill: vi.fn() };
+    const child = createChildProcessDouble();
     const terminated = terminateChildTree({
       platform: "win32",
       pid: 4321,
@@ -244,7 +251,7 @@ describe("child-tree cancellation", () => {
   });
 
   test("cooperative POSIX cancellation clears escalation without waiting the grace", async () => {
-    const child = new EventEmitter();
+    const child = createChildProcessDouble();
     const killProcess = vi.fn();
     const scheduled: Array<() => void> = [];
     const clearTimer = vi.fn();
@@ -270,7 +277,7 @@ describe("child-tree cancellation", () => {
   });
 
   test("uncooperative POSIX cancellation escalates the process group to SIGKILL", async () => {
-    const child = new EventEmitter();
+    const child = createChildProcessDouble();
     const killProcess = vi.fn();
     let escalate: (() => void) | undefined;
     const terminated = terminateChildTree({
@@ -293,7 +300,7 @@ describe("child-tree cancellation", () => {
 
   test("falls back to killing the direct Windows child when taskkill fails", async () => {
     const taskkill = new EventEmitter();
-    const child = { kill: vi.fn() };
+    const child = createChildProcessDouble();
     const terminated = terminateChildTree({
       platform: "win32",
       pid: 4321,
@@ -921,12 +928,15 @@ describe("Sites deployment preparation", () => {
     const controller = new AbortController();
     const { run, calls } = createPreparationRunner({ repoRoot: fixture.repoRoot });
     const baseImplementation = run.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Expected the preparation runner to have an implementation.");
+    }
     run.mockImplementation(async (command, args, options) => {
       if (command === "npm" && args.join(" ") === "run lint") {
         controller.abort();
         throw new DOMException("The operation was aborted", "AbortError");
       }
-      return baseImplementation?.(command, args, options);
+      return baseImplementation(command, args, options);
     });
 
     await expect(
@@ -1035,13 +1045,21 @@ describe("Sites deployment CLI", () => {
     let cleanupFinished = false;
     const prepare = vi.fn(
       ({ signal }: { signal: AbortSignal }) =>
-        new Promise((resolve) => {
+        new Promise<{
+          sha: string;
+          subject: string;
+          requestPath: string;
+        }>((resolve) => {
           signal.addEventListener(
             "abort",
             async () => {
               await delay(5);
               cleanupFinished = true;
-              resolve({ sha: FULL_SHA, requestPath: "/unused" });
+              resolve({
+                sha: FULL_SHA,
+                subject: "unused after abort",
+                requestPath: "/unused",
+              });
             },
             { once: true },
           );

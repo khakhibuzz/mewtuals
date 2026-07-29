@@ -2,6 +2,31 @@ import { fileURLToPath } from "node:url";
 
 import { prepareSitesDeployment } from "./sites-deployment.mjs";
 
+/**
+ * @typedef {object} CliPreparationResult
+ * @property {string} sha
+ * @property {string} subject
+ * @property {string} requestPath
+ */
+
+/**
+ * @callback CliPrepare
+ * @param {{ commitish: string, signal: AbortSignal }} options
+ * @returns {Promise<CliPreparationResult>}
+ */
+
+/**
+ * @typedef {object} TextWriter
+ * @property {(text: string) => unknown} write
+ */
+
+/**
+ * @typedef {object} SignalSource
+ * @property {(name: string, listener: () => void) => unknown} once
+ * @property {(name: string, listener: () => void) => unknown} [off]
+ * @property {(name: string, listener: () => void) => unknown} [removeListener]
+ */
+
 const SIGNAL_EXIT_CODES = {
   SIGINT: 130,
   SIGTERM: 143,
@@ -23,6 +48,14 @@ function diagnosticExcerpt(error) {
     .slice(0, 500);
 }
 
+/**
+ * @param {object} [options]
+ * @param {CliPrepare} [options.prepare]
+ * @param {string[]} [options.argv]
+ * @param {TextWriter} [options.stdout]
+ * @param {TextWriter} [options.stderr]
+ * @param {SignalSource} [options.signals]
+ */
 export async function runCli({
   prepare = prepareSitesDeployment,
   argv = process.argv.slice(2),
