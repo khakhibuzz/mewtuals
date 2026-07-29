@@ -490,13 +490,18 @@ Add named checks for integer scores/confidences 0–100, `score_coverage` as int
 Canonicalize the stored LinkedIn organisation URL before persistence and index that stored value; do not add a second denormalized identity column. Primary direct/precursor ownership remains `global_entity_id`; association roles are only supporting/contributor.
 
 Use a GIN-indexed bounded canonical `stable_public_identifiers` text array and a
-nullable canonical corporate-group identifier on entities. Persist a bounded
+nullable bounded canonical application-ID text `canonical_corporate_group_id`
+on entities (not a UUID or self-reference). Persist a bounded
 immutable run plan snapshot with its fingerprint. Enforce the active
-`(dedupe_version, dedupe_key)` signal identity, direct-only evergreen fields,
-and non-applicable policy/version nullability. A momentum evidence contributor
-may reference its entity directly; the repository requires contributor binding
-for momentum. A China-effective watchlist configuration requires its Chinese
-category term at the domain/repository boundary.
+`(dedupe_version, dedupe_key)` signal identity with the exact partial predicate
+`merged_into_signal_id IS NULL`; dismissed/expired unmerged rows still own the
+key. `dedupe_version` is required. Direct rows require `evergreen`, require
+`reobserve_by` iff evergreen, and non-direct rows keep both null. A momentum
+evidence contributor may reference its entity directly; `source_family` and
+`is_syndicated` are required, and the repository requires contributor binding
+for momentum. Watchlists use exact `category_search_term_en` and
+`category_search_term_zh_cn` columns; a China-effective configuration requires
+the latter at the domain/repository boundary.
 
 - [ ] **Step 4: Generate and inspect the migration**
 

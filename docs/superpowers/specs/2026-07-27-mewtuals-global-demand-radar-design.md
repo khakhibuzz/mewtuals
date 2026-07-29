@@ -617,8 +617,8 @@ Stores the primary signal contract:
   taxonomy consistency, and evidence quality;
 - nullable `direct_demand_score`, `precursor_score`, `momentum_score`, score
   coverage, and score-policy version;
-- nullable `announced_at`, `effective_from`, `expires_at`, direct-only
-  `evergreen` and nullable `reobserve_by`, plus required `observed_at`;
+- nullable `announced_at`, `effective_from`, `expires_at`, direct-only required
+  boolean `evergreen` and nullable `reobserve_by`, plus required `observed_at`;
 - status: `newly_discovered | needs_review | monitoring | qualified |
   dismissed | expired | promoted`;
 - nullable public response path type/URL/business email and partner application
@@ -638,8 +638,11 @@ It additionally stores:
 Class checks require only the fields appropriate to the discriminator. There is
 no generic opportunity score. Non-applicable class-specific component and
 composite columns must be null, enforced in both the domain schema and database
-checks. Active signal identity is unique on `(dedupe_version, dedupe_key)`;
-merged historical versions remain inspectable.
+checks. Direct demand requires `evergreen`; `reobserve_by` is required if and
+only if that flag is true. Both columns are null for non-direct classes. Active
+signal identity is a partial unique index on `(dedupe_version, dedupe_key)`
+where `merged_into_signal_id IS NULL`; dismissed and expired unmerged rows
+continue to own the key, while merged historical versions remain inspectable.
 
 ### `global_radar_signal_entities`
 
@@ -666,10 +669,10 @@ fingerprint prevents duplicates within a signal.
 ### `global_signal_evidence`
 
 Stores `id`, signal and run IDs, nullable contributor `global_entity_id`, source
-URL/name/type/language/country, `source_family`,
+URL/name/type/language/country, required `source_family`,
 evidence claim, permitted concise source excerpt, separate English summary,
 nullable published date, observed date, evidence confidence, translation
-confidence, primary-source flag, `is_syndicated`, direct-demand support flag, India-relevance
+confidence, primary-source flag, required `is_syndicated`, direct-demand support flag, India-relevance
 support flag, bounded raw metadata, and created timestamp. It also stores the
 canonical URL, evidence fingerprint, and `supported_field_paths`.
 Those field paths provide field-level provenance. Unique
@@ -687,8 +690,8 @@ state.
 ### `global_radar_watchlist_entries`
 
 Stores configurable entity monitoring: entity ID, enabled/paused state,
-priority, one `theme`, `category`, required English category search term,
-nullable Chinese category search term, countries, languages, cadence, next
+priority, one `theme`, `category`, required `category_search_term_en`, nullable
+`category_search_term_zh_cn`, countries, languages, cadence, next
 scan, reason, creator, revision, and timestamps. The domain/repository boundary
 requires the Chinese term whenever China is effective work. No watchlist values
 are hard-coded into workflow logic. Disabling an entry preserves the row and
