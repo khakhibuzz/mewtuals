@@ -174,6 +174,30 @@ export const candidateEvidenceSourceKinds = [
   "search_result",
 ] as const;
 
+export const sensitiveDataCategories = [
+  "faces",
+  "voices",
+  "biometrics",
+  "gaze",
+  "health",
+  "children",
+  "home_interiors",
+  "workplace_monitoring",
+  "precise_location",
+  "road_users",
+  "employee_data",
+  "industrial_secrets",
+  "defence_or_dual_use",
+  "copyrighted_material",
+  "export_controls",
+] as const;
+
+export const sensitiveDataFlagStates = [
+  "not_observed",
+  "possible",
+  "severe",
+] as const;
+
 export const radarRejectionReasons = [
   "insufficient_evidence",
   "invalid_evidence",
@@ -218,6 +242,12 @@ export const precursorDevelopmentTypeLookup = createLookup(
 );
 export const candidateEvidenceSourceKindLookup = createLookup(
   candidateEvidenceSourceKinds,
+);
+export const sensitiveDataCategoryLookup = createLookup(
+  sensitiveDataCategories,
+);
+export const sensitiveDataFlagStateLookup = createLookup(
+  sensitiveDataFlagStates,
 );
 export const radarRejectionReasonLookup = createLookup(
   radarRejectionReasons,
@@ -436,6 +466,35 @@ export const boundedRecordSchema = z.preprocess(
 
 export const scoreComponentSchema = z.number().int().min(0).max(100);
 export const confidenceSchema = scoreComponentSchema;
+
+const nullableSensitiveDataFlagSchema = z
+  .enum(sensitiveDataFlagStates)
+  .nullable();
+export type SensitiveDataCategory =
+  (typeof sensitiveDataCategories)[number];
+const sensitiveDataFlagShape = Object.fromEntries(
+  sensitiveDataCategories.map((category) => [
+    category,
+    nullableSensitiveDataFlagSchema,
+  ]),
+) as Record<SensitiveDataCategory, typeof nullableSensitiveDataFlagSchema>;
+
+export const sensitiveDataFlagsSchema = z.strictObject(
+  sensitiveDataFlagShape,
+);
+
+export const complianceFactsSchema = z.strictObject({
+  consent: z.boolean().nullable(),
+  deIdentification: z.boolean().nullable(),
+  legalReview: z.boolean().nullable(),
+  knownResidencyRequirements: z.boolean().nullable(),
+  participantRightsComplexity: z.boolean().nullable(),
+});
+
+export const sensitiveDataAndComplianceSchema = z.strictObject({
+  sensitiveDataFlags: sensitiveDataFlagsSchema,
+  complianceFacts: complianceFactsSchema,
+});
 export const isoTimestampSchema = z.string().datetime({ offset: true });
 
 export const businessEmailSchema = z
@@ -812,6 +871,8 @@ export type PrecursorDevelopmentType =
   (typeof precursorDevelopmentTypes)[number];
 export type CandidateEvidenceSourceKind =
   (typeof candidateEvidenceSourceKinds)[number];
+export type SensitiveDataFlagState =
+  (typeof sensitiveDataFlagStates)[number];
 export type RadarRejectionReason = (typeof radarRejectionReasons)[number];
 export type DirectDemandAsk = Readonly<z.infer<typeof directDemandAskSchema>>;
 export type CandidateEvidence = Readonly<
@@ -824,6 +885,9 @@ export type EvidenceCandidate = Readonly<
   z.infer<typeof evidenceCandidateSchema>
 >;
 export type SignalGateFacts = Readonly<z.infer<typeof signalGateFactsSchema>>;
+export type SensitiveDataAndCompliance = Readonly<
+  z.infer<typeof sensitiveDataAndComplianceSchema>
+>;
 export type ClassificationResult = Readonly<
   z.infer<typeof classificationResultSchema>
 >;

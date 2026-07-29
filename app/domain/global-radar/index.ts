@@ -9,6 +9,7 @@ export {
   candidateEvidenceSchema,
   candidateEvidenceSourceKindLookup,
   candidateEvidenceSourceKinds,
+  complianceFactsSchema,
   confidenceSchema,
   classificationResultSchema,
   directDemandAskSchema,
@@ -46,6 +47,12 @@ export {
   requirementKinds,
   requirementSchema,
   scoreComponentSchema,
+  sensitiveDataAndComplianceSchema,
+  sensitiveDataCategories,
+  sensitiveDataCategoryLookup,
+  sensitiveDataFlagsSchema,
+  sensitiveDataFlagStateLookup,
+  sensitiveDataFlagStates,
   serializedJsonByteLength,
   signalClassLookup,
   signalClasses,
@@ -79,6 +86,9 @@ export type {
   RadarScanMode,
   RequirementDraft,
   RequirementKind,
+  SensitiveDataAndCompliance,
+  SensitiveDataCategory,
+  SensitiveDataFlagState,
   SignalClass,
   SignalDraft,
   SignalGateFacts,
@@ -87,6 +97,53 @@ export type {
 } from "./contracts";
 
 export { classifySignal } from "./classification";
+
+export {
+  assessIndiaRelevance,
+  indiaEvidenceFactKinds,
+  indiaRelevanceAssessmentFailureReasons,
+  indiaRelevanceAssessmentSchema,
+  indiaRelevanceInputSchema,
+} from "./india-relevance";
+
+export type {
+  IndiaRelevanceAssessment,
+  IndiaRelevanceInput,
+} from "./india-relevance";
+
+export {
+  normalizedRequirementInputSchema,
+  normalizedRequirementSchema,
+  normalizeRequirements,
+} from "./requirements";
+
+export type {
+  NormalizedRequirement,
+  NormalizedRequirementInput,
+  RequirementNormalizationResult,
+} from "./requirements";
+
+export {
+  assessComplianceReview,
+  complianceReviewInputSchema,
+  complianceReviewReasons,
+  complianceReviewResultSchema,
+  hardwareStackChain,
+  physicalDataStackChain,
+  systemsContextSchema,
+  systemsContextValidationInputSchema,
+  systemsStackLayerSchema,
+  validateSystemsContext,
+} from "./systems-context";
+
+export type {
+  ComplianceReviewInput,
+  ComplianceReviewResult,
+  SystemsContext,
+  SystemsContextValidationInput,
+  SystemsContextValidationResult,
+  SystemsStackLayer,
+} from "./systems-context";
 
 export {
   canonicalizeEvidenceUrl,
