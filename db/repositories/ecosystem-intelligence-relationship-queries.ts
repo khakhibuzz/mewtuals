@@ -62,9 +62,10 @@ async function loadRelationships(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["relationships"]> {
-  const [stats] = await transaction.execute<RelationshipStatsRow>(withFilteredCandidates(filters, now, sql`
+  const [stats] = await transaction.execute<RelationshipStatsRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
     , spanned_candidates as (
       select source_candidate_id as id from drawable_relationships
       union
@@ -80,7 +81,7 @@ async function loadRelationships(
     candidates: number(stats?.candidateCount),
     unresolvedTargets: number(stats?.unresolvedTargetCount),
   });
-  const graphRows = await transaction.execute<GraphNodeRow | GraphEdgeRow>(withFilteredCandidates(filters, now, sql`
+  const graphRows = await transaction.execute<GraphNodeRow | GraphEdgeRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
     , resolved_edges as (
       select relationship.* from drawable_relationships relationship
     ),

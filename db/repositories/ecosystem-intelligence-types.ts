@@ -238,7 +238,7 @@ export type EcosystemCandidateDetail = {
   discoveredAt: Date;
   updatedAt: Date;
   publicUrls: {
-    canonical: string;
+    canonical: string | null;
     website: string | null;
     linkedin: string | null;
     primarySocial: string | null;

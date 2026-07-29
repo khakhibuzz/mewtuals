@@ -82,9 +82,10 @@ async function loadPopulationAndSummary(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
 ): Promise<SummaryRow> {
   const [summary] = await transaction.execute<SummaryRow>(
-    withFilteredCandidates(filters, now, sql`
+    withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
       select
         md5(coalesce(string_agg(filtered.id::text, ',' order by filtered.id), '')) as "fingerprint",
         count(*)::integer as "total",
@@ -183,10 +184,11 @@ async function loadGeography(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
   unresolvedCount: number,
 ): Promise<EcosystemSnapshot["geography"]> {
-  const rows = await transaction.execute<GeographyRow>(withFilteredCandidates(filters, now, sql`
+  const rows = await transaction.execute<GeographyRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
     select
       'state'::text as "dimension",
       state_key as "key",
@@ -252,9 +254,10 @@ async function loadExplorer(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["explorer"]> {
-  const rows = await transaction.execute<ExplorerRow>(withFilteredCandidates(filters, now, sql`
+  const rows = await transaction.execute<ExplorerRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
     , facet_membership as (
       select distinct classification.kind, classification.term_key, candidate.id, candidate.name,
         (candidate.evidence_score >= 80 and candidate.classification_state = 'evidence_backed') as strong_evidence
@@ -360,9 +363,10 @@ async function loadMatrices(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["matrices"]> {
-  const rows = await transaction.execute<MatrixRow>(withFilteredCandidates(filters, now, sql`
+  const rows = await transaction.execute<MatrixRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
     , candidate_roles as (
       select distinct candidate.id, role.term_key as key, candidate.evidence_score, candidate.classification_state
       from filtered_candidates candidate
@@ -446,21 +450,40 @@ export async function loadEcosystemOverview(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
 ): Promise<Pick<
   EcosystemSnapshot,
   "population" | "summary" | "dataQuality" | "geography" | "explorer" | "matrices" | "insights"
 >> {
-  const summaryRow = await loadPopulationAndSummary(transaction, filters, now);
+  const summaryRow = await loadPopulationAndSummary(
+    transaction,
+    filters,
+    now,
+    validPublicContactCandidateIds,
+  );
   const total = number(summaryRow.total);
   const geography = await loadGeography(
     transaction,
     filters,
     now,
+    validPublicContactCandidateIds,
     total,
     number(summaryRow.unknownState),
   );
-  const explorer = await loadExplorer(transaction, filters, now, total);
-  const matrices = await loadMatrices(transaction, filters, now, total);
+  const explorer = await loadExplorer(
+    transaction,
+    filters,
+    now,
+    validPublicContactCandidateIds,
+    total,
+  );
+  const matrices = await loadMatrices(
+    transaction,
+    filters,
+    now,
+    validPublicContactCandidateIds,
+    total,
+  );
   const topState = geography.states[0];
   const resolvedHeadquarters = total - number(summaryRow.unknownState);
   const insights = buildResearchGapInsights({

@@ -150,6 +150,7 @@ async function loadLedger(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   total: number,
 ): Promise<EcosystemSnapshot["ledger"]> {
   const sortExpression: SQL = filters.sort === "name"
@@ -160,7 +161,7 @@ async function loadLedger(
         ? sql`candidate.evidence_score`
         : sql`candidate.discovered_at`;
   const orderExpression = filters.direction === "asc" ? asc(sortExpression) : desc(sortExpression);
-  const rows = await transaction.execute<LedgerRow>(withFilteredCandidates(filters, now, sql`
+  const rows = await transaction.execute<LedgerRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
     select
       candidate.id as "id",
       candidate.type::text as "type",
@@ -254,9 +255,10 @@ async function loadFilterOptions(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["filterOptions"]> {
-  const rows = await transaction.execute<OptionRow>(withFilteredCandidates(filters, now, sql`
+  const rows = await transaction.execute<OptionRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
     , city_option_counts as (
       select coalesce(city_key, 'unknown') as key, count(*)::integer as count
       from filtered_candidates
@@ -275,10 +277,7 @@ async function loadFilterOptions(
     city_options as (
       select key, count
       from ranked_known_city_options
-      where option_rank <= ${MAX_FILTER_OPTIONS} - case
-        when exists (select 1 from city_option_counts where key = 'unknown') then 1
-        else 0
-      end
+      where option_rank <= ${MAX_FILTER_OPTIONS}
       union all
       select key, count from city_option_counts where key = 'unknown'
     )
@@ -383,10 +382,23 @@ export async function loadEcosystemDirectory(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
 ): Promise<Pick<EcosystemSnapshot, "ledger" | "filterOptions">> {
   return {
-    ledger: await loadLedger(transaction, filters, now, denominator),
-    filterOptions: await loadFilterOptions(transaction, filters, now, denominator),
+    ledger: await loadLedger(
+      transaction,
+      filters,
+      now,
+      validPublicContactCandidateIds,
+      denominator,
+    ),
+    filterOptions: await loadFilterOptions(
+      transaction,
+      filters,
+      now,
+      validPublicContactCandidateIds,
+      denominator,
+    ),
   };
 }

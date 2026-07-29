@@ -81,9 +81,10 @@ async function loadVelocity(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["velocity"]> {
-  const rows = await transaction.execute<VelocityRow>(withFilteredCandidates(filters, now, sql`
+  const rows = await transaction.execute<VelocityRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
     , windows(days) as (values (7), (30), (90)),
     candidate_activity as (
       select candidate.*,
@@ -184,9 +185,10 @@ async function loadMomentum(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
 ): Promise<EcosystemSnapshot["momentum"]> {
-  const [row] = await transaction.execute<MomentumAggregateRow>(withFilteredCandidates(filters, now, sql`
+  const [row] = await transaction.execute<MomentumAggregateRow>(withFilteredCandidates(filters, now, validPublicContactCandidateIds, sql`
     , active_signals as (
       select
         signal.id,
@@ -319,10 +321,23 @@ export async function loadEcosystemChange(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
 ): Promise<Pick<EcosystemSnapshot, "velocity" | "momentum">> {
   return {
-    velocity: await loadVelocity(transaction, filters, now, denominator),
-    momentum: await loadMomentum(transaction, filters, now, denominator),
+    velocity: await loadVelocity(
+      transaction,
+      filters,
+      now,
+      validPublicContactCandidateIds,
+      denominator,
+    ),
+    momentum: await loadMomentum(
+      transaction,
+      filters,
+      now,
+      validPublicContactCandidateIds,
+      denominator,
+    ),
   };
 }

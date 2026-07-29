@@ -17,8 +17,8 @@ import {
 } from "../schema";
 import {
   activeSignalPredicate,
+  httpEvidenceUrlPredicate,
   inferenceValues,
-  publicHttpUrlPredicate,
   publicHttpUrlOrNull,
   signalFreshnessValues,
 } from "./ecosystem-intelligence-query";
@@ -244,7 +244,7 @@ async function loadCandidateDetail(
       left join ${discoveryCandidates} target_candidate
         on target_candidate.id = relationship.target_candidate_id
       where relationship.source_candidate_id = ${candidateId}
-        and ${publicHttpUrlPredicate(sql`relationship.evidence_url`)}
+        and ${httpEvidenceUrlPredicate(sql`relationship.evidence_url`)}
       union all
       select
         relationship.id,
@@ -264,7 +264,7 @@ async function loadCandidateDetail(
       join ${discoveryCandidates} target_candidate
         on target_candidate.id = relationship.target_candidate_id
       where relationship.target_candidate_id = ${candidateId}
-        and ${publicHttpUrlPredicate(sql`relationship.evidence_url`)}
+        and ${httpEvidenceUrlPredicate(sql`relationship.evidence_url`)}
     ) evidenced_relationship
     order by "sortAt" desc, "direction", "id"
     limit ${MAX_DETAIL_RELATIONSHIPS}

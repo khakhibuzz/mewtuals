@@ -11,9 +11,9 @@ import {
 } from "../app/domain/ecosystem-intelligence";
 import { normalizePublicDiscoveryUrl } from "../app/domain/discovery";
 import { closeDb, getDb } from "../db/client";
-import { publicHttpUrlPredicate } from "../db/repositories/ecosystem-intelligence-query";
 import {
   createEcosystemIntelligenceRepository,
+  type EcosystemCandidateDetail,
   type EcosystemSnapshot,
 } from "../db/repositories/ecosystem-intelligence-repository";
 import {
@@ -497,15 +497,21 @@ afterAll(async () => {
 });
 
 describe("Ecosystem Intelligence analytical repository", () => {
-  it("keeps the set-based public URL predicate aligned with the domain validator", async () => {
+  it("derives all public-contact truth from the canonical domain validator", async () => {
     const urls = [
       "https://example.com/profile",
       " HTTPS://Example.COM/team#founders ",
+      "https://münich.com/profile",
       "https://xn--mnich-kva.com/profile",
       "http://sub.example.com:8080/path?q=1#evidence",
       "https://bad_host.example/profile",
       "https://8.8.8.8/profile",
+      "http://0x08080808/profile",
+      "http://010.010.010.010/profile",
+      "http://134744072/profile",
       "https://8.8.8.8:65535/profile",
+      "https://example.com:443/profile",
+      "https://example.com:00443/profile",
       "https://[2606:4700:4700::1111]/profile",
       "https://[64:ff9b::808:808]/profile",
       "https://[2001:1::1]/profile",
@@ -526,6 +532,9 @@ describe("Ecosystem Intelligence analytical repository", () => {
       "http://service.lan/profile",
       "http://0.1.2.3/profile",
       "http://10.20.30.40/profile",
+      "http://0x7f000001/profile",
+      "http://0177.0.0.1/profile",
+      "http://2130706433/profile",
       "http://100.64.0.1/profile",
       "http://100.127.255.255/profile",
       "http://127.0.0.1/profile",
@@ -561,18 +570,82 @@ describe("Ecosystem Intelligence analytical repository", () => {
       "https://example.com:65536/profile",
       "https://example.com:99999/profile",
     ];
-
-    for (const url of urls) {
-      let domainValid = true;
+    const runId = await createRun("url-parity", "robotics_hardware_india", recent);
+    const candidates: FixtureCandidate[] = [];
+    const normalizedById = new Map<string, string | null>();
+    for (const [index, url] of urls.entries()) {
+      const candidate = await createCandidate({
+        suffix: `url-parity-${index.toString().padStart(3, "0")}`,
+        runId,
+        name: `URL parity ${index.toString().padStart(3, "0")}`,
+        status: "rejected",
+        score: 99,
+        websiteUrl: url,
+        linkedinUrl: null,
+        discoveredAt: recent,
+        researchAt: recent,
+        sourceAt: recent,
+      });
+      candidates.push(candidate);
+      let normalized: string | null = null;
       try {
-        normalizePublicDiscoveryUrl(url);
+        normalized = normalizePublicDiscoveryUrl(url);
       } catch {
-        domainValid = false;
+        normalized = null;
       }
-      const [row] = await database.execute<{ valid: boolean }>(sql`
-        select ${publicHttpUrlPredicate(sql`${url}::text`)} as "valid"
-      `);
-      expect(row?.valid, url).toBe(domainValid);
+      normalizedById.set(candidate.id, normalized);
+    }
+
+    const validIds = candidates.filter(({ id }) => normalizedById.get(id) !== null).map(({ id }) => id);
+    const invalidIds = candidates.filter(({ id }) => normalizedById.get(id) === null).map(({ id }) => id);
+    const baseFilters = {
+      reviewStatus: "rejected",
+      minimumDiscoveryConfidence: "99",
+      pageSize: "100",
+    };
+    try {
+      const all = await repository.getSnapshot(parseEcosystemFilters(baseFilters), now);
+      assertSharedPopulation(all, candidates.map(({ id }) => id));
+      expect(all.summary.publiclyReachable).toEqual({
+        numerator: validIds.length,
+        denominator: candidates.length,
+        percentage: Math.round((validIds.length / candidates.length) * 100),
+      });
+      expect(all.dataQuality.publicContact).toEqual(all.summary.publiclyReachable);
+      expect(all.filterOptions.publicContacts).toEqual([
+        { key: "available", label: "Available", count: validIds.length },
+        { key: "missing", label: "Missing", count: invalidIds.length },
+      ]);
+      for (const row of all.ledger.items) {
+        expect(row.websiteUrl, row.name).toBe(normalizedById.get(row.id));
+      }
+
+      const available = await repository.getSnapshot(
+        parseEcosystemFilters({ ...baseFilters, publicContact: "available" }),
+        now,
+      );
+      assertSharedPopulation(available, validIds);
+      expect(available.summary.publiclyReachable).toEqual({
+        numerator: validIds.length,
+        denominator: validIds.length,
+        percentage: validIds.length === 0 ? 0 : 100,
+      });
+      expect(new Set(available.ledger.items.map(({ id }) => id))).toEqual(new Set(validIds));
+      expect(available.ledger.items.every(({ websiteUrl }) => websiteUrl !== null)).toBe(true);
+
+      const missing = await repository.getSnapshot(
+        parseEcosystemFilters({ ...baseFilters, publicContact: "missing" }),
+        now,
+      );
+      assertSharedPopulation(missing, invalidIds);
+      expect(missing.summary.publiclyReachable.numerator).toBe(0);
+      expect(new Set(missing.ledger.items.map(({ id }) => id))).toEqual(new Set(invalidIds));
+      expect(missing.ledger.items.every(({ websiteUrl }) => websiteUrl === null)).toBe(true);
+    } finally {
+      await database.delete(discoveryCandidates).where(
+        inArray(discoveryCandidates.id, candidates.map(({ id }) => id)),
+      );
+      await database.delete(discoveryRuns).where(eq(discoveryRuns.id, runId));
     }
   });
 
@@ -738,6 +811,224 @@ describe("Ecosystem Intelligence analytical repository", () => {
       expect.objectContaining({ key: "bengaluru", count: 1 }),
       expect.objectContaining({ key: "unknown", count: 1 }),
     ]);
+  });
+
+  it("keeps a uniquely distinguishable filtered candidate isolated in every snapshot section", async () => {
+    const runId = await createRun("isolated-population", "robotics_hardware_india", recent);
+    const isolated = await createCandidate({
+      suffix: "isolated-population",
+      runId,
+      name: "Isolated Validation Works",
+      category: "unregistered isolated category",
+      status: "shortlisted",
+      score: 98,
+      discoveredAt: recent,
+      researchAt: recent,
+      sourceAt: recent,
+    });
+    const outsideTarget = await createCandidate({
+      suffix: "isolated-outside-target",
+      runId,
+      name: "Outside Relationship Target",
+      category: "unregistered outside category",
+      status: "shortlisted",
+      score: 97,
+      discoveredAt: recent,
+      researchAt: recent,
+      sourceAt: recent,
+    });
+    const classificationRows = [
+      ["ecosystem_domain", "physical_ai"],
+      ["organisation_subtype", "manufacturer"],
+      ["ecosystem_role", "manufacturer"],
+      ["business_stage", "subsystem_engineering"],
+      ["technical_layer", "integration_and_safety"],
+      ["capability", "industrial_automation"],
+      ["component_category", "controllers"],
+      ["robotics_vertical", "inspection_and_maintenance"],
+    ] as const;
+    await database.insert(candidateEcosystemClassifications).values(
+      classificationRows.map(([kind, termKey]) => ({
+        candidateId: isolated.id,
+        kind,
+        termKey,
+        evidenceState: "evidence_backed" as const,
+        confidence: 96,
+        basis: `Isolated public evidence supports ${termKey}.`,
+        sourceUrls: [`${isolated.canonicalUrl}/${termKey}`],
+        createdAt: recent,
+        updatedAt: recent,
+      })),
+    );
+    await database.insert(candidateHeadquarters).values({
+      candidateId: isolated.id,
+      countryCode: "IN",
+      stateKey: "odisha",
+      stateLabel: "Odisha",
+      cityKey: "cuttack_test_lab",
+      cityLabel: "Cuttack Test Lab",
+      evidenceState: "evidence_backed",
+      confidence: 96,
+      sourceUrls: [`${isolated.canonicalUrl}/headquarters`],
+      createdAt: recent,
+      updatedAt: recent,
+    });
+    await database.update(discoveryCandidateSources).set({
+      sourceName: "isolated-validation-registry",
+      sourceUrl: `${isolated.canonicalUrl}/isolated-source`,
+    }).where(eq(discoveryCandidateSources.candidateId, isolated.id));
+    await database.insert(candidatePublicSignals).values({
+      candidateId: isolated.id,
+      signalType: "certification",
+      title: "Isolated validation certification",
+      occurredAt: recent,
+      sourceUrl: `${isolated.canonicalUrl}/certification`,
+      confidence: 96,
+      evidenceKey: `isolated-signal-${testId}`,
+      createdAt: recent,
+      updatedAt: recent,
+    });
+    await database.insert(candidateRelationships).values([
+      {
+        sourceCandidateId: isolated.id,
+        targetCandidateId: outsideTarget.id,
+        relationshipType: "tests_with",
+        evidenceUrl: `${isolated.canonicalUrl}/outside-relationship`,
+        confidence: 96,
+        observedAt: recent,
+        evidenceKey: `isolated-relationship-outside-${testId}`,
+        createdAt: recent,
+        updatedAt: recent,
+      },
+      {
+        sourceCandidateId: isolated.id,
+        targetPublicName: "Unresolved Isolated Partner",
+        relationshipType: "tests_with",
+        evidenceUrl: `${isolated.canonicalUrl}/unresolved-relationship`,
+        confidence: 96,
+        observedAt: recent,
+        evidenceKey: `isolated-relationship-unresolved-${testId}`,
+        createdAt: recent,
+        updatedAt: recent,
+      },
+    ]);
+
+    try {
+      const filters = parseEcosystemFilters({
+        reviewStatus: "shortlisted",
+        minimumDiscoveryConfidence: "98",
+        capability: "industrial_automation",
+        pageSize: "100",
+      });
+      const snapshot = await repository.getSnapshot(filters, now);
+      assertSharedPopulation(snapshot, [isolated.id]);
+      expect(snapshot.geography).toMatchObject({
+        states: [expect.objectContaining({ key: "odisha", count: 1 })],
+        cities: [expect.objectContaining({
+          key: "cuttack_test_lab",
+          stateKey: "odisha",
+          count: 1,
+        })],
+        unresolvedCount: 0,
+      });
+      expect(snapshot.explorer.businessStages.filter(({ count }) => count > 0)).toEqual([
+        expect.objectContaining({
+          key: "subsystem_engineering",
+          count: 1,
+          representativeCompanies: [{ id: isolated.id, name: isolated.name }],
+        }),
+      ]);
+      expect(snapshot.explorer.technicalLayers.filter(({ count }) => count > 0)).toEqual([
+        expect.objectContaining({
+          key: "integration_and_safety",
+          count: 1,
+          representativeCompanies: [{ id: isolated.id, name: isolated.name }],
+        }),
+      ]);
+      expect(snapshot.matrices.roleByCapability.cells.filter(({ count }) => count > 0)).toEqual([
+        expect.objectContaining({
+          rowKey: "manufacturer",
+          columnKey: "industrial_automation",
+          count: 1,
+        }),
+      ]);
+      expect(snapshot.matrices.stateByRole.cells.filter(({ count }) => count > 0)).toEqual([
+        expect.objectContaining({ rowKey: "odisha", columnKey: "manufacturer", count: 1 }),
+      ]);
+      expect(snapshot.insights.items).toEqual([]);
+      for (const window of snapshot.velocity.windows) {
+        expect(window).toMatchObject({
+          candidateCount: 1,
+          researchVersionCount: 1,
+          sourceEvidenceCount: 1,
+          byCandidateDate: [{ key: "2026-07-27", label: "2026-07-27", count: 1 }],
+          bySource: [{
+            key: "isolated-validation-registry",
+            label: "isolated-validation-registry",
+            count: 1,
+          }],
+          byRole: [{ key: "manufacturer", label: "manufacturer", count: 1 }],
+          byState: [{ key: "odisha", label: "odisha", count: 1 }],
+          byEvidenceBand: [{ key: "strong", label: "strong", count: 1 }],
+          byReviewStatus: [{ key: "shortlisted", label: "shortlisted", count: 1 }],
+        });
+      }
+      expect(snapshot.momentum).toMatchObject({
+        ready: false,
+        activeSignalCount: 1,
+        organisationCount: 1,
+        companies: [],
+        signals: [],
+      });
+      expect(snapshot.relationships).toMatchObject({
+        ready: false,
+        evidencedEdgeCount: 0,
+        candidateCount: 0,
+        unresolvedTargetCount: 1,
+        nodes: [],
+        edges: [],
+      });
+      expect(snapshot.ledger.items).toEqual([
+        expect.objectContaining({
+          id: isolated.id,
+          name: isolated.name,
+          activeSignalCount: 1,
+          documentedRelationshipCount: 1,
+          latestSourceUrl: `${isolated.canonicalUrl}/isolated-source`,
+        }),
+      ]);
+      expect(snapshot.filterOptions.headquartersStates.filter(({ count }) => count > 0)).toEqual([
+        { key: "odisha", label: "odisha", count: 1 },
+      ]);
+      expect(snapshot.filterOptions.headquartersCities).toEqual([
+        { key: "cuttack_test_lab", label: "cuttack_test_lab", count: 1 },
+      ]);
+      expect(snapshot.filterOptions.taxonomy.ecosystem_role.filter(({ count }) => count > 0))
+        .toEqual([expect.objectContaining({ key: "manufacturer", count: 1 })]);
+      expect(snapshot.filterOptions.taxonomy.business_stage.filter(({ count }) => count > 0))
+        .toEqual([expect.objectContaining({ key: "subsystem_engineering", count: 1 })]);
+      expect(snapshot.filterOptions.taxonomy.technical_layer.filter(({ count }) => count > 0))
+        .toEqual([expect.objectContaining({ key: "integration_and_safety", count: 1 })]);
+      expect(snapshot.filterOptions.taxonomy.capability.filter(({ count }) => count > 0))
+        .toEqual([expect.objectContaining({ key: "industrial_automation", count: 1 })]);
+      expect(snapshot.filterOptions.activeSignalTypes.filter(({ count }) => count > 0)).toEqual([
+        expect.objectContaining({ key: "certification", count: 1 }),
+      ]);
+      expect(snapshot.filterOptions.publicContacts).toEqual([
+        { key: "available", label: "Available", count: 1 },
+        { key: "missing", label: "Missing", count: 0 },
+      ]);
+      expect(snapshot.filterOptions.evidenceCoverageBands).toContainEqual({
+        key: "strong",
+        label: "strong",
+        count: 1,
+      });
+    } finally {
+      await database.delete(discoveryCandidates).where(
+        inArray(discoveryCandidates.id, [isolated.id, outsideTarget.id]),
+      );
+      await database.delete(discoveryRuns).where(eq(discoveryRuns.id, runId));
+    }
   });
 
   it("returns typed zero-safe aggregates, inference precedence, exact readiness, and stable pagination", async () => {
@@ -964,7 +1255,7 @@ describe("Ecosystem Intelligence analytical repository", () => {
       const sharedCities = snapshot.geography.cities.filter(({ key }) => key === "shared_city");
       expect(sharedCities).toHaveLength(2);
       expect(sharedCities.map(({ stateKey }) => stateKey).sort()).toEqual(["karnataka", "tamil_nadu"]);
-      expect(snapshot.filterOptions.headquartersCities).toHaveLength(50);
+      expect(snapshot.filterOptions.headquartersCities).toHaveLength(51);
       expect(snapshot.filterOptions.headquartersCities[0]).toMatchObject({ key: "shared_city", count: 2 });
       expect(snapshot.filterOptions.headquartersCities.some(({ key }) => key === "legacy-invalid-city"))
         .toBe(false);
@@ -973,8 +1264,10 @@ describe("Ecosystem Intelligence analytical repository", () => {
         label: "unknown",
         count: 1,
       });
-      expect(snapshot.filterOptions.headquartersCities.slice(1).map(({ key }) => key)).toEqual(
-        snapshot.filterOptions.headquartersCities.slice(1).map(({ key }) => key).sort(),
+      const knownCityOptions = snapshot.filterOptions.headquartersCities.filter(({ key }) => key !== "unknown");
+      expect(knownCityOptions).toHaveLength(50);
+      expect(knownCityOptions.slice(1).map(({ key }) => key)).toEqual(
+        knownCityOptions.slice(1).map(({ key }) => key).sort(),
       );
 
       const normalizedInference = await repository.getSnapshot(
@@ -1053,6 +1346,8 @@ describe("Ecosystem Intelligence analytical repository", () => {
   });
 
   it("returns a bounded safe candidate detail and null outside the Physical AI corpus", async () => {
+    const nullableCanonicalUrl: EcosystemCandidateDetail["publicUrls"]["canonical"] = null;
+    expect(nullableCanonicalUrl).toBeNull();
     const extraRuns: string[] = [];
     for (let index = 0; index < 22; index += 1) {
       const runId = await createRun(`history-${index}`, "robotics_hardware_india", new Date(now.getTime() - index * 86_400_000));

@@ -13,16 +13,35 @@ export async function loadEcosystemActivity(
   transaction: ReadTransaction,
   filters: EcosystemFilters,
   now: Date,
+  validPublicContactCandidateIds: readonly string[],
   denominator: number,
 ): Promise<Pick<
   EcosystemSnapshot,
   "velocity" | "momentum" | "relationships" | "ledger" | "filterOptions"
 >> {
-  const change = await loadEcosystemChange(transaction, filters, now, denominator);
-  const directory = await loadEcosystemDirectory(transaction, filters, now, denominator);
+  const change = await loadEcosystemChange(
+    transaction,
+    filters,
+    now,
+    validPublicContactCandidateIds,
+    denominator,
+  );
+  const directory = await loadEcosystemDirectory(
+    transaction,
+    filters,
+    now,
+    validPublicContactCandidateIds,
+    denominator,
+  );
   return {
     ...change,
-    relationships: await loadRelationships(transaction, filters, now, denominator),
+    relationships: await loadRelationships(
+      transaction,
+      filters,
+      now,
+      validPublicContactCandidateIds,
+      denominator,
+    ),
     ...directory,
   };
 }

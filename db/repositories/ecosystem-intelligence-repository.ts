@@ -4,6 +4,7 @@ import {
   loadEcosystemActivity,
 } from "./ecosystem-intelligence-activity-queries";
 import { loadEcosystemOverview } from "./ecosystem-intelligence-overview-queries";
+import { loadValidPublicContactCandidateIds } from "./ecosystem-intelligence-query";
 import type { EcosystemIntelligenceRepository } from "./ecosystem-intelligence-types";
 
 export type {
@@ -36,11 +37,21 @@ export function createEcosystemIntelligenceRepository(
     async getSnapshot(filters, now) {
       ensureValidNow(now);
       return database.transaction(async (transaction) => {
-        const overview = await loadEcosystemOverview(transaction, filters, now);
+        const validPublicContactCandidateIds = await loadValidPublicContactCandidateIds(
+          transaction,
+          filters.analysisVersion,
+        );
+        const overview = await loadEcosystemOverview(
+          transaction,
+          filters,
+          now,
+          validPublicContactCandidateIds,
+        );
         const activity = await loadEcosystemActivity(
           transaction,
           filters,
           now,
+          validPublicContactCandidateIds,
           overview.population.total,
         );
 
