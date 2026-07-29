@@ -8,6 +8,7 @@ import {
 import {
   ECOSYSTEM_INTELLIGENCE_THRESHOLDS,
   ECOSYSTEM_TAXONOMY,
+  normalizeIndiaCity,
   type ClassificationEvidenceState,
 } from "../../app/domain/ecosystem-intelligence-taxonomy";
 import type { MewtualsDatabase } from "../client";
@@ -259,6 +260,11 @@ async function loadFilterOptions(
     , city_option_counts as (
       select coalesce(city_key, 'unknown') as key, count(*)::integer as count
       from filtered_candidates
+      where city_key is null or (
+        length(btrim(city_key)) <= 100
+        and lower(btrim(city_key)) ~ '^[a-z0-9]+(_[a-z0-9]+)*$'
+        and lower(btrim(city_key)) not in ('__proto__', 'prototype', 'constructor')
+      )
       group by coalesce(city_key, 'unknown')
     ),
     ranked_known_city_options as (
@@ -344,16 +350,24 @@ async function loadFilterOptions(
   }
   const stateKeys = rows.filter((row) => row.dimension === "headquarters_state").map((row) => row.key)
     .sort((left, right) => left === "unknown" ? 1 : right === "unknown" ? -1 : left.localeCompare(right));
-  const cityKeys = rows.filter((row) => row.dimension === "headquarters_city").map((row) => row.key)
-    .sort((left, right) => count("headquarters_city", right) - count("headquarters_city", left)
-      || left.localeCompare(right));
+  const cityCounts = new Map<string, number>();
+  for (const row of rows.filter((option) => option.dimension === "headquarters_city")) {
+    const key = row.key === "unknown" ? "unknown" : normalizeIndiaCity(row.key);
+    if (!key) continue;
+    cityCounts.set(key, (cityCounts.get(key) ?? 0) + number(row.count));
+  }
+  const cityOptions = [...cityCounts].map(([key, optionCount]) => ({
+    key,
+    label: key,
+    count: optionCount,
+  })).sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
   return {
     denominator,
     participantTypes: simpleOptions("participant_type", ["company", "creator"], { company: "Companies", creator: "Creators" }),
     reviewStatuses: simpleOptions("review_status", ["discovered", "shortlisted", "queued_for_profile", "rejected"]),
     taxonomy,
     headquartersStates: simpleOptions("headquarters_state", stateKeys),
-    headquartersCities: simpleOptions("headquarters_city", cityKeys),
+    headquartersCities: cityOptions,
     activeSignalTypes: [
       ...ECOSYSTEM_TAXONOMY.termsByKind.signal_type.map((term) => ({ key: term.key, label: term.label, count: count("active_signal_type", term.key) })),
       ...(count("active_signal_type", "unknown") > 0 ? [{ key: "unknown", label: "Unknown", count: count("active_signal_type", "unknown") }] : []),

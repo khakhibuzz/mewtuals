@@ -9,7 +9,9 @@ import {
   parseEcosystemFilters,
   type EcosystemFilters,
 } from "../app/domain/ecosystem-intelligence";
+import { normalizePublicDiscoveryUrl } from "../app/domain/discovery";
 import { closeDb, getDb } from "../db/client";
+import { publicHttpUrlPredicate } from "../db/repositories/ecosystem-intelligence-query";
 import {
   createEcosystemIntelligenceRepository,
   type EcosystemSnapshot,
@@ -495,6 +497,85 @@ afterAll(async () => {
 });
 
 describe("Ecosystem Intelligence analytical repository", () => {
+  it("keeps the set-based public URL predicate aligned with the domain validator", async () => {
+    const urls = [
+      "https://example.com/profile",
+      " HTTPS://Example.COM/team#founders ",
+      "https://xn--mnich-kva.com/profile",
+      "http://sub.example.com:8080/path?q=1#evidence",
+      "https://bad_host.example/profile",
+      "https://8.8.8.8/profile",
+      "https://8.8.8.8:65535/profile",
+      "https://[2606:4700:4700::1111]/profile",
+      "https://[64:ff9b::808:808]/profile",
+      "https://[2001:1::1]/profile",
+      "https://[2001:1::2]/profile",
+      "https://[2001:1::3]/profile",
+      "https://[2001:3::1]/profile",
+      "https://[2001:4:112::1]/profile",
+      "https://[2001:30::1]/profile",
+      "not-a-url",
+      "ftp://example.com/profile",
+      "https://user:secret@example.com/profile",
+      "http://localhost/profile",
+      "http://intranet/profile",
+      "http://service.localhost/profile",
+      "http://service.local/profile",
+      "http://service.home/profile",
+      "http://service.internal/profile",
+      "http://service.lan/profile",
+      "http://0.1.2.3/profile",
+      "http://10.20.30.40/profile",
+      "http://100.64.0.1/profile",
+      "http://100.127.255.255/profile",
+      "http://127.0.0.1/profile",
+      "http://169.254.10.1/profile",
+      "http://172.16.0.1/profile",
+      "http://172.31.255.255/profile",
+      "http://192.0.0.1/profile",
+      "http://192.0.2.1/profile",
+      "http://192.168.1.1/profile",
+      "http://198.18.0.1/profile",
+      "http://198.19.255.255/profile",
+      "http://198.51.100.1/profile",
+      "http://203.0.113.1/profile",
+      "http://224.0.0.1/profile",
+      "http://255.255.255.255/profile",
+      "http://999.1.1.1/profile",
+      "https://[::]/profile",
+      "https://[::1]/profile",
+      "https://[::ffff:8.8.8.8]/profile",
+      "https://[64:ff9b::a00:1]/profile",
+      "https://[64:ff9b:1::1]/profile",
+      "https://[100::1]/profile",
+      "https://[100:0:0:1::1]/profile",
+      "https://[2001::1]/profile",
+      "https://[2001:db8::1]/profile",
+      "https://[2002::1]/profile",
+      "https://[3fff::1]/profile",
+      "https://[5f00::1]/profile",
+      "https://[fc00::1]/profile",
+      "https://[fe80::1]/profile",
+      "https://[fec0::1]/profile",
+      "https://[ff00::1]/profile",
+      "https://example.com:65536/profile",
+      "https://example.com:99999/profile",
+    ];
+
+    for (const url of urls) {
+      let domainValid = true;
+      try {
+        normalizePublicDiscoveryUrl(url);
+      } catch {
+        domainValid = false;
+      }
+      const [row] = await database.execute<{ valid: boolean }>(sql`
+        select ${publicHttpUrlPredicate(sql`${url}::text`)} as "valid"
+      `);
+      expect(row?.valid, url).toBe(domainValid);
+    }
+  });
+
   it("uses durable Physical AI research membership and one shared population for every supported filter", async () => {
     const defaultIds = [
       fixture.componentMaker.id,
@@ -554,6 +635,109 @@ describe("Ecosystem Intelligence analytical repository", () => {
     });
     expect(JSON.stringify(defaultSnapshot)).not.toContain(`private-${testId}@example.test`);
     expect(JSON.stringify(defaultSnapshot)).not.toContain("+919999999999");
+
+    const singleFilters = parseEcosystemFilters({ capability: "motion_control", pageSize: "100" });
+    const single = await repository.getSnapshot(singleFilters, now);
+    assertSharedPopulation(single, [fixture.componentMaker.id]);
+    expect(single.geography.states).toEqual([
+      expect.objectContaining({ key: "karnataka", count: 1 }),
+    ]);
+    expect(single.geography.cities).toEqual([
+      expect.objectContaining({ key: "bengaluru", stateKey: "karnataka", count: 1 }),
+    ]);
+    expect(single.geography.unresolvedCount).toBe(0);
+    expect(single.explorer.businessStages.flatMap(({ representativeCompanies }) =>
+      representativeCompanies.map(({ id }) => id))).toEqual([fixture.componentMaker.id]);
+    expect(single.explorer.businessStages.filter(({ count }) => count > 0)).toEqual([
+      expect.objectContaining({ key: "component_manufacturing", count: 1 }),
+    ]);
+    expect(single.explorer.technicalLayers.filter(({ count }) => count > 0)).toEqual([
+      expect.objectContaining({ key: "mechanical_and_actuation", count: 1 }),
+    ]);
+    expect(single.matrices.roleByCapability.cells.filter(({ count }) => count > 0)).toEqual([
+      expect.objectContaining({ rowKey: "component_supplier", columnKey: "motion_control", count: 1 }),
+    ]);
+    expect(single.matrices.stateByRole.cells.filter(({ count }) => count > 0)).toEqual([
+      expect.objectContaining({ rowKey: "karnataka", columnKey: "component_supplier", count: 1 }),
+    ]);
+    expect(single.insights.items).toEqual([]);
+    for (const window of single.velocity.windows) {
+      expect(window).toMatchObject({ candidateCount: 1 });
+      expect(window.byRole).toEqual([
+        expect.objectContaining({ key: "component_supplier", count: 1 }),
+      ]);
+      expect(window.byState).toEqual([
+        expect.objectContaining({ key: "karnataka", count: 1 }),
+      ]);
+      expect(window.byReviewStatus).toEqual([
+        expect.objectContaining({ key: "shortlisted", count: 1 }),
+      ]);
+    }
+    expect(single.momentum).toMatchObject({
+      ready: false,
+      activeSignalCount: 1,
+      organisationCount: 1,
+      companies: [],
+      signals: [],
+    });
+    expect(single.relationships).toMatchObject({
+      ready: false,
+      evidencedEdgeCount: 0,
+      candidateCount: 0,
+      unresolvedTargetCount: 1,
+      nodes: [],
+      edges: [],
+    });
+    expect(single.ledger.items.map(({ id }) => id)).toEqual([fixture.componentMaker.id]);
+    expect(single.filterOptions.headquartersStates.filter(({ count }) => count > 0)).toEqual([
+      expect.objectContaining({ key: "karnataka", count: 1 }),
+    ]);
+    expect(single.filterOptions.headquartersCities).toEqual([
+      expect.objectContaining({ key: "bengaluru", count: 1 }),
+    ]);
+    expect(single.filterOptions.activeSignalTypes.filter(({ count }) => count > 0)).toEqual([
+      expect.objectContaining({ key: "product_launch", count: 1 }),
+    ]);
+
+    const sliceFilters = parseEcosystemFilters({
+      discoveredAfter: "2026-07-01",
+      discoveredBefore: "2026-07-29",
+      pageSize: "100",
+    });
+    const slice = await repository.getSnapshot(sliceFilters, now);
+    const sliceIds = [fixture.componentMaker.id, fixture.laterGeneralCompany.id];
+    assertSharedPopulation(slice, sliceIds);
+    expect(slice.geography.states).toEqual([
+      expect.objectContaining({ key: "karnataka", count: 1 }),
+    ]);
+    expect(slice.geography.unresolvedCount).toBe(1);
+    expect(new Set(slice.explorer.businessStages.flatMap(({ representativeCompanies }) =>
+      representativeCompanies.map(({ id }) => id)))).toEqual(new Set(sliceIds));
+    expect(slice.matrices.roleByCapability.cells.every(({ count }) => count <= 2)).toBe(true);
+    expect(slice.insights.items.every(({ supportingFilters }) =>
+      supportingFilters.discoveredAfter === sliceFilters.discoveredAfter
+      && supportingFilters.discoveredBefore === sliceFilters.discoveredBefore)).toBe(true);
+    expect(slice.velocity.windows.every(({ candidateCount }) => candidateCount === 2)).toBe(true);
+    expect(slice.momentum).toMatchObject({
+      ready: false,
+      activeSignalCount: 2,
+      organisationCount: 2,
+      companies: [],
+      signals: [],
+    });
+    expect(slice.relationships).toMatchObject({
+      ready: false,
+      evidencedEdgeCount: 1,
+      candidateCount: 2,
+      unresolvedTargetCount: 1,
+      nodes: [],
+      edges: [],
+    });
+    expect(new Set(slice.ledger.items.map(({ id }) => id))).toEqual(new Set(sliceIds));
+    expect(slice.filterOptions.headquartersCities).toEqual([
+      expect.objectContaining({ key: "bengaluru", count: 1 }),
+      expect.objectContaining({ key: "unknown", count: 1 }),
+    ]);
   });
 
   it("returns typed zero-safe aggregates, inference precedence, exact readiness, and stable pagination", async () => {
@@ -643,6 +827,9 @@ describe("Ecosystem Intelligence analytical repository", () => {
       });
       capCandidates.push(candidate);
     }
+    await database.update(discoveryCandidates).set({
+      canonicalUrl: "not-a-canonical-url",
+    }).where(eq(discoveryCandidates.id, capCandidates[0]!.id));
     await database.insert(candidateEcosystemClassifications).values(capCandidates.slice(1).map((candidate) => ({
       candidateId: candidate.id,
       kind: "ecosystem_role",
@@ -659,7 +846,11 @@ describe("Ecosystem Intelligence analytical repository", () => {
       countryCode: "IN",
       stateKey: index === 1 ? "tamil_nadu" : "karnataka",
       stateLabel: index === 1 ? "Tamil Nadu" : "Karnataka",
-      cityKey: index < 2 ? "shared-city" : `fixture-city-${index.toString().padStart(3, "0")}`,
+      cityKey: index < 2
+        ? "shared_city"
+        : index >= 2 && index < 12
+          ? "legacy-invalid-city"
+          : `fixture_city_${index.toString().padStart(3, "0")}`,
       cityLabel: index < 2 ? "Shared City" : `Fixture City ${index.toString().padStart(3, "0")}`,
       evidenceState: "evidence_backed",
       confidence: 90,
@@ -770,11 +961,13 @@ describe("Ecosystem Intelligence analytical repository", () => {
       expect(snapshot.ledger.items).toHaveLength(100);
       expect(snapshot.ledger.total).toBe(106);
 
-      const sharedCities = snapshot.geography.cities.filter(({ key }) => key === "shared-city");
+      const sharedCities = snapshot.geography.cities.filter(({ key }) => key === "shared_city");
       expect(sharedCities).toHaveLength(2);
       expect(sharedCities.map(({ stateKey }) => stateKey).sort()).toEqual(["karnataka", "tamil_nadu"]);
       expect(snapshot.filterOptions.headquartersCities).toHaveLength(50);
-      expect(snapshot.filterOptions.headquartersCities[0]).toMatchObject({ key: "shared-city", count: 2 });
+      expect(snapshot.filterOptions.headquartersCities[0]).toMatchObject({ key: "shared_city", count: 2 });
+      expect(snapshot.filterOptions.headquartersCities.some(({ key }) => key === "legacy-invalid-city"))
+        .toBe(false);
       expect(snapshot.filterOptions.headquartersCities).toContainEqual({
         key: "unknown",
         label: "unknown",
@@ -809,6 +1002,7 @@ describe("Ecosystem Intelligence analytical repository", () => {
       });
       const malformedDetail = await repository.getCandidateDetail(capCandidates[0]!.id, now);
       expect(malformedDetail?.publicUrls).toMatchObject({
+        canonical: null,
         website: null,
         linkedin: null,
       });

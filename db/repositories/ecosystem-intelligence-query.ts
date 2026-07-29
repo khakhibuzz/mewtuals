@@ -51,14 +51,107 @@ export function timestamp(value: Date): SQL {
   return sql`${value.toISOString()}::timestamptz`;
 }
 
+const nonGlobalIpv4Cidrs = [
+  "0.0.0.0/8",
+  "10.0.0.0/8",
+  "100.64.0.0/10",
+  "127.0.0.0/8",
+  "169.254.0.0/16",
+  "172.16.0.0/12",
+  "192.0.0.0/24",
+  "192.0.2.0/24",
+  "192.168.0.0/16",
+  "198.18.0.0/15",
+  "198.51.100.0/24",
+  "203.0.113.0/24",
+  "224.0.0.0/3",
+] as const;
+
+const globallyReachableIpv6Cidrs = [
+  "2001:1::1/128",
+  "2001:1::2/128",
+  "2001:1::3/128",
+  "2001:3::/32",
+  "2001:4:112::/48",
+  "2001:30::/28",
+] as const;
+
+const nonGlobalIpv6Cidrs = [
+  "::/128",
+  "::1/128",
+  "::/96",
+  "::ffff:0:0/96",
+  "::ffff:0:0:0/96",
+  "64:ff9b:1::/48",
+  "100::/64",
+  "100:0:0:1::/64",
+  "2001::/23",
+  "2001:db8::/32",
+  "2002::/16",
+  "3fff::/20",
+  "5f00::/16",
+  "fc00::/7",
+  "fe80::/10",
+  "fec0::/10",
+  "ff00::/8",
+] as const;
+
+function addressWithinAny(address: SQL, cidrs: readonly string[]): SQL {
+  return sql`(${sql.join(
+    cidrs.map((cidr) => sql`${address} <<= ${sql.raw(`'${cidr}'::inet`)}`),
+    sql` or `,
+  )})`;
+}
+
 export function publicHttpUrlPredicate(expression: SQL): SQL {
-  return sql`coalesce(
-    btrim(${expression}) ~* '^https?://((([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?[.]?)|((25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})[.]){3}(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})|\\[[0-9a-f:.]+\\])(:[0-9]{1,5})?([/?#][^[:space:]]*)?$'
-      and btrim(${expression}) !~* '^https?://[^/?#]*@'
-      and btrim(${expression}) !~* '^https?://(10[.]|127[.]|169[.]254[.]|192[.]168[.]|172[.](1[6-9]|2[0-9]|3[01])[.])'
-      and btrim(${expression}) !~* '^https?://\\[(::1|f[cd][0-9a-f:]*|fe[89ab][0-9a-f:]*)\\]',
-    false
+  const value = sql`public_url_input.value`;
+  const host = sql`public_url_host.value`;
+  const address = sql`public_url_address.value`;
+  const nat64Ipv4 = sql`'0.0.0.0'::inet + (${address} - '64:ff9b::'::inet)`;
+  const publicIpv6 = sql`case
+    when ${address} <<= '64:ff9b::/96'::inet
+      then not ${addressWithinAny(nat64Ipv4, nonGlobalIpv4Cidrs)}
+    when ${addressWithinAny(address, globallyReachableIpv6Cidrs)} then true
+    else not ${addressWithinAny(address, nonGlobalIpv6Cidrs)}
+  end`;
+  const publicIpAddress = sql`case
+    when ${address} is not null then case
+      when position(':' in ${host}) > 0 then ${publicIpv6}
+      else family(${address}) = 4 and not ${addressWithinAny(address, nonGlobalIpv4Cidrs)}
+    end
+    else false
+  end`;
+  const publicDnsName = sql`not (
+    ${host} = 'localhost'
+    or position('.' in ${host}) = 0
+    or ${host} ~ '[.](home|internal|lan|local|localhost)$'
   )`;
+
+  // Candidate URLs are normalized by normalizePublicDiscoveryUrl before normal
+  // persistence. This conservative SQL grammar accepts those canonical ASCII
+  // forms and applies the same credentials, port, hostname, IPv4, IPv6, and
+  // NAT64 public-host rules without risking a cast failure on legacy raw data.
+  return sql`coalesce((
+    select
+      ${value} ~* '^https?://([[][0-9a-f:.]+[]]|[a-z0-9._-]+)(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5]?[0-9]{1,4}))?([/?#][^[:space:]]*)?$'
+        and case
+          when position(':' in ${host}) > 0 or ${host} ~ '^[0-9.]+$' then ${publicIpAddress}
+          else ${publicDnsName}
+        end
+    from (values (btrim(${expression}))) as public_url_input(value)
+    cross join lateral (
+      select regexp_replace(lower(coalesce(
+        substring(lower(${value}) from '^https?://[[]([^]]+)[]]'),
+        substring(lower(${value}) from '^https?://([^/?#:]+)')
+      )), '[.]+$', '') as value
+    ) public_url_host
+    cross join lateral (
+      select (case
+        when pg_input_is_valid(${host}, 'inet') then ${host}
+        else null
+      end)::inet as value
+    ) public_url_address
+  ), false)`;
 }
 
 export function publicHttpUrlOrNull(value: string | null): string | null {
@@ -302,8 +395,8 @@ function filteredCandidatesCte(filters: EcosystemFilters, now: Date): SQL {
           where candidate_source.candidate_id = candidate.id
         ) as has_candidate_source,
         true as has_systems_context,
-        (${hasPublicContact}) as has_public_contact,
-        (${classificationState}) as classification_state,
+        evidence_flags.has_public_contact,
+        evidence_flags.classification_state,
         greatest(
           (select max(candidate_source.last_seen_at) from ${discoveryCandidateSources} candidate_source where candidate_source.candidate_id = candidate.id),
           (select max(research.created_at) from ${candidateResearchVersions} research where research.candidate_id = candidate.id)
@@ -311,12 +404,17 @@ function filteredCandidatesCte(filters: EcosystemFilters, now: Date): SQL {
         (
           case when exists (select 1 from ${discoveryCandidateSources} candidate_source where candidate_source.candidate_id = candidate.id) then 20 else 0 end
           + 20
-          + case (${classificationState}) when 'evidence_backed' then 20 when 'inferred' then 10 else 0 end
+          + case evidence_flags.classification_state when 'evidence_backed' then 20 when 'inferred' then 10 else 0 end
           + case when headquarters.candidate_id is not null then 20 else 0 end
-          + case when (${hasPublicContact}) then 20 else 0 end
+          + case when evidence_flags.has_public_contact then 20 else 0 end
         )::integer as evidence_score
       from ${discoveryCandidates} candidate
       left join ${candidateHeadquarters} headquarters on headquarters.candidate_id = candidate.id
+      cross join lateral (
+        select
+          (${hasPublicContact}) as has_public_contact,
+          (${classificationState}) as classification_state
+      ) evidence_flags
       where exists (
         select 1 from ${candidateResearchVersions} corpus_research
         where corpus_research.candidate_id = candidate.id

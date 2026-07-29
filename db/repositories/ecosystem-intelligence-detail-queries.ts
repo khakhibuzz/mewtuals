@@ -328,7 +328,7 @@ async function loadCandidateDetail(
     discoveredAt: date(identity.discoveredAt),
     updatedAt: date(identity.updatedAt),
     publicUrls: {
-      canonical: identity.canonicalUrl,
+      canonical: publicHttpUrlOrNull(identity.canonicalUrl),
       website: publicHttpUrlOrNull(identity.websiteUrl),
       linkedin: publicHttpUrlOrNull(identity.linkedinUrl),
       primarySocial: publicHttpUrlOrNull(identity.primarySocialUrl),
