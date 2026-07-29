@@ -1,6 +1,7 @@
+export { PHYSICAL_AI_ANALYSIS_VERSION } from "./discovery";
+
 export const ECOSYSTEM_TAXONOMY_VERSION = "ecosystem-intelligence-v1" as const;
 export const PHYSICAL_AI_CAMPAIGN_KEY = "robotics_hardware_india" as const;
-export const PHYSICAL_AI_ANALYSIS_VERSION = "physical-ai-v1" as const;
 
 export const ECOSYSTEM_INTELLIGENCE_THRESHOLDS = {
   representationCoverageTargetPercent: 40,
@@ -173,6 +174,8 @@ export const physicalAiCategories = [
   "research and ecosystem support",
 ] as const;
 
+export const dependencyRelatedSignalTypes = ["partnership"] as const;
+
 export type EcosystemTaxonomyTerms = {
   ecosystem_domain: typeof ecosystemDomains;
   organisation_subtype: typeof organisationSubtypes;
@@ -191,6 +194,7 @@ export const ECOSYSTEM_TAXONOMY = {
   thresholds: ECOSYSTEM_INTELLIGENCE_THRESHOLDS,
   kinds: ecosystemTaxonomyKinds,
   physicalAiCategories,
+  dependencyRelatedSignalTypes,
   termsByKind: {
     ecosystem_domain: ecosystemDomains,
     organisation_subtype: organisationSubtypes,
@@ -269,17 +273,62 @@ function normalizedAlias(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-const INDIA_STATE_ALIASES: Record<string, string> = {
+export const indiaStateAndUnionTerritoryKeys = [
+  "andhra_pradesh", "arunachal_pradesh", "assam", "bihar", "chhattisgarh",
+  "goa", "gujarat", "haryana", "himachal_pradesh", "jharkhand", "karnataka",
+  "kerala", "madhya_pradesh", "maharashtra", "manipur", "meghalaya", "mizoram",
+  "nagaland", "odisha", "punjab", "rajasthan", "sikkim", "tamil_nadu", "telangana",
+  "tripura", "uttar_pradesh", "uttarakhand", "west_bengal", "andaman_and_nicobar_islands",
+  "chandigarh", "dadra_and_nagar_haveli_and_daman_and_diu", "delhi", "jammu_and_kashmir",
+  "ladakh", "lakshadweep", "puducherry",
+] as const;
+
+const INDIA_STATE_ALIASES: Record<string, (typeof indiaStateAndUnionTerritoryKeys)[number]> = {
   "andhra pradesh": "andhra_pradesh",
+  "arunachal pradesh": "arunachal_pradesh",
+  assam: "assam",
+  bihar: "bihar",
+  chhattisgarh: "chhattisgarh",
+  goa: "goa",
+  gujarat: "gujarat",
+  haryana: "haryana",
+  "himachal pradesh": "himachal_pradesh",
+  jharkhand: "jharkhand",
   karnataka: "karnataka",
+  kerala: "kerala",
+  "madhya pradesh": "madhya_pradesh",
   maharashtra: "maharashtra",
+  manipur: "manipur",
+  meghalaya: "meghalaya",
+  mizoram: "mizoram",
+  nagaland: "nagaland",
   odisha: "odisha",
   orissa: "odisha",
-  tamil_nadu: "tamil_nadu",
+  punjab: "punjab",
+  rajasthan: "rajasthan",
+  sikkim: "sikkim",
   "tamil nadu": "tamil_nadu",
   telangana: "telangana",
+  tripura: "tripura",
+  "uttar pradesh": "uttar_pradesh",
+  uttarakhand: "uttarakhand",
+  uttaranchal: "uttarakhand",
+  "west bengal": "west_bengal",
+  "andaman and nicobar islands": "andaman_and_nicobar_islands",
+  chandigarh: "chandigarh",
+  "dadra and nagar haveli and daman and diu": "dadra_and_nagar_haveli_and_daman_and_diu",
+  "dadra and nagar haveli": "dadra_and_nagar_haveli_and_daman_and_diu",
+  "daman and diu": "dadra_and_nagar_haveli_and_daman_and_diu",
   delhi: "delhi",
+  nct: "delhi",
+  "nct of delhi": "delhi",
   "new delhi": "delhi",
+  "jammu and kashmir": "jammu_and_kashmir",
+  "j&k": "jammu_and_kashmir",
+  ladakh: "ladakh",
+  lakshadweep: "lakshadweep",
+  puducherry: "puducherry",
+  pondicherry: "puducherry",
 };
 
 const INDIA_CITY_ALIASES: Record<string, string> = {
@@ -293,6 +342,11 @@ const INDIA_CITY_ALIASES: Record<string, string> = {
   hyderabad: "hyderabad",
   pune: "pune",
   bhubaneswar: "bhubaneswar",
+  calcutta: "kolkata",
+  kolkata: "kolkata",
+  madras: "chennai",
+  gurgaon: "gurugram",
+  gurugram: "gurugram",
 };
 
 const INDIA_STATE_CANONICAL_KEYS = new Set(Object.values(INDIA_STATE_ALIASES));
@@ -308,7 +362,9 @@ export function normalizeIndiaState(value: string): string | undefined {
 export function normalizeIndiaCity(value: string): string | undefined {
   const normalized = normalizedAlias(value);
   return INDIA_CITY_ALIASES[normalized] ?? (
-    INDIA_CITY_CANONICAL_KEYS.has(normalized) ? normalized : undefined
+    INDIA_CITY_CANONICAL_KEYS.has(normalized) || /^[a-z0-9]+(?:_[a-z0-9]+)+$/.test(normalized)
+      ? normalized
+      : undefined
   );
 }
 

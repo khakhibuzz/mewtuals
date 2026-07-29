@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   ECOSYSTEM_INTELLIGENCE_THRESHOLDS,
   ECOSYSTEM_TAXONOMY,
-  PHYSICAL_AI_ANALYSIS_VERSION,
+  dependencyRelatedSignalTypes,
   normalizeIndiaCity,
   normalizeIndiaState,
   signalFreshnessDays,
@@ -11,6 +11,11 @@ import {
   type EcosystemTaxonomyKey,
   type EcosystemTaxonomyKind,
 } from "./ecosystem-intelligence-taxonomy";
+import {
+  PHYSICAL_AI_ANALYSIS_VERSION,
+  candidateStatuses,
+  candidateTypes,
+} from "./discovery";
 
 export type FilterTaxonomyKind = Exclude<
   EcosystemTaxonomyKind,
@@ -30,13 +35,10 @@ export type EcosystemFilterKey =
   | "activeSignalTypes"
   | "reviewStatuses";
 
-export type ParticipantType = "company" | "creator";
-export type ReviewStatus =
-  | "discovered"
-  | "shortlisted"
-  | "rejected"
-  | "queued_for_profile";
+export type ParticipantType = (typeof candidateTypes)[number];
+export type ReviewStatus = (typeof candidateStatuses)[number];
 export type EvidenceFreshness = "current" | "stale" | "unknown";
+export type PublicContactAvailability = "available" | "missing" | "unknown";
 export type EcosystemSort =
   | "discovered_at"
   | "name"
@@ -63,7 +65,7 @@ export type EcosystemFilters = {
   headquartersCities: readonly string[];
   activeSignalTypes: readonly TaxonomyFilterValue<"signal_type">[];
   reviewStatuses: readonly ReviewStatus[];
-  publicContactAvailability?: "available" | "unavailable" | "unknown";
+  publicContactAvailability?: PublicContactAvailability;
   evidenceCoverageBand?: "strong" | "partial" | "limited" | "unknown";
   evidenceFreshness?: EvidenceFreshness;
   minimumDiscoveryConfidence?: number;
@@ -90,7 +92,9 @@ export const DEFAULT_ECOSYSTEM_FILTERS: EcosystemFilters = {
   headquartersStates: [],
   headquartersCities: [],
   activeSignalTypes: [],
-  reviewStatuses: ["discovered", "shortlisted", "queued_for_profile"],
+  reviewStatuses: candidateStatuses.filter(
+    (status) => status !== "rejected",
+  ) as Exclude<ReviewStatus, "rejected">[],
   page: 1,
   pageSize: 25,
   sort: "discovered_at",
@@ -116,6 +120,7 @@ const rawFilterSchema = z.strictObject({
   headquartersCity: rawFilterValueSchema,
   activeSignalType: rawFilterValueSchema,
   reviewStatus: rawFilterValueSchema,
+  publicContact: rawFilterValueSchema,
   publicContactAvailability: rawFilterValueSchema,
   evidenceCoverageBand: rawFilterValueSchema,
   evidenceFreshness: rawFilterValueSchema,
@@ -185,12 +190,7 @@ function orderedLocations(
 }
 
 function orderedReviewStatuses(value: readonly string[]): ReviewStatus[] {
-  const order: readonly ReviewStatus[] = [
-    "discovered",
-    "shortlisted",
-    "rejected",
-    "queued_for_profile",
-  ];
+  const order: readonly ReviewStatus[] = candidateStatuses;
   const unique = [...new Set(value)];
   for (const status of unique) {
     if (!order.includes(status as ReviewStatus)) {
@@ -201,6 +201,18 @@ function orderedReviewStatuses(value: readonly string[]): ReviewStatus[] {
     (left, right) =>
       order.indexOf(left as ReviewStatus) - order.indexOf(right as ReviewStatus),
   ) as ReviewStatus[];
+}
+
+function publicContactAvailability(input: FilterInput): PublicContactAvailability | undefined {
+  const canonical = scalarValue(input, "publicContact");
+  const legacy = scalarValue(input, "publicContactAvailability");
+  if (canonical !== undefined && legacy !== undefined) {
+    throw new Error("Use only one public-contact filter parameter.");
+  }
+  const value = canonical ?? legacy;
+  if (value === undefined) return undefined;
+  if (value === "unavailable") return "missing";
+  return z.enum(["available", "missing", "unknown"]).parse(value);
 }
 
 const dateSchema = z
@@ -259,7 +271,7 @@ export function parseEcosystemFilters(input: FilterInput = {}): EcosystemFilters
   const includeEnablers = scalarValue(input, "includeEnablers");
 
   return {
-    participantType: enumValue(input, "participantType", ["company", "creator"], "company"),
+    participantType: enumValue(input, "participantType", candidateTypes, "company"),
     includeEnablers: includeEnablers === undefined ? false : z.enum(["true", "false"]).parse(includeEnablers) === "true",
     analysisVersion: PHYSICAL_AI_ANALYSIS_VERSION,
     ecosystemDomains: orderedUnique("ecosystem_domain", values(input, "ecosystemDomain")),
@@ -276,7 +288,7 @@ export function parseEcosystemFilters(input: FilterInput = {}): EcosystemFilters
     reviewStatuses: reviewStatuses.length === 0
       ? DEFAULT_ECOSYSTEM_FILTERS.reviewStatuses
       : orderedReviewStatuses(reviewStatuses),
-    publicContactAvailability: optionalEnum(input, "publicContactAvailability", ["available", "unavailable", "unknown"]),
+    publicContactAvailability: publicContactAvailability(input),
     evidenceCoverageBand: optionalEnum(input, "evidenceCoverageBand", ["strong", "partial", "limited", "unknown"]),
     evidenceFreshness: optionalEnum(input, "evidenceFreshness", ["current", "stale", "unknown"]),
     minimumDiscoveryConfidence: optionalPositiveScore(input),
@@ -354,7 +366,7 @@ export function serializeEcosystemFilters(filters: EcosystemFilters): string {
     headquartersCity: filters.headquartersCities,
     activeSignalType: filters.activeSignalTypes,
     reviewStatus: filters.reviewStatuses,
-    publicContactAvailability: filters.publicContactAvailability,
+    publicContact: filters.publicContactAvailability,
     evidenceCoverageBand: filters.evidenceCoverageBand,
     evidenceFreshness: filters.evidenceFreshness,
     minimumDiscoveryConfidence: filters.minimumDiscoveryConfidence?.toString(),
@@ -380,7 +392,7 @@ export function serializeEcosystemFilters(filters: EcosystemFilters): string {
   appendValues(params, "headquartersCity", normalized.headquartersCities);
   appendValues(params, "activeSignalType", normalized.activeSignalTypes);
   if (!equalFilterValue(normalized.reviewStatuses, DEFAULT_ECOSYSTEM_FILTERS.reviewStatuses)) appendValues(params, "reviewStatus", normalized.reviewStatuses);
-  if (normalized.publicContactAvailability) params.set("publicContactAvailability", normalized.publicContactAvailability);
+  if (normalized.publicContactAvailability) params.set("publicContact", normalized.publicContactAvailability);
   if (normalized.evidenceCoverageBand) params.set("evidenceCoverageBand", normalized.evidenceCoverageBand);
   if (normalized.evidenceFreshness) params.set("evidenceFreshness", normalized.evidenceFreshness);
   if (normalized.minimumDiscoveryConfidence !== undefined) params.set("minimumDiscoveryConfidence", String(normalized.minimumDiscoveryConfidence));
@@ -437,23 +449,38 @@ export type PublicSignalInput = {
   expiresAt?: Date | string | null;
 };
 
-function date(value: Date | string): Date | undefined {
-  const parsed = value instanceof Date ? new Date(value) : new Date(`${value}T00:00:00.000Z`);
-  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+function signalDate(value: Date | string, field: "occurredAt" | "expiresAt"): Date {
+  if (value instanceof Date) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-").map(Number);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    if (
+      parsed.getUTCFullYear() === year &&
+      parsed.getUTCMonth() === month - 1 &&
+      parsed.getUTCDate() === day
+    ) {
+      return parsed;
+    }
+  }
+  throw new Error(`Public signal ${field} must be a valid ISO calendar date or Date.`);
 }
 
 export function activeUntilForSignal(signal: PublicSignalInput): Date | undefined {
-  const occurredAt = date(signal.occurredAt);
+  const occurredAt = signalDate(signal.occurredAt, "occurredAt");
   const freshnessDays = signalFreshnessDays(signal.type);
-  if (!occurredAt || freshnessDays === undefined) return undefined;
+  if (freshnessDays === undefined) return undefined;
   const defaultExpiry = new Date(occurredAt);
   defaultExpiry.setUTCDate(defaultExpiry.getUTCDate() + freshnessDays);
-  const explicitExpiry = signal.expiresAt ? date(signal.expiresAt) : undefined;
+  const explicitExpiry = signal.expiresAt === undefined || signal.expiresAt === null
+    ? undefined
+    : signalDate(signal.expiresAt, "expiresAt");
   return explicitExpiry && explicitExpiry < defaultExpiry ? explicitExpiry : defaultExpiry;
 }
 
 export function isActiveSignal(signal: PublicSignalInput, now: Date): boolean {
-  const occurredAt = date(signal.occurredAt);
+  const occurredAt = signalDate(signal.occurredAt, "occurredAt");
   const activeUntil = activeUntilForSignal(signal);
   return occurredAt !== undefined && occurredAt <= now && activeUntil !== undefined && activeUntil > now;
 }
@@ -486,19 +513,40 @@ export function relationshipReadiness(input: RelationshipReadinessInput): Relati
   };
 }
 
-type GapMeasure = {
+type InsightMeasure = {
   numerator: number;
   denominator: number;
   label: string;
-  supportingFilters: EcosystemFilters;
 };
+
+export type InsightUnknownDimension =
+  | "ecosystem_domain"
+  | "organisation_subtype"
+  | "ecosystem_role"
+  | "business_stage"
+  | "technical_layer"
+  | "capability"
+  | "component_category"
+  | "robotics_vertical";
+export type MissingDataDimension =
+  | InsightUnknownDimension
+  | "headquarters_state"
+  | "headquarters_city"
+  | "public_contact"
+  | "evidence_coverage";
+
+export type RepresentationGapInput = InsightMeasure & {
+  dimension: InsightUnknownDimension;
+};
+export type GeographicConcentrationInput = InsightMeasure & { stateKey: string };
+export type MissingDataGapInput = InsightMeasure & { dimension: MissingDataDimension };
 export type ResearchGapInsightInput = {
-  representation?: GapMeasure;
-  geographicConcentration?: GapMeasure;
-  missingData?: GapMeasure;
-  publicContacts?: GapMeasure;
-  dependencySignals?: GapMeasure;
-  staleEvidence?: GapMeasure;
+  representation?: RepresentationGapInput;
+  geographicConcentration?: GeographicConcentrationInput;
+  missingData?: MissingDataGapInput;
+  publicContacts?: InsightMeasure;
+  dependencySignals?: InsightMeasure;
+  staleEvidence?: InsightMeasure;
 };
 export type ResearchGapInsight = {
   ruleKey: string;
@@ -511,28 +559,15 @@ export type ResearchGapInsight = {
   supportingFilters: EcosystemFilters;
 };
 
-function percentage(measure: GapMeasure): number {
+function percentage(measure: InsightMeasure): number {
   return measure.denominator === 0 ? 0 : Math.round((measure.numerator / measure.denominator) * 100);
-}
-
-function canonicalSupportingFilters(
-  filters: EcosystemFilters | undefined,
-): EcosystemFilters {
-  if (!filters) {
-    throw new Error("Every generated insight requires an explicit supporting filter.");
-  }
-  return filtersFromSearchParams(
-    new URLSearchParams(
-      serializeEcosystemFilters({ ...DEFAULT_ECOSYSTEM_FILTERS, ...filters, page: 1 }),
-    ),
-  );
 }
 
 function insight(
   ruleKey: string,
   title: string,
   copy: string,
-  measure: GapMeasure,
+  measure: InsightMeasure,
   supportingFilters: EcosystemFilters,
 ): ResearchGapInsight {
   const coverage = percentage(measure);
@@ -545,39 +580,63 @@ function insight(
     denominator: measure.denominator,
     percentage: coverage,
     confidence,
-    supportingFilters: canonicalSupportingFilters(supportingFilters),
+    supportingFilters: filtersFromSearchParams(
+      new URLSearchParams(serializeEcosystemFilters(supportingFilters)),
+    ),
   };
 }
 
-function geographicSupportingFilters(filters: EcosystemFilters): EcosystemFilters {
-  const canonical = canonicalSupportingFilters(filters);
-  if (!canonical.headquartersStates.some((state) => state !== "unknown")) {
+function filtersForUnknownDimension(dimension: InsightUnknownDimension): EcosystemFilters {
+  switch (dimension) {
+    case "ecosystem_domain": return parseEcosystemFilters({ ecosystemDomain: "unknown" });
+    case "organisation_subtype": return parseEcosystemFilters({ organisationSubtype: "unknown" });
+    case "ecosystem_role": return parseEcosystemFilters({ ecosystemRole: "unknown" });
+    case "business_stage": return parseEcosystemFilters({ businessStage: "unknown" });
+    case "technical_layer": return parseEcosystemFilters({ technicalLayer: "unknown" });
+    case "capability": return parseEcosystemFilters({ capability: "unknown" });
+    case "component_category": return parseEcosystemFilters({ componentCategory: "unknown" });
+    case "robotics_vertical": return parseEcosystemFilters({ roboticsVertical: "unknown" });
+    default: throw new Error(`Unsupported representation dimension: ${dimension}.`);
+  }
+}
+
+function filtersForMissingDimension(dimension: MissingDataDimension): EcosystemFilters {
+  if (dimension in unknownDimensionFilterBuilders) {
+    return filtersForUnknownDimension(dimension as InsightUnknownDimension);
+  }
+  switch (dimension) {
+    case "headquarters_state": return parseEcosystemFilters({ headquartersState: "unknown" });
+    case "headquarters_city": return parseEcosystemFilters({ headquartersCity: "unknown" });
+    case "public_contact": return parseEcosystemFilters({ publicContact: "missing" });
+    case "evidence_coverage": return parseEcosystemFilters({ evidenceCoverageBand: "unknown" });
+    default: throw new Error(`Unsupported missing-data dimension: ${dimension}.`);
+  }
+}
+
+const unknownDimensionFilterBuilders: Record<InsightUnknownDimension, true> = {
+  ecosystem_domain: true,
+  organisation_subtype: true,
+  ecosystem_role: true,
+  business_stage: true,
+  technical_layer: true,
+  capability: true,
+  component_category: true,
+  robotics_vertical: true,
+};
+
+function geographicSupportingFilters(stateKey: string): EcosystemFilters {
+  const filters = parseEcosystemFilters({ headquartersState: stateKey });
+  if (!filters.headquartersStates.some((state) => state !== "unknown")) {
     throw new Error("Geographic concentration requires an explicit headquarters state filter.");
   }
-  return canonical;
+  return filters;
 }
 
-function contactSupportingFilters(filters: EcosystemFilters): EcosystemFilters {
-  const canonical = canonicalSupportingFilters(filters);
-  if (canonical.publicContactAvailability !== "unavailable") {
-    throw new Error("Public-contact coverage requires an unavailable contact filter.");
-  }
-  return canonical;
-}
-
-function staleEvidenceSupportingFilters(filters: EcosystemFilters): EcosystemFilters {
-  const canonical = canonicalSupportingFilters(filters);
-  if (canonical.evidenceFreshness !== "stale") {
-    throw new Error("Stale-evidence coverage requires the stale evidence filter.");
-  }
-  return canonical;
-}
-
-function isAtLeast(measure: GapMeasure, numerator: number, denominator: number): boolean {
+function isAtLeast(measure: InsightMeasure, numerator: number, denominator: number): boolean {
   return measure.denominator > 0 && measure.numerator * denominator >= measure.denominator * numerator;
 }
 
-function isBelow(measure: GapMeasure, numerator: number, denominator: number): boolean {
+function isBelow(measure: InsightMeasure, numerator: number, denominator: number): boolean {
   return measure.denominator > 0 && measure.numerator * denominator < measure.denominator * numerator;
 }
 
@@ -586,27 +645,27 @@ export function buildResearchGapInsights(input: ResearchGapInsightInput): readon
   const thresholds = ECOSYSTEM_INTELLIGENCE_THRESHOLDS;
   const representation = input.representation;
   if (representation && isBelow(representation, thresholds.representationCoverageTargetPercent, 100)) {
-    insights.push(insight("representation_below_target", "Map representation needs research", `${representation.numerator} of ${representation.denominator} ${representation.label.toLowerCase()} are represented, below the ${thresholds.representationCoverageTargetPercent}% coverage target.`, representation, representation.supportingFilters));
+    insights.push(insight("representation_below_target", "Map representation needs research", `${representation.numerator} of ${representation.denominator} ${representation.label.toLowerCase()} are represented, below the ${thresholds.representationCoverageTargetPercent}% coverage target.`, representation, filtersForUnknownDimension(representation.dimension)));
   }
   const geographic = input.geographicConcentration;
   if (geographic && geographic.denominator >= thresholds.geographicConcentration.minimumResolvedCandidates && isAtLeast(geographic, thresholds.geographicConcentration.minimumSharePercent, 100)) {
-    insights.push(insight("geographic_concentration", "Map coverage is concentrated", `${geographic.label} accounts for ${geographic.numerator} of ${geographic.denominator} resolved locations.`, geographic, geographicSupportingFilters(geographic.supportingFilters)));
+    insights.push(insight("geographic_concentration", "Map coverage is concentrated", `${geographic.label} accounts for ${geographic.numerator} of ${geographic.denominator} resolved locations.`, geographic, geographicSupportingFilters(geographic.stateKey)));
   }
   const missingData = input.missingData;
   if (missingData && missingData.numerator >= thresholds.missingData.minimumAffectedCandidates && isAtLeast(missingData, thresholds.missingData.minimumRatePercent, 100)) {
-    insights.push(insight("missing_data", "More evidence can improve map quality", `${missingData.numerator} of ${missingData.denominator} records are missing ${missingData.label.toLowerCase()}.`, missingData, missingData.supportingFilters));
+    insights.push(insight("missing_data", "More evidence can improve map quality", `${missingData.numerator} of ${missingData.denominator} records are missing ${missingData.label.toLowerCase()}.`, missingData, filtersForMissingDimension(missingData.dimension)));
   }
   const contacts = input.publicContacts;
   if (contacts && contacts.denominator >= thresholds.publicContacts.minimumGroupSize && isBelow(contacts, thresholds.publicContacts.maximumAvailabilityPercentExclusive, 100)) {
-    insights.push(insight("low_public_contact_coverage", "Public contact coverage is limited", `${contacts.numerator} of ${contacts.denominator} records have ${contacts.label.toLowerCase()}.`, contacts, contactSupportingFilters(contacts.supportingFilters)));
+    insights.push(insight("low_public_contact_coverage", "Public contact coverage is limited", `${contacts.numerator} of ${contacts.denominator} records have ${contacts.label.toLowerCase()}.`, contacts, parseEcosystemFilters({ publicContact: "missing" })));
   }
   const dependencySignals = input.dependencySignals;
   if (dependencySignals && dependencySignals.numerator >= thresholds.dependencySignals.minimumSignals) {
-    insights.push(insight("dependency_related_signals", "Dependency-related signals merit review", `${dependencySignals.numerator} active dependency-related signals are represented across ${dependencySignals.denominator} organisations.`, dependencySignals, dependencySignals.supportingFilters));
+    insights.push(insight("dependency_related_signals", "Dependency-related signals merit review", `${dependencySignals.numerator} active dependency-related signals are represented across ${dependencySignals.denominator} organisations.`, dependencySignals, parseEcosystemFilters({ activeSignalType: dependencyRelatedSignalTypes })));
   }
   const staleEvidence = input.staleEvidence;
   if (staleEvidence && isAtLeast(staleEvidence, thresholds.staleEvidence.minimumAffectedSharePercent, 100)) {
-    insights.push(insight("stale_evidence", "Evidence freshness needs review", `${staleEvidence.numerator} of ${staleEvidence.denominator} records have evidence older than the ${thresholds.staleEvidence.maximumAgeDays}-day freshness threshold.`, staleEvidence, staleEvidenceSupportingFilters(staleEvidence.supportingFilters)));
+    insights.push(insight("stale_evidence", "Evidence freshness needs review", `${staleEvidence.numerator} of ${staleEvidence.denominator} records have evidence older than the ${thresholds.staleEvidence.maximumAgeDays}-day freshness threshold.`, staleEvidence, parseEcosystemFilters({ evidenceFreshness: "stale" })));
   }
   return insights;
 }

@@ -187,6 +187,35 @@ describe("ecosystem intelligence filters", () => {
     expect(reparsed.headquartersCities).toEqual(["bengaluru", "unknown"]);
   });
 
+  it("round-trips representative state, union-territory, city-alias, and canonical city keys", () => {
+    const filters = parseEcosystemFilters({
+      headquartersState: [
+        "haryana",
+        "uttar pradesh",
+        "gujarat",
+        "kerala",
+        "west bengal",
+        "jammu and kashmir",
+        "NCT",
+      ],
+      headquartersCity: ["Bombay", "greater_noida", "unknown"],
+    });
+    const reparsed = filtersFromSearchParams(
+      new URLSearchParams(serializeEcosystemFilters(filters)),
+    );
+    expect(reparsed.headquartersStates).toEqual([
+      "delhi",
+      "gujarat",
+      "haryana",
+      "jammu_and_kashmir",
+      "kerala",
+      "uttar_pradesh",
+      "west_bengal",
+    ]);
+    expect(reparsed.headquartersCities).toEqual(["greater_noida", "mumbai", "unknown"]);
+    expect(() => parseEcosystemFilters({ headquartersCity: "free text city" })).toThrow();
+  });
+
   it("rejects invalid taxonomy keys, unknown fields, invalid confidence, reversed dates, and page sizes above 100", () => {
     for (const value of [
       { ecosystemDomain: "not_a_domain" },
@@ -303,6 +332,8 @@ describe("ecosystem intelligence evidence and readiness", () => {
         new Date("2026-01-31T00:00:00.000Z"),
       ),
     ).toBe(false);
+    expect(() => activeUntilForSignal({ type: "product_launch", occurredAt: "not-a-date" })).toThrow("occurredAt");
+    expect(() => activeUntilForSignal({ type: "product_launch", occurredAt: "2026-01-01", expiresAt: "not-a-date" })).toThrow("expiresAt");
   });
 
   it("reports relationship readiness only at eight evidenced edges spanning five candidates", () => {
@@ -320,7 +351,7 @@ describe("ecosystem intelligence evidence and readiness", () => {
         numerator: 198,
         denominator: 500,
         label: "Technical layers",
-        supportingFilters: parseEcosystemFilters({ technicalLayer: "mechanical_and_actuation" }),
+        dimension: "technical_layer",
       },
     });
     expect(insights.map((insight) => insight.ruleKey)).toContain("representation_below_target");
@@ -330,7 +361,7 @@ describe("ecosystem intelligence evidence and readiness", () => {
         numerator: 37,
         denominator: 62,
         label: "Karnataka",
-        supportingFilters: parseEcosystemFilters({ headquartersState: "karnataka" }),
+        stateKey: "karnataka",
       },
     });
     expect(concentration.map((insight) => insight.ruleKey)).not.toContain("geographic_concentration");
@@ -342,37 +373,34 @@ describe("ecosystem intelligence evidence and readiness", () => {
         numerator: 2,
         denominator: 10,
         label: "Technical layers",
-        supportingFilters: parseEcosystemFilters({ technicalLayer: "mechanical_and_actuation" }),
+        dimension: "ecosystem_role",
       },
       geographicConcentration: {
         numerator: 4,
         denominator: 5,
         label: "Karnataka",
-        supportingFilters: parseEcosystemFilters({ headquartersState: "karnataka" }),
+        stateKey: "karnataka",
       },
       missingData: {
         numerator: 3,
         denominator: 10,
         label: "Ecosystem roles",
-        supportingFilters: parseEcosystemFilters({ ecosystemRole: "component_supplier" }),
+        dimension: "technical_layer",
       },
       publicContacts: {
         numerator: 1,
         denominator: 4,
         label: "Public professional contacts",
-        supportingFilters: parseEcosystemFilters({ publicContactAvailability: "unavailable" }),
       },
       dependencySignals: {
         numerator: 3,
         denominator: 3,
         label: "Dependency-related signals",
-        supportingFilters: parseEcosystemFilters({ activeSignalType: "partnership" }),
       },
       staleEvidence: {
         numerator: 3,
         denominator: 10,
         label: "Current evidence",
-        supportingFilters: parseEcosystemFilters({ evidenceFreshness: "stale" }),
       },
     });
     expect(insights.length).toBe(6);
@@ -389,19 +417,24 @@ describe("ecosystem intelligence evidence and readiness", () => {
       expect(insight.copy).toContain(insight.ruleKey);
       expect(insight.supportingFilters.page).toBe(1);
     }
-    expect(insights.find((insight) => insight.ruleKey === "stale_evidence")?.supportingFilters.evidenceFreshness).toBe("stale");
-    expect(insights.find((insight) => insight.ruleKey === "low_public_contact_coverage")?.supportingFilters.publicContactAvailability).toBe("unavailable");
-    expect(insights.find((insight) => insight.ruleKey === "representation_below_target")?.supportingFilters.technicalLayers).toEqual(["mechanical_and_actuation"]);
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "representation_below_target")!.supportingFilters)).toBe("ecosystemRole=unknown");
     const geographicInsight = insights.find((insight) => insight.ruleKey === "geographic_concentration");
-    expect(geographicInsight?.supportingFilters.headquartersStates).toEqual(["karnataka"]);
     expect(serializeEcosystemFilters(geographicInsight!.supportingFilters)).toBe("headquartersState=karnataka");
-    expect(insights.find((insight) => insight.ruleKey === "missing_data")?.supportingFilters.ecosystemRoles).toEqual(["component_supplier"]);
-    expect(insights.find((insight) => insight.ruleKey === "dependency_related_signals")?.supportingFilters.activeSignalTypes).toEqual(["partnership"]);
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "missing_data")!.supportingFilters)).toBe("technicalLayer=unknown");
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "low_public_contact_coverage")!.supportingFilters)).toBe("publicContact=missing");
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "dependency_related_signals")!.supportingFilters)).toBe("activeSignalType=partnership");
+    expect(serializeEcosystemFilters(insights.find((insight) => insight.ruleKey === "stale_evidence")!.supportingFilters)).toBe("evidenceFreshness=stale");
   });
 
-  it("rejects generated insights that omit their explicit supporting filter", () => {
+  it("rejects unsupported missing-data dimensions", () => {
     expect(() => buildResearchGapInsights({
-      representation: { numerator: 2, denominator: 10, label: "Technical layers" } as never,
-    })).toThrow("supporting filter");
+      missingData: { numerator: 3, denominator: 10, label: "Unsupported", dimension: "systems_context" } as never,
+    })).toThrow("Unsupported missing-data dimension");
+  });
+
+  it("rejects unregistered representation dimensions", () => {
+    expect(() => buildResearchGapInsights({
+      representation: { numerator: 2, denominator: 10, label: "Unsupported", dimension: "systems_context" } as never,
+    })).toThrow("Unsupported representation dimension");
   });
 });
