@@ -80,6 +80,9 @@ function storedContext() {
         isPrimarySource: true,
         isSyndicated: false,
         supportsIndiaRelevance: true,
+        supportedFieldPaths: [
+          "indiaRelevance.existing_India_presence.manufacturing",
+        ],
       },
     ],
     promotionSupportingSignalIds: [PRIMARY_ID],
@@ -152,6 +155,7 @@ function repositoryDouble(
   overrides: Partial<Record<keyof GlobalRadarPromotionRepositoryPort, unknown>> = {},
 ): GlobalRadarPromotionRepositoryPort {
   return {
+    lookupPromotionReplay: vi.fn(async () => ({ outcome: "not_found" })),
     loadContext: vi.fn(),
     promote: vi.fn(),
     reverse: vi.fn(),
@@ -367,6 +371,10 @@ describe("Global Radar promotion service", () => {
         ],
       },
     }));
+    repository.promote = vi.fn(async () => ({
+      outcome: "conflict" as const,
+      reason: "eligibility_not_met",
+    }));
     await expect(
       service(repository).promote(
         ACTOR,
@@ -376,9 +384,68 @@ describe("Global Radar promotion service", () => {
       outcome: "ineligible",
       reason: "primary_signal_hard_gates_failed",
     });
+    expect(repository.promote).toHaveBeenCalledTimes(1);
   });
 
-  it("returns revision conflicts before writing and maps safe repository failures", async () => {
+  it("does not treat expansion or request evidence as a documented Indian relationship", async () => {
+    const repository = repositoryDouble({
+      loadContext: vi.fn(async () => ({
+        outcome: "found",
+        context: {
+          ...storedContext(),
+          evidence: [
+            {
+              ...storedContext().evidence[0]!,
+              supportedFieldPaths: [
+                "indiaRelevance.India_expansion.manufacturing",
+                "indiaRelevance.explicit_India.suppliers",
+              ],
+            },
+          ],
+        },
+      })),
+      promote: vi.fn(async () => ({
+        outcome: "conflict" as const,
+        reason: "eligibility_not_met",
+      })),
+    });
+
+    await expect(
+      service(repository).promote(
+        ACTOR,
+        promotionInput("documented_indian_relationship"),
+      ),
+    ).resolves.toEqual({
+      outcome: "ineligible",
+      reason: "missing_documented_indian_relationship",
+    });
+    expect(repository.promote).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays an exact completed promotion before checking post-promotion revisions", async () => {
+    const repository = repositoryDouble({
+      lookupPromotionReplay: vi.fn(async () => ({
+        outcome: "replayed",
+        promotion: promotionReadModel(),
+      })),
+      loadContext: vi.fn(),
+      promote: vi.fn(),
+    });
+
+    await expect(
+      service(repository).promote(
+        ACTOR,
+        promotionInput("qualified_india_direct_demand"),
+      ),
+    ).resolves.toMatchObject({
+      outcome: "replayed",
+      promotion: { status: "active" },
+    });
+    expect(repository.loadContext).not.toHaveBeenCalled();
+    expect(repository.promote).not.toHaveBeenCalled();
+  });
+
+  it("lets the repository durably record revision conflicts and maps safe failures", async () => {
     const repository = repositoryDouble({
       loadContext: vi.fn(async () => ({
         outcome: "found",
@@ -388,7 +455,10 @@ describe("Global Radar promotion service", () => {
           promotionSupportingSignalIds: [PRIMARY_ID],
         }),
       })),
-      promote: vi.fn(),
+      promote: vi.fn(async () => ({
+        outcome: "conflict" as const,
+        reason: "revision_mismatch",
+      })),
     });
     const promotionService = service(repository);
 
@@ -399,7 +469,7 @@ describe("Global Radar promotion service", () => {
       reason: "revision_mismatch",
       httpStatus: 409,
     });
-    expect(repository.promote).not.toHaveBeenCalled();
+    expect(repository.promote).toHaveBeenCalledTimes(1);
 
     repository.loadContext = vi.fn(async () => ({
       outcome: "found" as const,

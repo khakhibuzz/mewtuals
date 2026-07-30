@@ -324,6 +324,8 @@ export {
 export type { SearchQuery } from "./query-generator";
 
 export {
+  evidenceSupportsDocumentedIndianRelationship,
+  isGlobalRadarEvidenceFieldPathSupported,
   normalizeRadarEvidence,
   radarEvidenceNormalizationFailureReasons,
   radarEvidenceProposalSchema,

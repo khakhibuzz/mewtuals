@@ -2,7 +2,10 @@ import {
   discoveryCandidateInputSchema,
   type DiscoveryBatchCandidate,
 } from "../../app/domain/discovery";
-import { createGlobalRadarFingerprint } from "../../app/domain/global-radar";
+import {
+  createGlobalRadarFingerprint,
+  evidenceSupportsDocumentedIndianRelationship,
+} from "../../app/domain/global-radar";
 import type {
   GlobalEntity,
   GlobalRadarPromotion,
@@ -69,6 +72,7 @@ function evidenceSafeSnapshot(evidence: readonly GlobalSignalEvidence[]) {
     isSyndicated: item.isSyndicated,
     supportsDirectDemand: item.supportsDirectDemand,
     supportsIndiaRelevance: item.supportsIndiaRelevance,
+    supportedFieldPaths: [...item.supportedFieldPaths].sort(),
     observedAt: item.observedAt.toISOString(),
   }));
 }
@@ -199,7 +203,10 @@ export function promotionEligibilityMet(
       (source) =>
         source.isPrimarySource &&
         !source.isSyndicated &&
-        source.supportsIndiaRelevance,
+        source.supportsIndiaRelevance &&
+        evidenceSupportsDocumentedIndianRelationship(
+          source.supportedFieldPaths,
+        ),
     );
   }
   return (

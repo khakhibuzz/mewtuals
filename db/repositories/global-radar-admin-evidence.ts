@@ -1,6 +1,7 @@
 import {
   canonicalizeEvidenceUrl,
   createEvidenceFingerprint,
+  isGlobalRadarEvidenceFieldPathSupported,
   persistableRadarEvidenceSchema,
 } from "../../app/domain/global-radar";
 
@@ -91,6 +92,18 @@ export function canonicalizeGlobalRadarAdminEvidence(
     canonicalSourceUrl,
     isPrimarySource: value.isPrimarySource,
   });
+  const supportedFieldPaths = [...new Set(value.supportedFieldPaths)].sort();
+  if (
+    supportedFieldPaths.some(
+      (path) => !isGlobalRadarEvidenceFieldPathSupported(path),
+    )
+  ) return null;
+  const supportsDirectDemand = supportedFieldPaths.some((path) =>
+    path.startsWith("directDemandAsk."),
+  );
+  const supportsIndiaRelevance = supportedFieldPaths.some((path) =>
+    path.startsWith("indiaRelevance."),
+  );
   const { globalEntityId, ...persistableValue } = value;
   const parsed = persistableRadarEvidenceSchema.safeParse({
     contributorEntityRef: null,
@@ -100,7 +113,9 @@ export function canonicalizeGlobalRadarAdminEvidence(
     observedAt: now.toISOString(),
     rawMetadata: {},
     evidenceFingerprint,
-    supportedFieldPaths: [...value.supportedFieldPaths],
+    supportsDirectDemand,
+    supportsIndiaRelevance,
+    supportedFieldPaths,
   });
   if (!parsed.success) return null;
   if (

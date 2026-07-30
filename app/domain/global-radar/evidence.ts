@@ -110,6 +110,20 @@ const indiaFactKinds = new Set([
   "service",
   "requirement_access",
 ]);
+
+export function evidenceSupportsDocumentedIndianRelationship(
+  supportedFieldPaths: readonly string[],
+): boolean {
+  return supportedFieldPaths.some((path) => {
+    const segments = path.split(".");
+    return (
+      segments.length === 3 &&
+      segments[0] === "indiaRelevance" &&
+      segments[1] === "existing_India_presence" &&
+      indiaFactKinds.has(segments[2] ?? "")
+    );
+  });
+}
 const requirementEvidenceFields = new Set([
   ...Object.keys(normalizedRequirementInputSchema.shape),
   "globallyDeliverable",
@@ -160,7 +174,7 @@ export const radarEvidenceProposalSchema = z
       });
     }
     proposal.supportedFieldPaths.forEach((path, index) => {
-      if (!isSupportedFieldPath(path)) {
+      if (!isGlobalRadarEvidenceFieldPathSupported(path)) {
         context.addIssue({
           code: "custom",
           message: "Evidence field provenance is not supported.",
@@ -205,7 +219,7 @@ export type RadarEvidenceNormalizationResult =
       reason: RadarEvidenceNormalizationFailureReason;
     }>;
 
-function isSupportedFieldPath(path: string): boolean {
+export function isGlobalRadarEvidenceFieldPathSupported(path: string): boolean {
   if (responsePathFields.has(path)) return true;
   const segments = path.split(".");
   if (segments[0] === "signal" && signalEvidenceFields.has(segments[1] ?? "")) {
@@ -314,7 +328,9 @@ export function normalizeRadarEvidence(
     !Array.isArray(input) &&
     Array.isArray((input as Record<string, unknown>).supportedFieldPaths) &&
     ((input as Record<string, unknown>).supportedFieldPaths as unknown[]).some(
-      (path) => typeof path === "string" && !isSupportedFieldPath(path),
+      (path) =>
+        typeof path === "string" &&
+        !isGlobalRadarEvidenceFieldPathSupported(path),
     )
   ) {
     return reject("unsupported_field_path");
@@ -328,7 +344,11 @@ export function normalizeRadarEvidence(
   if (proposal.sourceKind === "search_result") {
     return reject("search_result_is_not_evidence");
   }
-  if (proposal.supportedFieldPaths.some((path) => !isSupportedFieldPath(path))) {
+  if (
+    proposal.supportedFieldPaths.some(
+      (path) => !isGlobalRadarEvidenceFieldPathSupported(path),
+    )
+  ) {
     return reject("unsupported_field_path");
   }
   if (

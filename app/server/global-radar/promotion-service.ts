@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  evidenceSupportsDocumentedIndianRelationship,
   promotionEligibilityPaths,
   type IndiaRelevanceType,
   type PromotionEligibilityPath,
@@ -83,6 +84,7 @@ type StoredGlobalRadarPromotionContext = Readonly<{
     isPrimarySource: boolean;
     isSyndicated: boolean;
     supportsIndiaRelevance: boolean;
+    supportedFieldPaths: readonly string[];
   }>[];
   promotionSupportingSignalIds: readonly string[];
   eligibilityFacts: Readonly<{
@@ -110,7 +112,29 @@ export type GlobalRadarPromotionEligibility = Readonly<
     }
 >;
 
+type GlobalRadarPromotionRepositoryInput = Readonly<{
+  globalEntityId: string;
+  primarySignalId: string;
+  supportingSignalIds: readonly string[];
+  eligibilityPath: PromotionEligibilityPath;
+  expectedEntityRevision: number;
+  expectedPrimarySignalRevision: number;
+  expectedSupportingSignalRevisions: Readonly<Record<string, number>>;
+  actor: GlobalRadarAdminActor;
+  idempotencyKey: string;
+  reason: string;
+  now: Date;
+}>;
+
+type GlobalRadarPromotionRepositoryResult =
+  | { outcome: "promoted" | "replayed"; promotion: unknown }
+  | { outcome: "conflict"; reason: string; promotion?: unknown }
+  | { outcome: "failed"; reason: string; promotion?: unknown };
+
 export type GlobalRadarPromotionRepositoryPort = {
+  lookupPromotionReplay(
+    input: GlobalRadarPromotionRepositoryInput,
+  ): Promise<GlobalRadarPromotionRepositoryResult | { outcome: "not_found" }>;
   loadContext(input: {
     globalEntityId: string;
     primarySignalId: string;
@@ -123,23 +147,9 @@ export type GlobalRadarPromotionRepositoryPort = {
     | { outcome: "invalid_input" }
     | { outcome: "not_found" }
   >;
-  promote(input: {
-    globalEntityId: string;
-    primarySignalId: string;
-    supportingSignalIds: readonly string[];
-    eligibilityPath: PromotionEligibilityPath;
-    expectedEntityRevision: number;
-    expectedPrimarySignalRevision: number;
-    expectedSupportingSignalRevisions: Readonly<Record<string, number>>;
-    actor: GlobalRadarAdminActor;
-    idempotencyKey: string;
-    reason: string;
-    now: Date;
-  }): Promise<
-    | { outcome: "promoted" | "replayed"; promotion: unknown }
-    | { outcome: "conflict"; reason: string; promotion?: unknown }
-    | { outcome: "failed"; reason: string; promotion?: unknown }
-  >;
+  promote(
+    input: GlobalRadarPromotionRepositoryInput,
+  ): Promise<GlobalRadarPromotionRepositoryResult>;
   reverse(input: {
     globalEntityId: string;
     expectedEntityRevision: number;
@@ -257,7 +267,10 @@ function promotionContext(
         isPrimarySource: evidence.isPrimarySource,
         isSyndicated: evidence.isSyndicated,
         supportsDocumentedIndianRelationship:
-          evidence.supportsIndiaRelevance,
+          evidence.supportsIndiaRelevance &&
+          evidenceSupportsDocumentedIndianRelationship(
+            evidence.supportedFieldPaths,
+          ),
       })),
     promotionSupportingSignalIds: [...value.promotionSupportingSignalIds],
   };
@@ -496,6 +509,34 @@ export function createGlobalRadarPromotionService(
     if (!parsed.success) return { outcome: "invalid" as const };
     const input = parsed.data;
     const evaluatedAt = now();
+    const selectedSignalIds = [
+      ...new Set([input.primarySignalId, ...input.supportingSignalIds]),
+    ].sort();
+    const expectedSupportingSignalRevisions = Object.fromEntries([
+      [input.primarySignalId, input.expectedPrimarySignalRevision],
+      ...input.expectedSupportingSignalRevisions.map(
+        ({ signalId, revision }) => [signalId, revision] as const,
+      ),
+    ]);
+    const repositoryInput: GlobalRadarPromotionRepositoryInput = {
+      globalEntityId: input.entityId,
+      primarySignalId: input.primarySignalId,
+      supportingSignalIds: selectedSignalIds,
+      eligibilityPath: input.eligibilityPath,
+      expectedEntityRevision: input.expectedEntityRevision,
+      expectedPrimarySignalRevision: input.expectedPrimarySignalRevision,
+      expectedSupportingSignalRevisions,
+      idempotencyKey: input.idempotencyKey.toLowerCase(),
+      reason: `${input.reason}\nRationale: ${input.rationale}`,
+      actor: administrator,
+      now: evaluatedAt,
+    };
+    const replay = await dependencies.repository.lookupPromotionReplay(
+      repositoryInput,
+    );
+    if (replay.outcome !== "not_found") {
+      return mappedRepositoryResult(replay);
+    }
     const loaded = await dependencies.repository.loadContext({
       globalEntityId: input.entityId,
       primarySignalId: input.primarySignalId,
@@ -506,52 +547,6 @@ export function createGlobalRadarPromotionService(
       return { outcome: "invalid" as const };
     }
     const context = promotionContext(loaded.context, evaluatedAt);
-    const selectedSignalIds = [
-      ...new Set([input.primarySignalId, ...input.supportingSignalIds]),
-    ].sort();
-    const persistedSignalIds = [
-      ...new Set(context.promotionSupportingSignalIds),
-    ].sort();
-    if (
-      selectedSignalIds.length !== persistedSignalIds.length ||
-      selectedSignalIds.some((id, index) => id !== persistedSignalIds[index])
-    ) {
-      return {
-        outcome: "conflict" as const,
-        reason: "supporting_signal_invalid" as const,
-        httpStatus: 409 as const,
-      };
-    }
-    const supportingById = new Map(
-      [context.primarySignal, ...context.supportingSignals].map((signal) => [
-        signal.id,
-        signal,
-      ]),
-    );
-    const expectedSupportingSignalRevisions = Object.fromEntries([
-      [input.primarySignalId, input.expectedPrimarySignalRevision],
-      ...input.expectedSupportingSignalRevisions.map(
-        ({ signalId, revision }) => [signalId, revision] as const,
-      ),
-    ]);
-    if (
-      context.entity.id !== input.entityId ||
-      context.primarySignal.id !== input.primarySignalId ||
-      context.entity.revision !== input.expectedEntityRevision ||
-      context.primarySignal.revision !== input.expectedPrimarySignalRevision ||
-      selectedSignalIds.some(
-        (id) =>
-          !supportingById.has(id) ||
-          supportingById.get(id)!.revision !==
-            expectedSupportingSignalRevisions[id],
-      )
-    ) {
-      return {
-        outcome: "conflict" as const,
-        reason: "revision_mismatch" as const,
-        httpStatus: 409 as const,
-      };
-    }
     const eligibility = evaluateGlobalRadarPromotionEligibility({
       eligibilityPath: input.eligibilityPath,
       context,
@@ -559,27 +554,18 @@ export function createGlobalRadarPromotionService(
       scoreVersion: dependencies.scoreVersion,
       now: evaluatedAt,
     });
-    if (!eligibility.eligible) {
+    const result = await dependencies.repository.promote(repositoryInput);
+    if (
+      !eligibility.eligible &&
+      result.outcome === "conflict" &&
+      result.reason === "eligibility_not_met"
+    ) {
       return {
         outcome: "ineligible" as const,
         reason: eligibility.reason,
       };
     }
-    return mappedRepositoryResult(
-      await dependencies.repository.promote({
-        globalEntityId: input.entityId,
-        primarySignalId: input.primarySignalId,
-        supportingSignalIds: persistedSignalIds,
-        eligibilityPath: input.eligibilityPath,
-        expectedEntityRevision: input.expectedEntityRevision,
-        expectedPrimarySignalRevision: input.expectedPrimarySignalRevision,
-        expectedSupportingSignalRevisions,
-        idempotencyKey: input.idempotencyKey.toLowerCase(),
-        reason: `${input.reason}\nRationale: ${input.rationale}`,
-        actor: administrator,
-        now: evaluatedAt,
-      }),
-    );
+    return mappedRepositoryResult(result);
   }
 
   async function reversePromotion(

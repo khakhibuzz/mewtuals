@@ -145,7 +145,14 @@ export type LoadGlobalRadarPromotionContextResult =
     }>
   | Readonly<{ outcome: "invalid_input" | "not_found" }>;
 
+export type LookupGlobalRadarPromotionReplayResult =
+  | PromoteGlobalRadarEntityResult
+  | Readonly<{ outcome: "not_found" }>;
+
 export type GlobalRadarPromotionRepository = Readonly<{
+  lookupPromotionReplay(
+    input: PromoteGlobalRadarEntityInput,
+  ): Promise<LookupGlobalRadarPromotionReplayResult>;
   loadContext(
     input: LoadGlobalRadarPromotionContextInput,
   ): Promise<LoadGlobalRadarPromotionContextResult>;

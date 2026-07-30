@@ -948,7 +948,7 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
     if (!entityBeforePromotion || !signalBeforePromotion) {
       throw new Error("Promotion revisions were not available.");
     }
-    const promoted = await radar.admin.promote(ADMIN_ACTOR, {
+    const promotionRequest = {
       entityId: entityBeforePromotion.id,
       primarySignalId: signalBeforePromotion.id,
       supportingSignalIds: [],
@@ -960,7 +960,8 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
       reason: "Approve the evidence-backed candidate intake.",
       rationale:
         "The fictional direct-demand signal is qualified and explicitly India relevant.",
-    });
+    } as const;
+    const promoted = await radar.admin.promote(ADMIN_ACTOR, promotionRequest);
     expect(promoted).toMatchObject({
       outcome: "promoted",
       promotion: {
@@ -984,6 +985,43 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
         .from(discoveryCandidates)
         .where(eq(discoveryCandidates.canonicalUrl, DISCOVERY_CANDIDATE_URL)),
     ).toHaveLength(1);
+
+    const [countsBeforePromotionReplay] = await database
+      .select({
+        promotions: count(globalRadarPromotions.id),
+        discoveryRuns: count(discoveryRuns.id),
+        discoveryCandidates: count(discoveryCandidates.id),
+      })
+      .from(globalRadarPromotions)
+      .leftJoin(discoveryRuns, eq(discoveryRuns.trigger, "radar_promotion"))
+      .leftJoin(
+        discoveryCandidates,
+        eq(discoveryCandidates.canonicalUrl, DISCOVERY_CANDIDATE_URL),
+      );
+    currentTime = at("2026-07-31T00:00:16.500Z");
+    const promotionReplay = await radar.admin.promote(
+      ADMIN_ACTOR,
+      promotionRequest,
+    );
+    expect(promotionReplay).toMatchObject({
+      outcome: "replayed",
+      promotion: {
+        status: "active",
+      },
+    });
+    const [countsAfterPromotionReplay] = await database
+      .select({
+        promotions: count(globalRadarPromotions.id),
+        discoveryRuns: count(discoveryRuns.id),
+        discoveryCandidates: count(discoveryCandidates.id),
+      })
+      .from(globalRadarPromotions)
+      .leftJoin(discoveryRuns, eq(discoveryRuns.trigger, "radar_promotion"))
+      .leftJoin(
+        discoveryCandidates,
+        eq(discoveryCandidates.canonicalUrl, DISCOVERY_CANDIDATE_URL),
+      );
+    expect(countsAfterPromotionReplay).toEqual(countsBeforePromotionReplay);
 
     currentTime = at("2026-07-31T00:00:17.000Z");
     const [entityAfterPromotion] = await database

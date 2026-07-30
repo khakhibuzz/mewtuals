@@ -117,6 +117,7 @@ type SeedOptions = Readonly<{
     | "globally_open"
     | "no_current_India_fit";
   primaryEvidenceSupportsIndia?: boolean;
+  primaryEvidenceSupportedFieldPaths?: readonly string[];
   primarySourceUrls?: readonly string[];
   repeatedSignalCount?: number;
 }>;
@@ -300,7 +301,9 @@ async function seedPromotionFixture(options: SeedOptions = {}) {
         options.primaryEvidenceSupportsIndia ?? true,
       rawMetadata: {},
       evidenceFingerprint: hash(`evidence:${suffix}:${index}`),
-      supportedFieldPaths: ["signal.factualSummary", "signal.indiaRelevance"],
+      supportedFieldPaths:
+        [...(options.primaryEvidenceSupportedFieldPaths ??
+          ["signal.factualSummary"])],
       createdAt: now,
     });
   }
@@ -390,7 +393,13 @@ describe("Global Demand Radar controlled promotion bridge", () => {
     ],
     [
       "documented_indian_relationship",
-      { primaryClass: "demand_precursor", primaryEvidenceSupportsIndia: true },
+      {
+        primaryClass: "demand_precursor",
+        primaryEvidenceSupportsIndia: true,
+        primaryEvidenceSupportedFieldPaths: [
+          "indiaRelevance.existing_India_presence.manufacturing",
+        ],
+      },
     ],
     [
       "exceptional_strategic_relevance",
@@ -518,7 +527,18 @@ describe("Global Demand Radar controlled promotion bridge", () => {
       fixture,
       "qualified_india_direct_demand",
     );
+    await expect(repository.lookupPromotionReplay(input)).resolves.toEqual({
+      outcome: "not_found",
+    });
     const first = await repository.promote(input);
+    const lookupReplay = await repository.lookupPromotionReplay({
+      ...input,
+      now: new Date(input.now.getTime() + 500),
+    });
+    const lookupChanged = await repository.lookupPromotionReplay({
+      ...input,
+      reason: "A changed request must not reuse the idempotency key.",
+    });
     const replay = await repository.promote({
       ...input,
       now: new Date(input.now.getTime() + 1_000),
@@ -529,6 +549,11 @@ describe("Global Demand Radar controlled promotion bridge", () => {
     });
 
     expect(first).toMatchObject({ outcome: "promoted" });
+    expect(lookupReplay).toMatchObject({ outcome: "replayed" });
+    expect(lookupChanged).toEqual({
+      outcome: "conflict",
+      reason: "idempotency_mismatch",
+    });
     expect(replay).toMatchObject({ outcome: "replayed" });
     expect(changed).toEqual({
       outcome: "conflict",
@@ -538,6 +563,35 @@ describe("Global Demand Radar controlled promotion bridge", () => {
     expect(await db.select().from(discoveryRuns)).toHaveLength(1);
     expect(await db.select().from(discoveryCandidates)).toHaveLength(1);
   });
+
+  it.each([
+    "indiaRelevance.India_expansion.manufacturing",
+    "indiaRelevance.explicit_India.suppliers",
+    "indiaRelevance.inferred_India_compatible.requirement_access",
+  ])(
+    "does not treat %s as a documented existing Indian relationship",
+    async (supportedFieldPath) => {
+      const fixture = await seedPromotionFixture({
+        primaryClass: "demand_precursor",
+        primaryEvidenceSupportsIndia: true,
+        primaryEvidenceSupportedFieldPaths: [supportedFieldPath],
+      });
+      const result = await createGlobalRadarPromotionRepository(
+        db,
+        configuration,
+      ).promote(
+        promotionInput(fixture, "documented_indian_relationship"),
+      );
+
+      expect(result).toMatchObject({
+        outcome: "conflict",
+        reason: "eligibility_not_met",
+        promotion: { status: "conflicted" },
+      });
+      expect(await db.select().from(discoveryCandidates)).toHaveLength(0);
+      expect(await db.select().from(discoveryRuns)).toHaveLength(0);
+    },
+  );
 
   it("serializes promotion against ordinary Discovery ingestion for the same identity", async () => {
     const fixture = await seedPromotionFixture();
@@ -619,9 +673,14 @@ describe("Global Demand Radar controlled promotion bridge", () => {
   it("records a bounded conflicted attempt without changing Radar or Discovery state", async () => {
     const fixture = await seedPromotionFixture();
     const repository = createGlobalRadarPromotionRepository(db, configuration);
+    const input = promotionInput(fixture, "qualified_india_direct_demand");
     const result = await repository.promote({
-      ...promotionInput(fixture, "qualified_india_direct_demand"),
+      ...input,
       expectedPrimarySignalRevision: 7,
+      expectedSupportingSignalRevisions: {
+        ...input.expectedSupportingSignalRevisions,
+        [input.primarySignalId]: 7,
+      },
     });
 
     expect(result).toMatchObject({

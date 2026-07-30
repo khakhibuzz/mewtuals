@@ -50,6 +50,7 @@ import {
   type GlobalRadarPromotionConfiguration,
   type GlobalRadarPromotionRepository,
   type GlobalRadarPromotionSuccess,
+  type LookupGlobalRadarPromotionReplayResult,
   type GlobalRadarReversalConflictReason,
   type LoadedGlobalRadarPromotionContext,
   type PromoteGlobalRadarEntityResult,
@@ -767,6 +768,23 @@ export function createGlobalRadarPromotionRepository(
   }
 
   return {
+    async lookupPromotionReplay(rawInput): Promise<LookupGlobalRadarPromotionReplayResult> {
+      const input = canonicalPromotionInput(rawInput);
+      if (!input) return { outcome: "conflict", reason: "invalid_input" };
+      return database.transaction(async (transaction) => {
+        const [existing] = await transaction
+          .select()
+          .from(globalRadarPromotions)
+          .where(
+            eq(globalRadarPromotions.idempotencyKey, input.idempotencyKey),
+          )
+          .limit(1);
+        return existing
+          ? existingPromotionOutcome(transaction, existing, input.requestHash)
+          : { outcome: "not_found" as const };
+      });
+    },
+
     async loadContext(rawInput) {
       const input = canonicalPromotionContextSelection(rawInput);
       if (!input) return { outcome: "invalid_input" };

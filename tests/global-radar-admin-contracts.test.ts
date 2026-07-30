@@ -361,6 +361,50 @@ describe("Global Radar administrator evidence contracts", () => {
     });
   });
 
+  it("derives support flags from field provenance instead of caller booleans", () => {
+    expect(
+      canonicalizeGlobalRadarAdminEvidence(
+        {
+          ...evidence(),
+          supportsDirectDemand: true,
+          supportsIndiaRelevance: true,
+          supportedFieldPaths: ["signal.factualSummary"],
+        },
+        now,
+      ),
+    ).toMatchObject({
+      supportsDirectDemand: false,
+      supportsIndiaRelevance: false,
+    });
+    expect(
+      canonicalizeGlobalRadarAdminEvidence(
+        {
+          ...evidence(),
+          supportsDirectDemand: false,
+          supportsIndiaRelevance: false,
+          supportedFieldPaths: [
+            "directDemandAsk.data_collection_request",
+            "indiaRelevance.existing_India_presence.manufacturing",
+          ],
+        },
+        now,
+      ),
+    ).toMatchObject({
+      supportsDirectDemand: true,
+      supportsIndiaRelevance: true,
+    });
+    expect(
+      canonicalizeGlobalRadarAdminEvidence(
+        {
+          ...evidence(),
+          supportsDirectDemand: true,
+          supportedFieldPaths: ["directDemandAsk.not_a_real_type"],
+        },
+        now,
+      ),
+    ).toBeNull();
+  });
+
   it("still rejects a future client observation proposal", () => {
     expect(
       canonicalizeGlobalRadarAdminEvidence(

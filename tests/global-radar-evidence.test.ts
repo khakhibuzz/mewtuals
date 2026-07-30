@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  evidenceSupportsDocumentedIndianRelationship,
   normalizeRadarEvidence,
   radarEvidenceProposalSchema,
 } from "../app/domain/global-radar/evidence";
@@ -113,6 +114,21 @@ describe("Global Radar evidence extraction", () => {
       },
       classification: { supportsDirectDemand: true },
     });
+  });
+
+  it("distinguishes an existing Indian relationship from other India evidence", () => {
+    expect(
+      evidenceSupportsDocumentedIndianRelationship([
+        "indiaRelevance.existing_India_presence.manufacturing",
+      ]),
+    ).toBe(true);
+    expect(
+      evidenceSupportsDocumentedIndianRelationship([
+        "indiaRelevance.India_expansion.manufacturing",
+        "indiaRelevance.explicit_India.suppliers",
+        "indiaRelevance.inferred_India_compatible.requirement_access",
+      ]),
+    ).toBe(false);
   });
 
   it("rejects unknown proposal fields and full-page-like material", () => {
