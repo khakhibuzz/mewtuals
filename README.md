@@ -106,8 +106,10 @@ npm run test:db
 npm run test:migrations
 npm run test:acceptance
 npm run test:e2e
+npm run typecheck
 npm run lint
 npm run build
+git diff --check
 ```
 
 ## Sites deployment preparation
@@ -194,6 +196,19 @@ See
 migrations, worker commands, the first trial, the exact daily Codex prompt,
 08:30 Asia/Kolkata scheduling, evidence rules, secret-safe temporary files,
 replay recovery, and the future provider seam.
+
+## Global Demand Radar
+
+Global Demand Radar is a separate public-evidence subsystem for direct demand,
+demand precursors, and ecosystem momentum. Administrators review its durable
+runs and signals under `/admin/global-demand-radar`; promotion is the only
+explicit write bridge into Discovery.
+
+See
+[docs/global-demand-radar-operations.md](docs/global-demand-radar-operations.md)
+for the five worker commands, private claim handling, public-evidence contract,
+exact-file replay, honest zero and partial behavior, manual runs, provider
+replacement boundary, and the proposed but not activated Radar schedules.
 
 ## Project shape
 

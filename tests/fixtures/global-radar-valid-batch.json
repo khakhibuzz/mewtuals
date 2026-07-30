@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "global-radar-batch-v1",
+  "promptVersion": "codex-public-web-v1",
+  "taxonomyVersion": "global-radar-v1",
+  "runId": "00000000-0000-4000-8000-000000000150",
+  "planFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "executedQueries": [],
+  "entities": [
+    {
+      "entityRef": "fictional-radar-operator",
+      "canonicalName": "Fictional Radar Operator",
+      "websiteUrl": "https://radar-operator.example/about",
+      "linkedinOrganizationUrl": null,
+      "stablePublicIdentifiers": [
+        {
+          "namespace": "official_website",
+          "value": "radar-operator.example"
+        }
+      ],
+      "canonicalCorporateGroupId": "group:fictional-radar-operator",
+      "headquartersCountry": "United States",
+      "headquartersCity": null,
+      "operatingCountries": ["United States"],
+      "organisationType": "fictional_test_organisation",
+      "sector": "robotics",
+      "shortDescription": "A fictional reserved-domain organisation used only to validate the worker contract.",
+      "rawMetadata": {}
+    }
+  ],
+  "signals": [],
+  "sourceErrors": []
+}
