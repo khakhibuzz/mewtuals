@@ -36,6 +36,16 @@
   outline-offset: 3px;
 }
 
+.watchlistEditor :is(input, select, textarea):focus-visible,
+.detailDocument a:focus-visible,
+.actionStack :is(input, select, textarea, button):focus-visible,
+.actionStack:focus-visible,
+.watchlist [role="alert"]:focus-visible,
+.runs [role="alert"]:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
 .listLayout,
 .watchlist,
 .runs,
@@ -44,6 +54,11 @@
   gap: 2rem;
   margin-top: 2rem;
   min-width: 0;
+}
+
+.metricGroups {
+  display: grid;
+  gap: 1.5rem;
 }
 
 .metrics {
@@ -85,7 +100,8 @@
 }
 
 .filters label,
-.manualRun label {
+.manualRun label,
+.watchlistEditor label {
   display: grid;
   min-width: 0;
   gap: 0.4rem;
@@ -102,6 +118,46 @@
   border: 1px solid var(--line-strong);
   background: var(--paper);
   color: var(--ink);
+}
+
+.watchlistEditor :is(input, select, textarea) {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.6rem;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.watchlistEditor {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  padding-block: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.watchlistEditor fieldset {
+  display: flex;
+  min-width: 0;
+  gap: 1rem;
+  margin: 0;
+  padding: 0.65rem;
+  border: 1px solid var(--line-strong);
+}
+
+.watchlistEditor fieldset label {
+  display: flex;
+  align-items: center;
+}
+
+.watchlistEditor textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.wideField {
+  grid-column: 1 / -1;
 }
 
 .filterActions,
@@ -266,19 +322,278 @@
   background: var(--paper-deep);
 }
 
+.notices {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.detailDocument,
+.detailSection,
+.detailCard,
+.actionStack,
+.actionForm,
+.actionForm fieldset {
+  min-width: 0;
+}
+
+.detailDocument {
+  display: grid;
+  gap: 0;
+  margin-top: 2rem;
+  overflow-wrap: anywhere;
+}
+
+.detailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 0 2rem;
+}
+
+.detailHeader p,
+.detailSection p,
+.detailSection blockquote {
+  overflow-wrap: anywhere;
+}
+
+.backLink {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+}
+
+.detailSection {
+  display: grid;
+  gap: 1rem;
+  padding: 2rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.detailSection:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.detailSection h2,
+.detailSection h3,
+.detailSection h4,
+.detailSection p,
+.detailSection blockquote {
+  margin: 0;
+}
+
+.lead {
+  max-width: 70ch;
+  font-size: 1.15rem;
+  line-height: 1.65;
+}
+
+.detailFacts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 0;
+}
+
+.detailFacts > div {
+  min-width: 0;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.detailFacts dt {
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.detailFacts dd {
+  margin: 0.35rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.detailCards,
+.evidenceList,
+.historyList,
+.noteList,
+.valueList {
+  display: grid;
+  min-width: 0;
+  gap: 0.75rem;
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.detailCards {
+  padding: 0;
+  list-style: none;
+}
+
+.detailCards > li,
+.evidenceList > li,
+.historyList > li,
+.noteList > li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detailCards > li {
+  display: grid;
+  gap: 0.35rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+}
+
+.detailCard {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+}
+
+.detailCard blockquote {
+  padding-inline-start: 1rem;
+  border-inline-start: 3px solid var(--ink);
+  line-height: 1.65;
+}
+
+.evidenceLinks,
+.layerSplit,
+.checkboxGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.evidenceOnly {
+  padding: 0.75rem;
+  border-inline-start: 3px solid var(--ink);
+  background: var(--paper-deep);
+  font-weight: 650;
+}
+
+.actionStack {
+  display: grid;
+  gap: 1rem;
+  padding-top: 1rem;
+}
+
+.actionStack [role="status"],
+.actionStack [role="alert"] {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line-strong);
+}
+
+.actionForm fieldset {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--line-strong);
+}
+
+.actionForm legend {
+  padding: 0 0.5rem;
+  font-weight: 700;
+}
+
+.actionForm label {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.actionForm :is(input, select, textarea) {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.65rem;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.actionForm textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.actionForm button,
+.actionStack [role="alert"] button {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+}
+
+.actionForm button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.actionForm fieldset > button,
+.actionForm fieldset > .actions,
+.actionForm fieldset > p,
+.actionForm fieldset > .scoreGrid,
+.actionForm fieldset > .actionGrid,
+.actionForm fieldset > .checkboxGrid {
+  grid-column: 1 / -1;
+}
+
+.scoreGrid,
+.actionGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.confirmation {
+  display: flex !important;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.65rem !important;
+}
+
+.confirmation input {
+  width: 1.25rem !important;
+  min-height: 1.25rem !important;
+}
+
 @media (max-width: 1180px) {
   .filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 900px) {
   .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .watchlistEditor { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tableFrame { display: none; }
   .signalCards { display: grid; }
+  .detailFacts,
+  .scoreGrid,
+  .actionGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 767px) {
   .tabRail { margin-inline: calc(-1 * var(--page-gutter)); padding-inline: var(--page-gutter); }
   .filters { grid-template-columns: 1fr; }
+  .watchlistEditor { grid-template-columns: 1fr; }
+  .wideField { grid-column: auto; }
   .filterActions,
   .actions,
   .manualRun,
@@ -290,7 +605,23 @@
   .manualRun label { width: 100%; }
   .signalFacts,
   .watchlistFacts,
-  .runFacts { grid-template-columns: 1fr; }
+  .runFacts,
+  .detailFacts,
+  .scoreGrid,
+  .actionGrid,
+  .layerSplit,
+  .evidenceLinks,
+  .checkboxGrid,
+  .actionForm fieldset { grid-template-columns: 1fr; }
+  .detailHeader { align-items: flex-start; flex-direction: column; }
+  .actionForm fieldset > button,
+  .actionForm fieldset > .actions,
+  .actionForm fieldset > p,
+  .actionForm fieldset > .scoreGrid,
+  .actionForm fieldset > .actionGrid,
+  .actionForm fieldset > .checkboxGrid { grid-column: auto; }
+  .actionForm button,
+  .actionStack [role="alert"] button { width: 100%; }
   .pagination { grid-template-columns: 1fr; text-align: center; }
   .pagination > :last-child { justify-self: center; }
 }
