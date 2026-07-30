@@ -120,6 +120,8 @@ function dependencies(
 }
 
 function safeDetail() {
+  const observedAt = "2026-07-31T05:00:00.000Z";
+  const empty = () => ({ total: 0, truncated: false, items: [] });
   return {
     id: SIGNAL_ID,
     revision: 2,
@@ -128,11 +130,232 @@ function safeDetail() {
     allowedActions: ["monitor", "promote"],
     sections: [
       {
-        id: "signal_overview",
-        heading: "Signal overview",
-        data: { title: "Fictional public demand" },
+        id: "organisation",
+        title: "Organisation",
+        data: { primary: null, associated: empty() },
+      },
+      {
+        id: "what_changed",
+        title: "What changed",
+        data: {
+          title: "Fictional public demand",
+          observedAt,
+          firstSeenAt: observedAt,
+          lastSeenAt: observedAt,
+        },
+      },
+      {
+        id: "signal_class",
+        title: "Signal class",
+        data: {
+          signalClass: "direct_demand",
+          signalType: "supplier_request",
+          theme: "robotics_manufacturing",
+          demandDomain: "robotics_hardware_and_ecosystem_demand",
+          sourceCountry: "China",
+          industry: "robotics",
+          status: "qualified",
+        },
+      },
+      {
+        id: "publicly_supported_facts",
+        title: "Publicly supported facts",
+        data: {
+          factualSummary: "A fictional organisation published a request.",
+          targetGeographies: ["Global"],
+          collectionGeographies: null,
+          manufacturingGeographies: ["India"],
+          deliveryGeographies: ["China"],
+          targetModelOrSystem: "industrial robot",
+        },
+      },
+      {
+        id: "mewtuals_interpretation",
+        title: "Mewtuals interpretation",
+        data: { summary: "The public request may support a partnership." },
+      },
+      {
+        id: "required_capabilities",
+        title: "Required capabilities",
+        data: {
+          targetCapabilityTags: ["contract_manufacturing"],
+          requiredCounterpartyArchetypes: ["manufacturer"],
+          requirements: empty(),
+        },
+      },
+      {
+        id: "physical_data_or_hardware_specifications",
+        title: "Physical-data or hardware specifications",
+        data: { items: [] },
+      },
+      {
+        id: "target_environments_and_tasks",
+        title: "Target environments and tasks",
+        data: { items: [] },
+      },
+      {
+        id: "indian_execution_archetypes",
+        title: "Indian execution archetypes",
+        data: { items: ["robotics_hardware_manufacturing"] },
+      },
+      {
+        id: "india_fit_reasoning_and_constraints",
+        title: "India-fit reasoning and constraints",
+        data: {
+          relevanceType: "globally_open",
+          rationale: "The fictional request is globally open.",
+          reasons: ["Public supplier route"],
+          constraints: ["Qualification required"],
+          unknowns: ["Volume"],
+          confidence: 75,
+          regulatoryFacts: {
+            known: false,
+            industrialSecrets: "possible",
+          },
+          logisticsFacts: { leadTimeKnown: false },
+        },
+      },
+      {
+        id: "systems_context_explanation",
+        title: "Systems-context explanation",
+        data: {
+          summary: "Components support an industrial robot.",
+          stackType: "robotics_hardware",
+          higherLevelSystemGoal: "Reliable manipulation",
+          relevantStackLayer: "hardware",
+          lowerLevelInputsRequired: ["components"],
+          transformationOrCapabilityAdded: "Assembly",
+          downstreamModelOrRobotBehavior: "Reliable motion",
+          whyTheRequirementMatters: "It enables deployment.",
+          possibleIndianExecutionRole: "Contract manufacturing",
+          factualElements: ["Public request"],
+          inferredElements: ["Possible Indian execution"],
+        },
+      },
+      {
+        id: "scale_and_timeline",
+        title: "Scale and timeline",
+        data: {
+          timeline: {
+            announcedAt: observedAt,
+            effectiveFrom: observedAt,
+            expiresAt: null,
+            evergreen: true,
+            reobserveBy: "2026-08-31T05:00:00.000Z",
+            observedAt,
+          },
+          requirements: [],
+        },
+      },
+      {
+        id: "public_response_path",
+        title: "Public response path",
+        data: {
+          evidenceOnly: true,
+          type: "supplier_or_partner_registration",
+          url: "https://fictional.example/suppliers",
+          businessEmail: null,
+          partnerApplicationUrl: "https://fictional.example/suppliers",
+        },
+      },
+      {
+        id: "compliance_flags",
+        title: "Compliance flags",
+        data: {
+          sensitiveDataFlags: {
+            faces: null,
+            voices: null,
+            biometrics: null,
+            gaze: null,
+            health: null,
+            children: null,
+            homeInteriors: null,
+            workplaceMonitoring: null,
+            preciseLocation: null,
+            roadUsers: null,
+            employeeData: null,
+            industrialSecrets: "possible",
+            defenceOrDualUse: null,
+            copyrightedMaterial: null,
+            exportControls: null,
+          },
+          facts: {
+            consent: null,
+            deIdentification: null,
+            legalReview: true,
+            knownResidencyRequirements: null,
+            participantRightsComplexity: null,
+          },
+        },
+      },
+      {
+        id: "supporting_evidence",
+        title: "Supporting evidence",
+        data: empty(),
+      },
+      {
+        id: "original_language_source",
+        title: "Original-language source",
+        data: empty(),
+      },
+      {
+        id: "english_summary",
+        title: "English summary",
+        data: empty(),
+      },
+      {
+        id: "score_rationale",
+        title: "Score rationale",
+        data: {
+          activeClass: "direct_demand",
+          score: 82,
+          coverage: 100,
+          policyVersion: "global-radar-score-v1",
+          components: {
+            demandExplicitness: 90,
+            evidenceConfidence: 80,
+            freshness: 90,
+            actionability: 80,
+            indiaFit: 75,
+            commercialPotential: 70,
+            repeatability: 70,
+            responseAccessibility: 85,
+            strategicLearning: 80,
+            complianceComplexity: 20,
+          },
+        },
+      },
+      {
+        id: "signal_history",
+        title: "Signal history",
+        data: empty(),
+      },
+      {
+        id: "admin_notes_and_actions",
+        title: "Admin notes and actions",
+        data: {
+          notes: empty(),
+          watchlist: null,
+          promotion: null,
+          allowedActions: ["monitor", "promote"],
+        },
       },
     ],
+  };
+}
+
+function detailWithSectionData(
+  sectionId: string,
+  data: Record<string, unknown>,
+) {
+  const detail = safeDetail();
+  return {
+    ...detail,
+    sections: detail.sections.map((section) =>
+      section.id === sectionId
+        ? { ...section, data: { ...section.data, ...data } }
+        : section,
+    ),
   };
 }
 
@@ -771,6 +994,336 @@ describe("Global Radar administrator HTTP adapters", () => {
       latest: safeDetail(),
     });
     expect(JSON.stringify(body)).not.toMatch(/private|SQL|rawPayload/);
+  });
+
+  it("recursively allowlists every nested administrator response DTO", async () => {
+    const hostileDetail = {
+      ...safeDetail(),
+      workerSecret: "private-worker-secret",
+      sections: safeDetail().sections.map((section) => {
+        const data = {
+          ...section.data,
+          rawPayload: "private rejected body",
+          privateFailure: { sql: "private SQL statement" },
+        };
+        if (section.id === "compliance_flags") {
+          return {
+            ...section,
+            data: {
+              ...data,
+              sensitiveDataFlags: {
+                faces: null,
+                voices: null,
+                biometrics: null,
+                gaze: null,
+                health: null,
+                children: null,
+                homeInteriors: null,
+                workplaceMonitoring: null,
+                preciseLocation: null,
+                roadUsers: null,
+                employeeData: null,
+                industrialSecrets: "possible",
+                defenceOrDualUse: null,
+                copyrightedMaterial: null,
+                exportControls: null,
+                internalDiagnostics: "private diagnostic",
+              },
+              facts: {
+                consent: null,
+                deIdentification: null,
+                legalReview: true,
+                knownResidencyRequirements: null,
+                participantRightsComplexity: null,
+                internalDiagnostics: "private diagnostic",
+              },
+            },
+          };
+        }
+        if (section.id === "score_rationale") {
+          return {
+            ...section,
+            data: {
+              ...data,
+              components: {
+                demandExplicitness: 90,
+                evidenceConfidence: 80,
+                freshness: 90,
+                actionability: 80,
+                indiaFit: 75,
+                commercialPotential: 70,
+                repeatability: 70,
+                responseAccessibility: 85,
+                strategicLearning: 80,
+                complianceComplexity: 20,
+                internalWeights: { debug: "private scoring" },
+              },
+            },
+          };
+        }
+        if (section.id === "india_fit_reasoning_and_constraints") {
+          return {
+            ...section,
+            data: {
+              ...data,
+              regulatoryFacts: {
+                known: false,
+                industrialSecrets: "possible",
+                workerSecrets: ["private-worker"],
+                rawPayloads: ["private-raw"],
+                apiKeys: ["private-key"],
+                workerSecretValue: "private-worker-value",
+                leaseTokenValue: "private-lease-value",
+                submissionHashHex: "private-hash-value",
+                rawPayloadData: "private-payload-value",
+                privateExceptionMessage: "private-exception-value",
+              },
+            },
+          };
+        }
+        return { ...section, data };
+      }),
+    };
+    const hostileRun = {
+      ...safeRun(),
+      workerSecret: "private-worker-secret",
+      counts: { ...safeRun().counts, rawPayload: "private run payload" },
+    };
+    const hostileEntity = {
+      ...safeEntity(),
+      rawPayload: "private entity payload",
+    };
+    const hostileEntry = {
+      ...safeWatchlistEntry(),
+      workerSecret: "private entry secret",
+    };
+    const hostilePromotion = {
+      ...safePromotion(),
+      rawPayload: "private promotion payload",
+      revisionContext: {
+        ...safePromotion().revisionContext,
+        errorBody: "private promotion error body",
+      },
+    };
+    const service = adminService({
+      getSignalDetail: vi.fn(async () => ({
+        outcome: "found",
+        detail: hostileDetail,
+      })),
+      reviewSignal: vi.fn(async () => ({
+        outcome: "conflict",
+        reason: "revision_mismatch",
+        httpStatus: 409,
+        latest: hostileDetail,
+      })),
+      mergeSignals: vi.fn(async () => ({
+        outcome: "merged",
+        survivor: hostileDetail,
+        duplicate: { ...hostileDetail, id: DUPLICATE_SIGNAL_ID },
+      })),
+      upsertWatchlist: vi.fn(async () => ({
+        outcome: "updated",
+        entity: hostileEntity,
+        entry: hostileEntry,
+      })),
+      queueManual: vi.fn(async () => ({
+        outcome: "queued",
+        run: hostileRun,
+      })),
+      listRuns: vi.fn(async () => ({
+        outcome: "listed",
+        page: 1,
+        pageSize: 25,
+        total: 1,
+        runs: [hostileRun],
+      })),
+      promote: vi.fn(async () => ({
+        outcome: "promoted",
+        promotion: hostilePromotion,
+      })),
+    });
+    const deps = dependencies(service);
+    const responses = await Promise.all([
+      createGlobalRadarAdminSignalGetHandler(deps)(
+        new Request(
+          `https://mewtuals.com/api/admin/global-demand-radar/signals/${SIGNAL_ID}`,
+        ),
+        signalContext(),
+      ),
+      createGlobalRadarAdminSignalPatchHandler(deps)(
+        patchRequest(`/api/admin/global-demand-radar/signals/${SIGNAL_ID}`, {
+          ...envelope(),
+          command: { type: "monitor" },
+        }),
+        signalContext(),
+      ),
+      createGlobalRadarAdminMergePostHandler(deps)(
+        adminRequest(
+          `/api/admin/global-demand-radar/signals/${SIGNAL_ID}/merge`,
+          {
+            survivorSignalId: SIGNAL_ID,
+            duplicateSignalId: DUPLICATE_SIGNAL_ID,
+            expectedSurvivorRevision: 2,
+            expectedDuplicateRevision: 1,
+            confirmed: true,
+            idempotencyKey: IDEMPOTENCY_KEY,
+            reason: "Merge duplicate public evidence.",
+          },
+        ),
+        signalContext(),
+      ),
+      createGlobalRadarAdminWatchlistPatchHandler(deps)(
+        patchRequest(
+          `/api/admin/global-demand-radar/entities/${ENTITY_ID}/watchlist`,
+          watchlistCommand(),
+        ),
+        entityContext(),
+      ),
+      createGlobalRadarAdminRunsPostHandler(deps)(
+        adminRequest("/api/admin/global-demand-radar/runs", {
+          requestId: REQUEST_ID,
+        }),
+      ),
+      createGlobalRadarAdminRunsGetHandler(deps)(
+        new Request("https://mewtuals.com/api/admin/global-demand-radar/runs"),
+      ),
+      createGlobalRadarAdminPromotionPostHandler(deps)(
+        adminRequest(
+          `/api/admin/global-demand-radar/entities/${ENTITY_ID}/promotions`,
+          promotionCommand(),
+        ),
+        entityContext(),
+      ),
+    ]);
+
+    const bodies = await Promise.all(responses.map(responseBody));
+    expect(bodies[0]).toEqual({
+      ok: true,
+      outcome: "found",
+      detail: safeDetail(),
+    });
+    expect(bodies[1]).toEqual({
+      ok: false,
+      outcome: "conflict",
+      reason: "revision_mismatch",
+      httpStatus: 409,
+      latest: safeDetail(),
+    });
+    expect(bodies[2]).toEqual({
+      ok: true,
+      outcome: "merged",
+      survivor: safeDetail(),
+      duplicate: { ...safeDetail(), id: DUPLICATE_SIGNAL_ID },
+    });
+    expect(bodies[3]).toEqual({
+      ok: true,
+      outcome: "updated",
+      entity: safeEntity(),
+      entry: safeWatchlistEntry(),
+    });
+    expect(bodies[4]).toEqual({
+      ok: true,
+      outcome: "queued",
+      run: safeRun(),
+    });
+    expect(bodies[5]).toEqual({
+      ok: true,
+      outcome: "listed",
+      page: 1,
+      pageSize: 25,
+      total: 1,
+      runs: [safeRun()],
+    });
+    expect(bodies[6]).toEqual({
+      ok: true,
+      outcome: "promoted",
+      promotion: safePromotion(),
+    });
+    expect(JSON.stringify(bodies)).not.toMatch(
+      /private|workerSecret|rawPayload|apiKeys|errorBody|SQL/,
+    );
+  });
+
+  it("rejects administrator details with actions outside the locked vocabulary", async () => {
+    const detail = safeDetail();
+    const service = adminService({
+      getSignalDetail: vi.fn(async () => ({
+        outcome: "found",
+        detail: {
+          ...detail,
+          allowedActions: [
+            ...detail.allowedActions,
+            "download_private_payload",
+          ],
+        },
+      })),
+    });
+    const response = await createGlobalRadarAdminSignalGetHandler(
+      dependencies(service),
+    )(
+      new Request(
+        `https://mewtuals.com/api/admin/global-demand-radar/signals/${SIGNAL_ID}`,
+      ),
+      signalContext(),
+    );
+
+    expect(response.status).toBe(500);
+    await expect(responseBody(response)).resolves.toEqual({
+      ok: false,
+      error: "We could not complete that request. Please try again.",
+    });
+  });
+
+  it("returns a generic 500 for malformed nested service output", async () => {
+    const service = adminService({
+      getSignalDetail: vi.fn(async () => ({
+        outcome: "found",
+        detail: { ...safeDetail(), sections: "private malformed detail" },
+      })),
+    });
+    const response = await createGlobalRadarAdminSignalGetHandler(
+      dependencies(service),
+    )(
+      new Request(
+        `https://mewtuals.com/api/admin/global-demand-radar/signals/${SIGNAL_ID}`,
+      ),
+      signalContext(),
+    );
+
+    expect(response.status).toBe(500);
+    await expect(responseBody(response)).resolves.toEqual({
+      ok: false,
+      error: "We could not complete that request. Please try again.",
+    });
+  });
+
+  it("returns a generic 500 for invalid nested object and vocabulary values", async () => {
+    for (const detail of [
+      detailWithSectionData("india_fit_reasoning_and_constraints", {
+        regulatoryFacts: "private malformed facts",
+      }),
+      detailWithSectionData("public_response_path", {
+        type: "private_internal_path",
+      }),
+    ]) {
+      const service = adminService({
+        getSignalDetail: vi.fn(async () => ({ outcome: "found", detail })),
+      });
+      const response = await createGlobalRadarAdminSignalGetHandler(
+        dependencies(service),
+      )(
+        new Request(
+          `https://mewtuals.com/api/admin/global-demand-radar/signals/${SIGNAL_ID}`,
+        ),
+        signalContext(),
+      );
+
+      expect(response.status).toBe(500);
+      await expect(responseBody(response)).resolves.toEqual({
+        ok: false,
+        error: "We could not complete that request. Please try again.",
+      });
+    }
   });
 });
 

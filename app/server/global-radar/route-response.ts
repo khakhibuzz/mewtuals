@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 
+import {
+  safeGlobalRadarAdminResponseValue,
+  safeGlobalRadarWorkerClaim,
+  type GlobalRadarAdminResponseValueKey,
+} from "./route-response-contracts";
 import { globalRadarSafeRunSchema } from "./route-schemas";
 
 export type JsonRecord = Record<string, unknown>;
@@ -146,8 +151,10 @@ export function workerResult(value: unknown): Response {
   if (!isRecord(value) || typeof value.outcome !== "string") {
     return internalFailure();
   }
-  if (value.outcome === "claimed" && isRecord(value.claim)) {
-    return noStoreJson({ ok: true, outcome: "claimed", claim: value.claim });
+  if (value.outcome === "claimed") {
+    const claim = safeGlobalRadarWorkerClaim(value.claim);
+    if (!claim) return internalFailure();
+    return noStoreJson({ ok: true, outcome: "claimed", claim });
   }
   if (value.outcome === "no_work") {
     if (
@@ -215,20 +222,23 @@ export function adminInvalid() {
 
 function selectedResult(
   source: JsonRecord,
-  keys: readonly string[],
-): JsonRecord {
+  keys: readonly (
+    | "outcome"
+    | "reason"
+    | "httpStatus"
+    | GlobalRadarAdminResponseValueKey
+  )[],
+  requiredKeys: ReadonlySet<string>,
+): JsonRecord | null {
   const selected: JsonRecord = {};
   for (const key of keys) {
-    if (!Object.hasOwn(source, key)) continue;
-    if (key === "run") {
-      const run = safeRun(source.run);
-      if (run) selected.run = run;
+    if (!Object.hasOwn(source, key)) {
+      if (requiredKeys.has(key)) return null;
       continue;
     }
-    if (key === "runs") {
-      if (!Array.isArray(source.runs)) continue;
-      const runs = source.runs.map(safeRun);
-      if (runs.every(Boolean)) selected.runs = runs;
+    if (key === "outcome") {
+      if (typeof source.outcome !== "string") return null;
+      selected.outcome = source.outcome;
       continue;
     }
     if (key === "reason") {
@@ -238,10 +248,13 @@ function selectedResult(
       continue;
     }
     if (key === "httpStatus") {
-      if (source.httpStatus === 409) selected.httpStatus = 409;
+      if (source.httpStatus !== 409) return null;
+      selected.httpStatus = 409;
       continue;
     }
-    selected[key] = source[key];
+    const parsed = safeGlobalRadarAdminResponseValue(key, source[key]);
+    if (!parsed.success) return null;
+    selected[key] = parsed.value;
   }
   return selected;
 }
@@ -250,17 +263,23 @@ export function adminResult(
   value: unknown,
   options: Readonly<{
     successOutcomes: readonly string[];
-    successKeys: readonly string[];
-    conflictKeys?: readonly string[];
+    successKeys: readonly GlobalRadarAdminResponseValueKey[];
+    conflictKeys?: readonly GlobalRadarAdminResponseValueKey[];
   }>,
 ): Response {
   if (!isRecord(value) || typeof value.outcome !== "string") {
     return internalFailure();
   }
   if (options.successOutcomes.includes(value.outcome)) {
+    const selected = selectedResult(
+      value,
+      ["outcome", ...options.successKeys],
+      new Set(["outcome", ...options.successKeys]),
+    );
+    if (!selected) return internalFailure();
     return noStoreJson({
       ok: true,
-      ...selectedResult(value, ["outcome", ...options.successKeys]),
+      ...selected,
     });
   }
   if (value.outcome === "forbidden") {
@@ -285,33 +304,51 @@ export function adminResult(
     );
   }
   if (value.outcome === "conflict") {
+    const selected = selectedResult(
+      value,
+      [
+        "outcome",
+        "reason",
+        "httpStatus",
+        ...(options.conflictKeys ?? []),
+      ],
+      new Set(["outcome", "reason"]),
+    );
+    if (!selected) return internalFailure();
     return noStoreJson(
       {
         ok: false,
-        ...selectedResult(value, [
-          "outcome",
-          "reason",
-          "httpStatus",
-          ...(options.conflictKeys ?? []),
-        ]),
+        ...selected,
       },
       409,
     );
   }
   if (value.outcome === "ineligible") {
+    const selected = selectedResult(
+      value,
+      ["outcome", "reason"],
+      new Set(["outcome", "reason"]),
+    );
+    if (!selected) return internalFailure();
     return noStoreJson(
       {
         ok: false,
-        ...selectedResult(value, ["outcome", "reason"]),
+        ...selected,
       },
       409,
     );
   }
   if (value.outcome === "failed") {
+    const selected = selectedResult(
+      value,
+      ["outcome", "reason", "promotion"],
+      new Set(["outcome", "reason"]),
+    );
+    if (!selected) return internalFailure();
     return noStoreJson(
       {
         ok: false,
-        ...selectedResult(value, ["outcome", "reason", "promotion"]),
+        ...selected,
       },
       500,
     );

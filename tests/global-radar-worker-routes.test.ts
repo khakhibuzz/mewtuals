@@ -2,8 +2,13 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it, vi, type Mock } from "vitest";
 
+import {
+  generateGlobalRadarQueries,
+  planGlobalRadarRun,
+} from "../app/domain/global-radar";
 import { createWorkerClaimHandler as createDiscoveryWorkerClaimHandler } from "../app/server/discovery-route";
 import { verifyDiscoveryBearer } from "../app/server/discovery-worker-auth";
+import { GLOBAL_RADAR_WORKER_OUTPUT_SCHEMA } from "../app/server/global-radar";
 import {
   createGlobalRadarWorkerAbandonHandler,
   createGlobalRadarWorkerClaimHandler,
@@ -261,6 +266,31 @@ describe("Global Radar worker HTTP adapters", () => {
   });
 
   it("passes the locked claim selector and returns the private claim only after auth", async () => {
+    const plan = planGlobalRadarRun({
+      now: new Date("2026-07-31T00:00:00.000Z"),
+      scanMode: "thematic",
+      config: {
+        countries: ["China"],
+        languages: ["en", "zh-CN"],
+        themes: ["robotics_manufacturing"],
+        enabledSourceAdapters: ["codex_public_web"],
+        sourceFamilies: ["official_company_material"],
+        resultLimit: 20,
+        scoreVersion: "global-radar-score-v1",
+        thresholds: {
+          version: "global-radar-thresholds-v1",
+          direct_demand: 70,
+          demand_precursor: 65,
+          ecosystem_momentum: 70,
+        },
+      },
+      coverageState: {
+        countryLastCoveredAt: {},
+        themeLastCoveredAt: {},
+        watchlistLastCoveredAt: {},
+      },
+      watchlist: [],
+    });
     const claim = {
       runId: RUN_ID,
       leaseToken: LEASE_TOKEN,
@@ -273,13 +303,42 @@ describe("Global Radar worker HTTP adapters", () => {
         plan: "global-radar-plan-v1",
         query: "global-radar-query-v1",
       },
-      plan: { scanMode: "thematic" },
-      queries: [],
-      config: { countries: ["China"] },
-      outputSchema: { type: "object" },
+      plan,
+      queries: generateGlobalRadarQueries(plan),
+      config: {
+        countries: ["China"],
+        languages: ["en", "zh-CN"],
+        themes: ["robotics_manufacturing"],
+        enabledSources: ["codex_public_web"],
+        resultLimit: 20,
+        thresholds: {
+          direct_demand: 70,
+          demand_precursor: 65,
+          ecosystem_momentum: 70,
+        },
+      },
+      outputSchema: structuredClone(GLOBAL_RADAR_WORKER_OUTPUT_SCHEMA),
     };
+    const outputProperties = claim.outputSchema.properties as Record<
+      string,
+      unknown
+    >;
     const service = workerService({
-      claim: vi.fn(async () => ({ outcome: "claimed", claim })),
+      claim: vi.fn(async () => ({
+        outcome: "claimed",
+        claim: {
+          ...claim,
+          workerSecret: "private-radar-worker-secret",
+          outputSchema: {
+            ...claim.outputSchema,
+            properties: {
+              ...outputProperties,
+              rawPayload: { type: "string", const: "private-body" },
+            },
+            errorBody: "private SQL failure",
+          },
+        },
+      })),
     });
     const response = await createGlobalRadarWorkerClaimHandler({
       getService: () => service,
@@ -294,12 +353,94 @@ describe("Global Radar worker HTTP adapters", () => {
     await expect(json(response)).resolves.toEqual({
       ok: true,
       outcome: "claimed",
-      claim,
+      claim: {
+        ...claim,
+        outputSchema: claim.outputSchema,
+      },
     });
     expect(service.claim).toHaveBeenCalledWith(AUTHORIZATION, {
       trigger: "trial",
       scanMode: "thematic",
     });
+
+    const prototypeProperties = JSON.parse(
+      '{"acceptedSignals":{"type":"array"},"__proto__":{"workerSecret":"private"}}',
+    ) as Record<string, unknown>;
+    const prototypeService = workerService({
+      claim: vi.fn(async () => ({
+        outcome: "claimed",
+        claim: {
+          ...claim,
+          outputSchema: {
+            ...claim.outputSchema,
+            properties: prototypeProperties,
+          },
+        },
+      })),
+    });
+    const prototypeResponse = await createGlobalRadarWorkerClaimHandler({
+      getService: () => prototypeService,
+    })(workerRequest("/api/global-radar/worker/claim", {}));
+    expect(prototypeResponse.status).toBe(500);
+    await expect(json(prototypeResponse)).resolves.toEqual({
+      ok: false,
+      error: "We could not complete that request. Please try again.",
+    });
+
+    const incompleteSchemaService = workerService({
+      claim: vi.fn(async () => ({
+        outcome: "claimed",
+        claim: {
+          ...claim,
+          outputSchema: {
+            type: "object",
+            additionalProperties: false,
+          },
+        },
+      })),
+    });
+    const incompleteSchemaResponse =
+      await createGlobalRadarWorkerClaimHandler({
+        getService: () => incompleteSchemaService,
+      })(workerRequest("/api/global-radar/worker/claim", {}));
+    expect(incompleteSchemaResponse.status).toBe(500);
+    await expect(json(incompleteSchemaResponse)).resolves.toEqual({
+      ok: false,
+      error: "We could not complete that request. Please try again.",
+    });
+
+    for (const outputSchema of [
+      {
+        ...structuredClone(GLOBAL_RADAR_WORKER_OUTPUT_SCHEMA),
+        properties: {
+          ...structuredClone(outputProperties),
+          schemaVersion: { type: "string", maxLength: 1 },
+        },
+      },
+      {
+        ...structuredClone(GLOBAL_RADAR_WORKER_OUTPUT_SCHEMA),
+        properties: {
+          ...structuredClone(outputProperties),
+          nonCanonicalField: { type: "string" },
+        },
+      },
+    ]) {
+      const nonCanonicalService = workerService({
+        claim: vi.fn(async () => ({
+          outcome: "claimed",
+          claim: { ...claim, outputSchema },
+        })),
+      });
+      const nonCanonicalResponse =
+        await createGlobalRadarWorkerClaimHandler({
+          getService: () => nonCanonicalService,
+        })(workerRequest("/api/global-radar/worker/claim", {}));
+      expect(nonCanonicalResponse.status).toBe(500);
+      await expect(json(nonCanonicalResponse)).resolves.toEqual({
+        ok: false,
+        error: "We could not complete that request. Please try again.",
+      });
+    }
   });
 
   it("accepts lease tokens only on complete and fail", async () => {
