@@ -11,11 +11,61 @@ const { redirectMock, serializeMock } = vi.hoisted(() => ({
   }),
   serializeMock: vi.fn(() => ({
     generatedAt: "2026-07-29T08:30:00.000Z",
+    filters: {
+      participantType: "company", includeEnablers: false, analysisVersion: "physical-ai-v1",
+      ecosystemDomains: [], organisationSubtypes: [], ecosystemRoles: [], businessStages: [],
+      technicalLayers: [], capabilities: [], componentCategories: [], roboticsVerticals: [],
+      headquartersStates: [], headquartersCities: [], activeSignalTypes: [],
+      reviewStatuses: ["discovered", "shortlisted", "queued_for_profile"],
+      page: 1, pageSize: 25, sort: "discovered_at", direction: "desc",
+    },
     population: { total: 3, fingerprint: "fixture" },
+    summary: {
+      organisations: { count: 3 }, companies: { numerator: 3, denominator: 3, percentage: 100 },
+      rolesRepresented: { count: 2 }, technicalLayersRepresented: { count: 2 },
+      statesRepresented: { count: 2 }, citiesRepresented: { count: 2 },
+      publiclyReachable: { numerator: 2, denominator: 3, percentage: 67 },
+      activeSignals: { count: 0, organisations: { numerator: 0, denominator: 3, percentage: 0 } },
+      documentedRelationships: { count: 0, organisations: { numerator: 0, denominator: 3, percentage: 0 } },
+    },
+    dataQuality: Object.fromEntries([
+      "resolvedState", "resolvedCity", "ecosystemRole", "capability", "strongEvidence",
+      "publicContact", "organisationsWithActiveSignal", "systemsContext",
+    ].map((key) => [key, { numerator: 2, denominator: 3, percentage: 67 }])),
+    geography: { denominator: 3, states: [], cities: [], unresolvedCount: 3 },
+    explorer: { denominator: 3, businessStages: [], technicalLayers: [] },
+    matrices: {
+      denominator: 3,
+      roleByCapability: { rowKeys: [], columnKeys: [], cells: [] },
+      stateByRole: { rowKeys: [], columnKeys: [], cells: [] },
+    },
+    insights: { denominator: 3, items: [] },
+    velocity: { kind: "discovery_research_activity", denominator: 3, windows: [] },
+    momentum: {
+      denominator: 3, ready: false, activeSignalCount: 0, organisationCount: 0,
+      requiredSignalCount: 5, requiredOrganisationCount: 3,
+      message: "Not enough evidence-backed signals to establish ecosystem momentum yet.",
+      categories: [], companies: [], signals: [],
+    },
+    relationships: {
+      denominator: 3, ready: false, evidencedEdgeCount: 0, candidateCount: 0,
+      unresolvedTargetCount: 0, requiredEvidencedEdges: 8, requiredCandidates: 5,
+      message: "More verified relationships are needed.", nodes: [], edges: [],
+    },
+    ledger: { items: [], total: 0, page: 1, pageSize: 25, totalPages: 0 },
+    filterOptions: {
+      denominator: 3, participantTypes: [], reviewStatuses: [], taxonomy: {},
+      headquartersStates: [], headquartersCities: [], activeSignalTypes: [], publicContacts: [],
+      evidenceCoverageBands: [], evidenceFreshness: [],
+    },
   })),
 }));
 
-vi.mock("next/navigation", () => ({ redirect: redirectMock }));
+vi.mock("next/navigation", () => ({
+  redirect: redirectMock,
+  useRouter: () => ({ push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
 vi.mock("../app/server/session", () => ({ getCurrentSession: vi.fn() }));
 vi.mock("../app/server/ecosystem-intelligence", () => ({
   getEcosystemIntelligenceService: vi.fn(),
@@ -120,7 +170,7 @@ describe("Ecosystem Intelligence administrator page", () => {
 
     render(await EcosystemIntelligenceAdminPage({ searchParams: Promise.resolve({}) }));
     expect(screen.getByRole("heading", { name: "Ecosystem intelligence." })).toBeInTheDocument();
-    expect(screen.getByText("3 Physical AI participants in this view.")).toBeInTheDocument();
+    expect(screen.getByText("3 organisations mapped")).toBeInTheDocument();
     expect(screen.getByTestId("ecosystem-initial-snapshot")).toHaveAttribute(
       "data-canonical-query",
       "",

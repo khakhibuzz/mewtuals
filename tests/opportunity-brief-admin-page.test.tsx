@@ -255,10 +255,11 @@ describe("Opportunity Brief administrator page", () => {
 });
 
 describe("administrator navigation", () => {
-  it("uses one Opportunity Briefs, Discovery, Verification order on every admin page", async () => {
+  it("uses the shared administrator navigation on every admin page", async () => {
     const paths = [
       "app/admin/opportunity-briefs/page.tsx",
       "app/admin/discovery/page.tsx",
+      "app/admin/ecosystem-intelligence/page.tsx",
       "app/admin/verifications/page.tsx",
     ];
     const sources = await Promise.all(
@@ -268,16 +269,9 @@ describe("administrator navigation", () => {
         ),
       ),
     );
-    const expectedOrder = [
-      "/admin/opportunity-briefs",
-      "/admin/discovery",
-      "/admin/verifications",
-    ];
-
     for (const source of sources) {
-      const positions = expectedOrder.map((href) => source.indexOf(`href: "${href}"`));
-      expect(positions.every((position) => position >= 0)).toBe(true);
-      expect(positions).toEqual([...positions].sort((left, right) => left - right));
+      expect(source).toContain("ADMIN_HEADER_LINKS");
+      expect(source).toContain("headerLinks={ADMIN_HEADER_LINKS}");
     }
   });
 });

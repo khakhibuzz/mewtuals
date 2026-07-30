@@ -35,6 +35,7 @@ export type CandidateReviewUpdate = {
   candidateId: string;
   pending: boolean;
   candidate?: CandidateReviewUpdatedCandidate;
+  outcome?: "saved" | "conflict";
 };
 
 type Feedback = {
@@ -171,7 +172,12 @@ export function CandidateReviewActions({
       };
       const latest = candidateFromResponse(result.candidate);
       if (response.status === 409 && latest?.id === candidateId) {
-        onUpdated({ candidateId, pending: true, candidate: latest });
+        onUpdated({
+          candidateId,
+          pending: true,
+          candidate: latest,
+          outcome: "conflict",
+        });
         setFeedback({
           kind: "alert",
           message: `${candidateName} changed elsewhere. Latest status is ${statusLabel(latest.status).toLowerCase()}. Review and try again.`,
@@ -189,7 +195,12 @@ export function CandidateReviewActions({
         });
         return;
       }
-      onUpdated({ candidateId, pending: true, candidate: latest });
+      onUpdated({
+        candidateId,
+        pending: true,
+        candidate: latest,
+        outcome: "saved",
+      });
       setFeedback({
         kind: "status",
         message: `${latest.name} is now ${statusLabel(latest.status).toLowerCase()}.`,

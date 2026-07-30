@@ -4,6 +4,10 @@ import { getCurrentSession } from "../../../../../server/session";
 
 export const GET = createEcosystemIntelligenceCandidateGetHandler({
   getSession: getCurrentSession,
-  getCandidateDetail: (actor, candidateId) =>
-    getEcosystemIntelligenceService().getCandidateDetail(actor, candidateId),
+  getCandidateDetail: (actor, candidateId, researchOffset) =>
+    getEcosystemIntelligenceService().getCandidateDetail(
+      actor,
+      candidateId,
+      researchOffset,
+    ),
 });

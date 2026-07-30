@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   acceptanceToken,
@@ -12,6 +12,10 @@ import {
 } from "./support/acceptance-environment";
 
 describe("acceptance environment safety", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("pins local setup to the project-owned application database", () => {
     const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
       scripts: Record<string, string>;
@@ -20,7 +24,10 @@ describe("acceptance environment safety", () => {
 
     expect(packageJson.scripts["db:setup"]).toBe("npm run db:setup:local");
     expect(packageJson.scripts["db:setup:local"]).toContain(
-      `DATABASE_URL=${LOCAL_APP_DATABASE_URL}`,
+      "MEWTUALS_LOCAL_DATABASE_PORT:-55432",
+    );
+    expect(packageJson.scripts["db:setup:local"]).toContain(
+      "/mewtuals",
     );
     expect(packageJson.scripts["db:setup:local"]).not.toContain(
       "${DATABASE_URL",
@@ -36,9 +43,31 @@ describe("acceptance environment safety", () => {
   it("checks local PostgreSQL status against the primary database", () => {
     const source = readFileSync("scripts/local-postgres.mjs", "utf8");
 
+    expect(source).toContain("process.env.MEWTUALS_LOCAL_DATABASE_PORT");
     expect(source).toContain("const primaryDatabaseName = databaseNames[0]");
     expect(source).toContain(
       '["-h", host, "-p", port, "-d", primaryDatabaseName]',
+    );
+  });
+
+  it("keeps every local database gate on the explicitly selected isolated port", () => {
+    const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    const migrationHarness = readFileSync("scripts/test-migrations.mjs", "utf8");
+
+    for (const scriptName of [
+      "test:db",
+      "test:acceptance",
+      "db:test:prepare",
+      "db:setup:local",
+    ]) {
+      expect(packageJson.scripts[scriptName]).toContain(
+        "MEWTUALS_LOCAL_DATABASE_PORT:-55432",
+      );
+    }
+    expect(migrationHarness).toContain(
+      "process.env.MEWTUALS_LOCAL_DATABASE_PORT",
     );
   });
 
@@ -57,6 +86,29 @@ describe("acceptance environment safety", () => {
         /dedicated local test database/,
       );
     }
+  });
+
+  it("allows an explicit alternate local PostgreSQL port for isolated test worktrees", () => {
+    vi.stubEnv("MEWTUALS_LOCAL_DATABASE_PORT", "55433");
+
+    expect(
+      requireLocalTestDatabaseUrl(
+        "postgresql://127.0.0.1:55433/mewtuals_test",
+      ),
+    ).toBe("postgresql://127.0.0.1:55433/mewtuals_test");
+    expect(() => requireLocalTestDatabaseUrl(LOCAL_TEST_DATABASE_URL)).toThrow(
+      /127\.0\.0\.1:55433\/mewtuals_test/,
+    );
+  });
+
+  it("rejects invalid alternate local PostgreSQL ports", () => {
+    vi.stubEnv("MEWTUALS_LOCAL_DATABASE_PORT", "5432?sslmode=require");
+
+    expect(() =>
+      requireLocalTestDatabaseUrl(
+        "postgresql://127.0.0.1:5432/mewtuals_test",
+      ),
+    ).toThrow(/MEWTUALS_LOCAL_DATABASE_PORT/);
   });
 
   it("allows browser cleanup only for the project-owned loopback database", () => {
@@ -88,6 +140,25 @@ describe("acceptance environment safety", () => {
     );
     expect(() => requireLoopbackBaseUrl("https://preview.example")).toThrow(
       /loopback/,
+    );
+  });
+
+  it("allows an explicit alternate loopback app port for isolated browser worktrees", () => {
+    vi.stubEnv("MEWTUALS_LOCAL_APP_PORT", "4003");
+
+    expect(requireLoopbackBaseUrl("http://127.0.0.1:4003")).toBe(
+      "http://127.0.0.1:4003",
+    );
+    expect(() => requireLoopbackBaseUrl("http://127.0.0.1:4000")).toThrow(
+      /port 4003/,
+    );
+  });
+
+  it("rejects invalid alternate loopback app ports", () => {
+    vi.stubEnv("MEWTUALS_LOCAL_APP_PORT", "4003/path");
+
+    expect(() => requireLoopbackBaseUrl("http://127.0.0.1:4003")).toThrow(
+      /MEWTUALS_LOCAL_APP_PORT/,
     );
   });
 

@@ -48,10 +48,20 @@ export function CandidateResearchHistory({
   candidateName,
   research,
   showEvidenceState = true,
+  historyTotal,
+  hasMoreHistory = false,
+  loadingMoreHistory = false,
+  historyLoadError = false,
+  onLoadMoreHistory,
 }: {
   candidateName: string;
   research: CandidateResearchHistoryData;
   showEvidenceState?: boolean;
+  historyTotal?: number;
+  hasMoreHistory?: boolean;
+  loadingMoreHistory?: boolean;
+  historyLoadError?: boolean;
+  onLoadMoreHistory?: () => void;
 }) {
   const [selectedVersionId, setSelectedVersionId] = useState<string>();
   const [showFindings, setShowFindings] = useState(false);
@@ -77,6 +87,7 @@ export function CandidateResearchHistory({
 
   const selectedVersion =
     versions.find(({ id }) => id === selectedVersionId) ?? research.latest;
+  const totalHistory = historyTotal ?? research.history.length;
 
   return (
     <section
@@ -98,37 +109,54 @@ export function CandidateResearchHistory({
           >
             {showFindings ? "Hide findings" : "Show findings"}
           </button>
-          {research.history.length > 0 ? (
+          {totalHistory > 0 ? (
             <button
               className={styles.discoveryDetailButton}
               type="button"
               aria-expanded={showHistory}
               onClick={() => setShowHistory((current) => !current)}
             >
-              History ({research.history.length})
+              History ({totalHistory})
             </button>
           ) : null}
         </div>
       </div>
       <p className={styles.discoveryResearchSummary}>{selectedVersion.summary}</p>
       {showHistory ? (
-        <ul className={styles.discoveryResearchHistory} aria-label="Research versions">
-          {versions.map((version, index) => (
-            <li key={version.id}>
-              <button
-                type="button"
-                aria-current={version.id === selectedVersion.id ? "true" : undefined}
-                aria-label={`View research from ${formatTimestamp(version.createdAt)}`}
-                onClick={() => setSelectedVersionId(version.id)}
-              >
-                <span>{index === 0 ? "Latest" : `Version ${versions.length - index}`}</span>
-                <time dateTime={version.createdAt}>
-                  {formatTimestamp(version.createdAt)}
-                </time>
-              </button>
-            </li>
-          ))}
-        </ul>
+        <div>
+          <ul className={styles.discoveryResearchHistory} aria-label="Research versions">
+            {versions.map((version, index) => (
+              <li key={version.id}>
+                <button
+                  type="button"
+                  aria-current={version.id === selectedVersion.id ? "true" : undefined}
+                  aria-label={`View research from ${formatTimestamp(version.createdAt)}`}
+                  onClick={() => setSelectedVersionId(version.id)}
+                >
+                  <span>{index === 0 ? "Latest" : `Version ${totalHistory + 1 - index}`}</span>
+                  <time dateTime={version.createdAt}>
+                    {formatTimestamp(version.createdAt)}
+                  </time>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {hasMoreHistory && onLoadMoreHistory ? (
+            <button
+              className={styles.discoveryDetailButton}
+              type="button"
+              disabled={loadingMoreHistory}
+              onClick={onLoadMoreHistory}
+            >
+              {loadingMoreHistory ? "Loading older research…" : "Load older research"}
+            </button>
+          ) : null}
+          {historyLoadError ? (
+            <p className={styles.error} role="alert">
+              Older research could not be loaded. Try again.
+            </p>
+          ) : null}
+        </div>
       ) : null}
       {showFindings ? (
         <div className={styles.discoveryResearchFindings}>

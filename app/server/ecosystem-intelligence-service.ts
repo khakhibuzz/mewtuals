@@ -32,6 +32,7 @@ type Dependencies = {
 };
 
 const candidateIdSchema = z.uuid();
+const researchOffsetSchema = z.coerce.number().int().min(0).max(100_000);
 
 const administratorFailure = (): EcosystemIntelligenceFailure => ({
   ok: false,
@@ -96,6 +97,7 @@ export function createEcosystemIntelligenceService(dependencies: Dependencies) {
     async getCandidateDetail(
       actor: EcosystemIntelligenceActor,
       candidateId: string,
+      researchOffsetInput: string | number | undefined = 0,
     ): Promise<
       | { ok: true; candidate: EcosystemCandidateDetail }
       | EcosystemIntelligenceFailure
@@ -109,10 +111,19 @@ export function createEcosystemIntelligenceService(dependencies: Dependencies) {
           error: "Submit a valid candidate id.",
         };
       }
+      const parsedOffset = researchOffsetSchema.safeParse(researchOffsetInput);
+      if (!parsedOffset.success) {
+        return {
+          ok: false,
+          status: 400,
+          error: "Submit a valid research history offset.",
+        };
+      }
       try {
         const candidate = await dependencies.repository.getCandidateDetail(
           parsedId.data,
           currentTime(),
+          parsedOffset.data,
         );
         return candidate
           ? { ok: true, candidate }

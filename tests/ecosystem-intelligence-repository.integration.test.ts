@@ -2005,13 +2005,39 @@ describe("Ecosystem Intelligence analytical repository", () => {
         expect(previous).toBeGreaterThanOrEqual(current);
       }
       expect(detail?.research.current).not.toBeNull();
-      expect((detail?.research.history.length ?? 0) + (detail?.research.current ? 1 : 0)).toBeLessThanOrEqual(20);
+      expect(detail?.research.history).toHaveLength(20);
+      expect(detail?.research.historyPage).toMatchObject({
+        offset: 0,
+        limit: 20,
+        hasMore: true,
+        nextOffset: 20,
+      });
+      const olderResearch = await repository.getCandidateDetail(
+        fixture.componentMaker.id,
+        now,
+        detail?.research.historyPage.nextOffset ?? 0,
+      );
+      expect(olderResearch?.research.historyPage).toMatchObject({
+        total: detail?.research.historyPage.total,
+        offset: 20,
+        limit: 20,
+        hasMore: false,
+        nextOffset: null,
+      });
+      const allResearchIds = new Set([
+        detail!.research.current!.id,
+        ...detail!.research.history.map(({ id }) => id),
+        ...(olderResearch?.research.history.map(({ id }) => id) ?? []),
+      ]);
+      expect(allResearchIds.size).toBe(detail!.research.historyPage.total + 1);
       const snapshot = await repository.getSnapshot(
         parseEcosystemFilters({ pageSize: "100" }),
         now,
       );
       expect(snapshot.ledger.items.find(({ id }) => id === fixture.componentMaker.id)?.latestResearchAt)
         .toEqual(newestGeneralResearchAt);
+      expect(snapshot.ledger.items.find(({ id }) => id === fixture.componentMaker.id)?.latestSourceAt)
+        .toEqual(recent);
       expect(JSON.stringify(detail)).not.toContain("rawMetadata");
       expect(JSON.stringify(detail)).not.toContain(`private-${testId}@example.test`);
       expect(JSON.stringify(detail)).not.toContain("+919999999999");
@@ -2062,5 +2088,39 @@ describe("Ecosystem Intelligence analytical repository", () => {
     expect(changeSource).not.toMatch(
       /max\(research\.created_at\)[\s\S]{0,180}research\.analysis_version/,
     );
+  });
+
+  it("drops legacy private Discovery source URLs from ledger and detail responses", async () => {
+    const privateUrl = `http://127.0.0.1/private-source-${testId}`;
+    const [privateSource] = await database.insert(discoveryCandidateSources).values({
+      candidateId: fixture.componentMaker.id,
+      discoveryRunId: fixture.physicalRunId,
+      sourceName: `private-source-${testId}`,
+      sourceUrl: privateUrl,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      createdAt: now,
+    }).returning({ id: discoveryCandidateSources.id });
+    if (!privateSource) throw new Error("Private source fixture was not created.");
+
+    try {
+      const snapshot = await repository.getSnapshot(
+        parseEcosystemFilters({ pageSize: "100" }),
+        now,
+      );
+      const ledgerCandidate = snapshot.ledger.items.find(
+        ({ id }) => id === fixture.componentMaker.id,
+      );
+      expect(ledgerCandidate?.latestSourceUrl).toBeNull();
+      expect(JSON.stringify(ledgerCandidate)).not.toContain(privateUrl);
+
+      const detail = await repository.getCandidateDetail(fixture.componentMaker.id, now);
+      expect(detail?.sources.some(({ sourceUrl }) => sourceUrl === privateUrl)).toBe(false);
+      expect(JSON.stringify(detail)).not.toContain(privateUrl);
+    } finally {
+      await database.delete(discoveryCandidateSources).where(
+        eq(discoveryCandidateSources.id, privateSource.id),
+      );
+    }
   });
 });

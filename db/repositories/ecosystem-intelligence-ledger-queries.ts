@@ -49,6 +49,13 @@ function nullableDate(value: Date | string | null): Date | null {
   return value === null ? null : date(value);
 }
 
+function publicUrls(values: readonly string[] | null): string[] {
+  return (values ?? []).flatMap((value) => {
+    const url = publicHttpUrlOrNull(value);
+    return url ? [url] : [];
+  });
+}
+
 function evidenceFreshness(
   latestEvidenceAt: Date | string | null,
   now: Date,
@@ -125,6 +132,7 @@ type LedgerRow = {
   activeSignalCount: number;
   relationshipCount: number;
   latestSourceUrl: string | null;
+  latestSourceAt: Date | string | null;
   latestResearchAt: Date | string | null;
 };
 
@@ -142,7 +150,7 @@ function headquartersFromRow(row: LedgerRow): EcosystemHeadquartersDto | null {
     longitude: reliableCoordinates && row.longitudeMicrodegrees !== null ? row.longitudeMicrodegrees / 1_000_000 : null,
     evidenceState: row.headquartersEvidenceState,
     confidence: number(row.headquartersConfidence),
-    sourceUrls: row.headquartersSourceUrls ?? [],
+    sourceUrls: publicUrls(row.headquartersSourceUrls),
   };
 }
 
@@ -205,6 +213,7 @@ async function loadLedger(
       (select count(*)::integer from ${candidatePublicSignals} signal join signal_freshness on signal_freshness.signal_type = signal.signal_type where signal.candidate_id = candidate.id and ${activeSignalPredicate("signal", now)}) as "activeSignalCount",
       (select count(*)::integer from documented_relationships relationship where relationship.source_candidate_id = candidate.id or relationship.target_candidate_id = candidate.id) as "relationshipCount",
       (select source.source_url from ${discoveryCandidateSources} source where source.candidate_id = candidate.id order by source.last_seen_at desc, source.id desc limit 1) as "latestSourceUrl",
+      (select source.last_seen_at from ${discoveryCandidateSources} source where source.candidate_id = candidate.id order by source.last_seen_at desc, source.id desc limit 1) as "latestSourceAt",
       (select research.created_at from ${candidateResearchVersions} research where research.candidate_id = candidate.id order by research.created_at desc, research.id desc limit 1) as "latestResearchAt"
     from filtered_candidates candidate
     order by ${orderExpression}, candidate.id asc
@@ -224,13 +233,17 @@ async function loadLedger(
       websiteUrl: publicHttpUrlOrNull(row.websiteUrl),
       linkedinUrl: publicHttpUrlOrNull(row.linkedinUrl),
       primarySocialUrl: publicHttpUrlOrNull(row.primarySocialUrl),
-      classifications: row.classifications ?? [],
+      classifications: (row.classifications ?? []).map((classification) => ({
+        ...classification,
+        sourceUrls: publicUrls(classification.sourceUrls),
+      })),
       headquarters: headquartersFromRow(row),
       evidenceCoverage: evidenceCoverageFromRow(row),
       evidenceFreshness: evidenceFreshness(row.latestEvidenceAt, now),
       activeSignalCount: number(row.activeSignalCount),
       documentedRelationshipCount: number(row.relationshipCount),
-      latestSourceUrl: row.latestSourceUrl,
+      latestSourceUrl: publicHttpUrlOrNull(row.latestSourceUrl),
+      latestSourceAt: nullableDate(row.latestSourceAt),
       latestResearchAt: nullableDate(row.latestResearchAt),
     })),
     total,

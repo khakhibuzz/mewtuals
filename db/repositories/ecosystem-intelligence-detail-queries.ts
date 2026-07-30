@@ -31,7 +31,7 @@ type ReadTransaction = Parameters<MewtualsDatabase["transaction"]>[0] extends
   (transaction: infer Transaction) => unknown ? Transaction : never;
 
 const MAX_DETAIL_SOURCES = 20;
-const MAX_DETAIL_RESEARCH = 20;
+const MAX_DETAIL_RESEARCH_HISTORY = 20;
 const MAX_DETAIL_SIGNALS = 20;
 const MAX_DETAIL_RELATIONSHIPS = 20;
 
@@ -45,6 +45,13 @@ function date(value: Date | string): Date {
 
 function nullableDate(value: Date | string | null): Date | null {
   return value === null ? null : date(value);
+}
+
+function publicUrls(values: readonly string[]): string[] {
+  return values.flatMap((value) => {
+    const url = publicHttpUrlOrNull(value);
+    return url ? [url] : [];
+  });
 }
 
 type DetailIdentityRow = {
@@ -123,6 +130,7 @@ async function loadCandidateDetail(
   now: Date,
   validPublicRelationshipEvidenceIds: readonly string[],
   validPublicSignalEvidenceIds: readonly string[],
+  researchOffset: number,
 ): Promise<EcosystemCandidateDetail | null> {
   const [identity] = await transaction.execute<DetailIdentityRow>(sql`
     select
@@ -298,7 +306,7 @@ async function loadCandidateDetail(
     order by source.last_seen_at desc, source.id desc
     limit ${MAX_DETAIL_SOURCES}
   `);
-  const research = await transaction.execute<DetailResearchRow>(sql`
+  const [currentResearch] = await transaction.execute<DetailResearchRow>(sql`
     select
       research.id as "id",
       research.discovery_run_id as "discoveryRunId",
@@ -310,7 +318,27 @@ async function loadCandidateDetail(
     from ${candidateResearchVersions} research
     where research.candidate_id = ${candidateId}
     order by research.created_at desc, research.id desc
-    limit ${MAX_DETAIL_RESEARCH}
+    limit 1
+  `);
+  const [researchCount] = await transaction.execute<{ historyTotal: number }>(sql`
+    select greatest(count(*) - 1, 0)::integer as "historyTotal"
+    from ${candidateResearchVersions} research
+    where research.candidate_id = ${candidateId}
+  `);
+  const researchHistory = await transaction.execute<DetailResearchRow>(sql`
+    select
+      research.id as "id",
+      research.discovery_run_id as "discoveryRunId",
+      research.summary as "summary",
+      research.findings as "findings",
+      research.source_urls as "sourceUrls",
+      research.analysis_version as "analysisVersion",
+      research.created_at as "createdAt"
+    from ${candidateResearchVersions} research
+    where research.candidate_id = ${candidateId}
+    order by research.created_at desc, research.id desc
+    offset ${researchOffset + 1}
+    limit ${MAX_DETAIL_RESEARCH_HISTORY}
   `);
   const signalDtos = signalRows.flatMap((row) => {
     const input = {
@@ -354,7 +382,7 @@ async function loadCandidateDetail(
     classifications: classifications.map((classification) => ({
       ...classification,
       confidence: classification.confidence === null ? null : number(classification.confidence),
-      sourceUrls: classification.sourceUrls ?? [],
+      sourceUrls: publicUrls(classification.sourceUrls ?? []),
     })),
     headquarters: headquarters ? {
       stateKey: headquarters.stateKey,
@@ -365,7 +393,7 @@ async function loadCandidateDetail(
       longitude: reliableCoordinates && headquarters.longitudeMicrodegrees !== null ? headquarters.longitudeMicrodegrees / 1_000_000 : null,
       evidenceState: headquarters.evidenceState,
       confidence: number(headquarters.confidence),
-      sourceUrls: headquarters.sourceUrls ?? [],
+      sourceUrls: publicUrls(headquarters.sourceUrls ?? []),
     } : null,
     signals: signalDtos,
     relationships: relationships.flatMap((relationship) => {
@@ -383,17 +411,35 @@ async function loadCandidateDetail(
         observedAt: nullableDate(relationship.observedAt),
       }] : [];
     }),
-    sources: sources.map((source) => ({
-      ...source,
-      firstSeenAt: date(source.firstSeenAt),
-      lastSeenAt: date(source.lastSeenAt),
-    })),
+    sources: sources.flatMap((source) => {
+      const sourceUrl = publicHttpUrlOrNull(source.sourceUrl);
+      return sourceUrl ? [{
+        ...source,
+        sourceUrl,
+        firstSeenAt: date(source.firstSeenAt),
+        lastSeenAt: date(source.lastSeenAt),
+      }] : [];
+    }),
     research: {
-      current: research[0] ? { ...research[0], createdAt: date(research[0].createdAt) } : null,
-      history: research.slice(1).map((version) => ({
+      current: currentResearch ? {
+        ...currentResearch,
+        sourceUrls: publicUrls(currentResearch.sourceUrls),
+        createdAt: date(currentResearch.createdAt),
+      } : null,
+      history: researchHistory.map((version) => ({
         ...version,
+        sourceUrls: publicUrls(version.sourceUrls),
         createdAt: date(version.createdAt),
       })),
+      historyPage: {
+        total: number(researchCount?.historyTotal),
+        offset: researchOffset,
+        limit: MAX_DETAIL_RESEARCH_HISTORY,
+        hasMore: researchOffset + researchHistory.length < number(researchCount?.historyTotal),
+        nextOffset: researchOffset + researchHistory.length < number(researchCount?.historyTotal)
+          ? researchOffset + researchHistory.length
+          : null,
+      },
     },
   };
 }

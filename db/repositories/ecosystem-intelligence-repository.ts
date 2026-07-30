@@ -79,8 +79,11 @@ export function createEcosystemIntelligenceRepository(
       });
     },
 
-    async getCandidateDetail(candidateId, now) {
+    async getCandidateDetail(candidateId, now, researchOffset = 0) {
       ensureValidNow(now);
+      if (!Number.isInteger(researchOffset) || researchOffset < 0) {
+        throw new Error("Research history offset must be a non-negative integer.");
+      }
       return database.transaction(async (transaction) => {
         const validPublicRelationshipEvidenceIds = await loadValidPublicRelationshipEvidenceIds(
           transaction,
@@ -96,6 +99,7 @@ export function createEcosystemIntelligenceRepository(
           now,
           validPublicRelationshipEvidenceIds,
           validPublicSignalEvidenceIds,
+          researchOffset,
         );
       }, { isolationLevel: "repeatable read", accessMode: "read only" });
     },

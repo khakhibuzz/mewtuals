@@ -106,6 +106,7 @@ export function serializeEcosystemSnapshot(snapshot: EcosystemSnapshot) {
         activeSignalCount: candidate.activeSignalCount,
         documentedRelationshipCount: candidate.documentedRelationshipCount,
         latestSourceUrl: candidate.latestSourceUrl,
+        latestSourceAt: candidate.latestSourceAt?.toISOString() ?? null,
         latestResearchAt: candidate.latestResearchAt?.toISOString() ?? null,
       })),
     },
@@ -151,6 +152,7 @@ export function serializeEcosystemCandidateDetail(candidate: EcosystemCandidateD
     research: {
       current: serializeResearch(candidate.research.current),
       history: candidate.research.history.map((version) => serializeResearch(version)!),
+      historyPage: candidate.research.historyPage,
     },
   };
 }
@@ -192,13 +194,14 @@ export function createEcosystemIntelligenceCandidateGetHandler(dependencies: {
   getCandidateDetail: (
     actor: EcosystemIntelligenceActor,
     candidateId: string,
+    researchOffset?: string,
   ) => Promise<
     | { ok: true; candidate: EcosystemCandidateDetail }
     | EcosystemIntelligenceFailure
   >;
 }) {
   return async function GET(
-    _request: Request,
+    request: Request,
     context: { params: Promise<{ candidateId: string }> },
   ) {
     try {
@@ -208,6 +211,7 @@ export function createEcosystemIntelligenceCandidateGetHandler(dependencies: {
       const result = await dependencies.getCandidateDetail(
         actorFrom(session),
         candidateId,
+        new URL(request.url).searchParams.get("researchOffset") ?? undefined,
       );
       if (!result.ok) return failure(result.status, result.error);
       return NextResponse.json(

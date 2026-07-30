@@ -145,9 +145,10 @@ describe("Ecosystem Intelligence route adapters", () => {
   });
 
   it("serializes candidate detail and maps invalid/missing results", async () => {
-    const getCandidateDetail = vi.fn(async (actor: unknown, candidateId: string) => {
+    const getCandidateDetail = vi.fn(async (actor: unknown, candidateId: string, researchOffset?: string) => {
       void actor;
       void candidateId;
+      void researchOffset;
       return {
         ok: true as const,
         candidate: {
@@ -170,6 +171,7 @@ describe("Ecosystem Intelligence route adapters", () => {
             createdAt: new Date("2026-07-28T00:00:00.000Z"),
           },
           history: [],
+          historyPage: { total: 21, offset: 20, limit: 20, hasMore: false, nextOffset: null },
         },
         } as never,
       };
@@ -179,7 +181,7 @@ describe("Ecosystem Intelligence route adapters", () => {
       getCandidateDetail,
     });
     const response = await handler(
-      new Request(`https://mewtuals.com/api/admin/ecosystem-intelligence/candidates/${CANDIDATE_ID}`),
+      new Request(`https://mewtuals.com/api/admin/ecosystem-intelligence/candidates/${CANDIDATE_ID}?researchOffset=20`),
       { params: Promise.resolve({ candidateId: CANDIDATE_ID }) },
     );
     const body = await response.json();
@@ -188,6 +190,14 @@ describe("Ecosystem Intelligence route adapters", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(body.candidate.discoveredAt).toBe("2026-07-01T00:00:00.000Z");
     expect(body.candidate.research.current.createdAt).toBe("2026-07-28T00:00:00.000Z");
+    expect(body.candidate.research.historyPage).toEqual({
+      total: 21, offset: 20, limit: 20, hasMore: false, nextOffset: null,
+    });
+    expect(getCandidateDetail).toHaveBeenCalledWith(
+      expect.anything(),
+      CANDIDATE_ID,
+      "20",
+    );
     expect(JSON.stringify(body)).not.toMatch(/rawMetadata|privateToken|email|phone/i);
 
     for (const status of [400, 404] as const) {

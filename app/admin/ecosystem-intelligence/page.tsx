@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { ADMIN_HEADER_LINKS } from "../../components/product/admin-navigation";
 import { EcosystemIntelligenceWorkspace } from "../../components/product/ecosystem-intelligence/EcosystemIntelligenceWorkspace";
+import type { EcosystemSnapshotDto } from "../../components/product/ecosystem-intelligence/types";
 import { ProductShell } from "../../components/product/ProductShell";
 import {
   filtersFromSearchParams,
@@ -82,7 +83,7 @@ export default async function EcosystemIntelligenceAdminPage({
     );
   }
 
-  const snapshot = serializeEcosystemSnapshot(result.snapshot);
+  const snapshot: EcosystemSnapshotDto = serializeEcosystemSnapshot(result.snapshot);
 
   return (
     <EcosystemIntelligenceShell>

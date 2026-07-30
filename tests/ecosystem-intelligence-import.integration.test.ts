@@ -211,7 +211,7 @@ function runImportCli(file: string) {
           cwd: process.cwd(),
           env: {
             ...process.env,
-            DATABASE_URL: "postgresql://127.0.0.1:55432/mewtuals_test",
+            DATABASE_URL: process.env.DATABASE_URL,
           },
           stdio: ["ignore", "pipe", "pipe"],
         },

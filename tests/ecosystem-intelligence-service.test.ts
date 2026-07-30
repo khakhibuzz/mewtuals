@@ -82,8 +82,30 @@ describe("Ecosystem Intelligence administrator service", () => {
       status: 400,
       error: "Submit a valid candidate id.",
     });
+    await expect(service.getCandidateDetail(actor, CANDIDATE_ID, "-1")).resolves.toEqual({
+      ok: false,
+      status: 400,
+      error: "Submit a valid research history offset.",
+    });
     expect(data.getSnapshot).not.toHaveBeenCalled();
     expect(data.getCandidateDetail).not.toHaveBeenCalled();
+  });
+
+  it("passes a bounded research history offset to the repository", async () => {
+    const data = repository();
+    const service = createEcosystemIntelligenceService({
+      repository: data,
+      adminEmails: ["admin@example.com"],
+      now: () => NOW,
+    });
+
+    await service.getCandidateDetail(
+      { userId: "admin", email: "admin@example.com" },
+      CANDIDATE_ID,
+      "20",
+    );
+
+    expect(data.getCandidateDetail).toHaveBeenCalledWith(CANDIDATE_ID, NOW, 20);
   });
 
   it("maps missing details and unexpected failures without leaking error text", async () => {

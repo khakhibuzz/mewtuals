@@ -23,7 +23,10 @@ const migrationJournalPath = join(
   "meta",
   "_journal.json",
 );
-const adminUrl = "postgresql://127.0.0.1:55432/postgres";
+const localDatabasePort = requireLocalDatabasePort(
+  process.env.MEWTUALS_LOCAL_DATABASE_PORT,
+);
+const adminUrl = `postgresql://127.0.0.1:${localDatabasePort}/postgres`;
 const managedDatabaseNames = [
   "mewtuals_migrations_fresh_test",
   "mewtuals_migrations_upgrade_test",
@@ -33,6 +36,18 @@ const [freshDatabaseName, upgradeDatabaseName] = managedDatabaseNames;
 const ownershipMarker = "mewtuals-migration-harness-v1";
 const createdDatabaseNames = new Set();
 const ownedDatabaseNames = new Set();
+
+function requireLocalDatabasePort(value) {
+  const candidate = value ?? "55432";
+  if (!/^\d{1,5}$/.test(candidate)) {
+    throw new Error("MEWTUALS_LOCAL_DATABASE_PORT must be a valid TCP port.");
+  }
+  const parsed = Number(candidate);
+  if (parsed < 1024 || parsed > 65535) {
+    throw new Error("MEWTUALS_LOCAL_DATABASE_PORT must be between 1024 and 65535.");
+  }
+  return candidate;
+}
 
 const migrationJournal = JSON.parse(
   await readFile(migrationJournalPath, "utf8"),
@@ -48,7 +63,7 @@ function assertAllowedDatabaseName(databaseName) {
 
 function databaseUrl(databaseName) {
   assertAllowedDatabaseName(databaseName);
-  return `postgresql://127.0.0.1:55432/${databaseName}`;
+  return `postgresql://127.0.0.1:${localDatabasePort}/${databaseName}`;
 }
 
 async function terminateDatabaseConnections(admin, databaseName) {

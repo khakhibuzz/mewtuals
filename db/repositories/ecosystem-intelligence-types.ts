@@ -77,6 +77,7 @@ export type EcosystemLedgerRow = {
   activeSignalCount: number;
   documentedRelationshipCount: number;
   latestSourceUrl: string | null;
+  latestSourceAt: Date | null;
   latestResearchAt: Date | null;
 };
 export type ExplorerGroup = {
@@ -257,10 +258,21 @@ export type EcosystemCandidateDetail = {
   research: {
     current: EcosystemResearchVersionDto | null;
     history: EcosystemResearchVersionDto[];
+    historyPage: {
+      total: number;
+      offset: number;
+      limit: number;
+      hasMore: boolean;
+      nextOffset: number | null;
+    };
   };
 };
 
 export type EcosystemIntelligenceRepository = {
   getSnapshot(filters: EcosystemFilters, now: Date): Promise<EcosystemSnapshot>;
-  getCandidateDetail(candidateId: string, now: Date): Promise<EcosystemCandidateDetail | null>;
+  getCandidateDetail(
+    candidateId: string,
+    now: Date,
+    researchOffset?: number,
+  ): Promise<EcosystemCandidateDetail | null>;
 };
