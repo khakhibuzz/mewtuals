@@ -239,6 +239,7 @@ function detailReadModel() {
             "directDemandAsk.supplier_registration",
             "indiaRelevance.globally_open.manufacturing",
             "responsePath",
+            "scoreComponents.actionability",
             "scoreComponents.commercialPotential",
             "scoreComponents.repeatability",
             "scoreComponents.strategicLearning",
@@ -401,6 +402,16 @@ describe("Global Radar DTO serializers", () => {
           ]),
         }),
         expect.objectContaining({
+          component: "actionability",
+          value: 80,
+          basis: "worker_evidence",
+          evidence: expect.arrayContaining([
+            expect.objectContaining({
+              matchedFieldPaths: ["scoreComponents.actionability"],
+            }),
+          ]),
+        }),
+        expect.objectContaining({
           component: "commercialPotential",
           value: 70,
           basis: "worker_evidence",
@@ -457,6 +468,11 @@ describe("Global Radar DTO serializers", () => {
       policyVersion: "global-radar-momentum-policy-v1",
       qualificationGatesPassed: true,
     });
+    detail.evidence.items[0]!.supportedFieldPaths = [
+      "signal.factualSummary",
+      "momentumMetrics.taxonomyConsistency",
+      "momentumMetrics.evidenceQuality",
+    ];
 
     const dto = serializeGlobalRadarSignalDetail(detail);
     const scoreSection = dto.sections.find(
@@ -478,17 +494,37 @@ describe("Global Radar DTO serializers", () => {
         }),
         expect.objectContaining({
           component: "evidenceQuality",
-          basis: "server_derived",
+          basis: "worker_evidence",
+          evidence: [
+            expect.objectContaining({
+              matchedFieldPaths: ["momentumMetrics.evidenceQuality"],
+            }),
+          ],
+        }),
+        expect.objectContaining({
+          component: "taxonomyConsistency",
+          basis: "worker_evidence",
+          evidence: [
+            expect.objectContaining({
+              matchedFieldPaths: ["momentumMetrics.taxonomyConsistency"],
+            }),
+          ],
         }),
       ]),
     );
     expect(
       scoreSection.componentEvidence.every(
-        ({ basis, evidence }) =>
-          basis === "server_derived" &&
-          evidence.length > 0 &&
-          evidence.length <= 10,
+        ({ evidence }) => evidence.length > 0 && evidence.length <= 10,
       ),
+    ).toBe(true);
+    expect(
+      scoreSection.componentEvidence
+        .filter(
+          ({ component }) =>
+            component !== "taxonomyConsistency" &&
+            component !== "evidenceQuality",
+        )
+        .every(({ basis }) => basis === "server_derived"),
     ).toBe(true);
   });
 

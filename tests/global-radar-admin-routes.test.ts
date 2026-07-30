@@ -135,6 +135,7 @@ function safeDetail() {
     complianceComplexity: 20,
   };
   const workerScorePaths = new Map([
+    ["actionability", "scoreComponents.actionability"],
     ["commercialPotential", "scoreComponents.commercialPotential"],
     ["repeatability", "scoreComponents.repeatability"],
     ["strategicLearning", "scoreComponents.strategicLearning"],
@@ -144,7 +145,6 @@ function safeDetail() {
     ["demandExplicitness", "directDemandAsk.supplier_registration"],
     ["evidenceConfidence", "signal.factualSummary"],
     ["freshness", "signal.announcedAt"],
-    ["actionability", "responsePath"],
     ["indiaFit", "indiaRelevance.globally_open.manufacturing"],
     ["responseAccessibility", "responsePath"],
   ]);

@@ -89,6 +89,7 @@ function evidence(overrides: Record<string, unknown> = {}) {
       "directDemandAsk.data_collection_request",
       "indiaRelevance.explicit_India.collection",
       "responsePath",
+      "scoreComponents.actionability",
       "scoreComponents.commercialPotential",
       "scoreComponents.repeatability",
       "scoreComponents.strategicLearning",
@@ -350,7 +351,11 @@ function momentumBatch() {
           contributorEntityRef: "entity-acme",
           supportsDirectDemand: false,
           supportsIndiaRelevance: false,
-          supportedFieldPaths: ["signal.factualSummary"],
+          supportedFieldPaths: [
+            "signal.factualSummary",
+            "momentumMetrics.taxonomyConsistency",
+            "momentumMetrics.evidenceQuality",
+          ],
         }),
         evidence({
           contributorEntityRef: "entity-beta",
@@ -676,6 +681,22 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     expect(rejected.rejections.invalid_evidence).toBe(1);
   });
 
+  it("requires exact evidence for non-null worker-origin actionability", () => {
+    const missingActionability = evidence({
+      supportedFieldPaths: evidence().supportedFieldPaths.filter(
+        (path) => path !== "scoreComponents.actionability",
+      ),
+    });
+    const accepted = validate(batch());
+    const rejected = validate(
+      batch({ signals: [directSignal({ evidence: [missingActionability] })] }),
+    );
+
+    expect(accepted.signals).toHaveLength(1);
+    expect(rejected.signals).toEqual([]);
+    expect(rejected.rejections.invalid_evidence).toBe(1);
+  });
+
   it("requires evidence for each non-null worker-scored precursor component", () => {
     const fullyLinked = precursorSignal();
     const fullyLinkedEvidence = fullyLinked.evidence[0]!;
@@ -752,6 +773,26 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     expect(canonicalizeGlobalRadarPersistenceBatch(validated)).toMatchObject({
       valid: true,
     });
+  });
+
+  it("requires exact evidence for both worker-origin momentum metrics", () => {
+    const fullyLinked = momentumBatch();
+    expect(validate(fullyLinked).signals).toHaveLength(1);
+
+    for (const missingPath of [
+      "momentumMetrics.taxonomyConsistency",
+      "momentumMetrics.evidenceQuality",
+    ]) {
+      const missingMetricEvidence = momentumBatch();
+      missingMetricEvidence.signals[0]!.evidence[0]!.supportedFieldPaths =
+        missingMetricEvidence.signals[0]!.evidence[0]!.supportedFieldPaths.filter(
+          (path) => path !== missingPath,
+        );
+
+      const rejected = validate(missingMetricEvidence);
+      expect(rejected.signals).toEqual([]);
+      expect(rejected.rejections.invalid_evidence).toBe(1);
+    }
   });
 
   it("does not count aliased public identities as independent momentum", () => {

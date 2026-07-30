@@ -345,8 +345,11 @@ export {
   deriveScoreComponentEvidenceAssociations,
   directDemandScoreEvidenceComponents,
   directDemandWorkerScoredComponents,
+  isMomentumWorkerScoredMetricEvidencePath,
   isWorkerScoredComponentEvidencePath,
+  missingMomentumWorkerScoredMetricEvidencePaths,
   missingWorkerScoredComponentEvidencePaths,
+  momentumWorkerScoredMetrics,
   momentumScoreEvidenceComponents,
   precursorScoreEvidenceComponents,
   precursorWorkerScoredComponents,
@@ -354,6 +357,8 @@ export {
 
 export type {
   DirectDemandWorkerScoredComponent,
+  MomentumWorkerScoredMetric,
+  MomentumWorkerScoredMetricEvidencePath,
   PrecursorWorkerScoredComponent,
   ScoreComponentEvidenceAssociation,
   ScoreComponentEvidenceCitation,

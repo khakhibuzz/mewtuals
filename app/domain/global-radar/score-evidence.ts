@@ -1,4 +1,5 @@
 export const directDemandWorkerScoredComponents = Object.freeze([
+  "actionability",
   "commercialPotential",
   "repeatability",
   "strategicLearning",
@@ -12,6 +13,11 @@ export const precursorWorkerScoredComponents = Object.freeze([
   "strategicRelevance",
 ] as const);
 
+export const momentumWorkerScoredMetrics = Object.freeze([
+  "taxonomyConsistency",
+  "evidenceQuality",
+] as const);
+
 export type DirectDemandWorkerScoredComponent =
   (typeof directDemandWorkerScoredComponents)[number];
 export type PrecursorWorkerScoredComponent =
@@ -21,6 +27,10 @@ export type WorkerScoredComponent =
   | PrecursorWorkerScoredComponent;
 export type WorkerScoredComponentEvidencePath =
   `scoreComponents.${WorkerScoredComponent}`;
+export type MomentumWorkerScoredMetric =
+  (typeof momentumWorkerScoredMetrics)[number];
+export type MomentumWorkerScoredMetricEvidencePath =
+  `momentumMetrics.${MomentumWorkerScoredMetric}`;
 
 export const GLOBAL_RADAR_SCORE_EVIDENCE_VERSION =
   "global-radar-score-evidence-v1" as const;
@@ -100,11 +110,20 @@ const workerScoredComponentEvidencePaths = new Set<string>([
   ...directDemandWorkerScoredComponents,
   ...precursorWorkerScoredComponents,
 ].map((component) => `scoreComponents.${component}`));
+const momentumWorkerScoredMetricEvidencePaths = new Set<string>(
+  momentumWorkerScoredMetrics.map((metric) => `momentumMetrics.${metric}`),
+);
 
 export function isWorkerScoredComponentEvidencePath(
   path: string,
 ): path is WorkerScoredComponentEvidencePath {
   return workerScoredComponentEvidencePaths.has(path);
+}
+
+export function isMomentumWorkerScoredMetricEvidencePath(
+  path: string,
+): path is MomentumWorkerScoredMetricEvidencePath {
+  return momentumWorkerScoredMetricEvidencePaths.has(path);
 }
 
 type WorkerScoredSignalClass = "direct_demand" | "demand_precursor";
@@ -131,6 +150,21 @@ export function missingWorkerScoredComponentEvidencePaths(input: Readonly<{
       const value = input.scoreComponents[component];
       if (value === null || value === undefined) return [];
       const path = `scoreComponents.${component}` as const;
+      return supportedPaths.has(path) ? [] : [path];
+    }),
+  );
+}
+
+export function missingMomentumWorkerScoredMetricEvidencePaths(input: Readonly<{
+  momentumMetrics: Readonly<Record<MomentumWorkerScoredMetric, number>>;
+  evidence: readonly ScoreEvidence[];
+}>): readonly MomentumWorkerScoredMetricEvidencePath[] {
+  const supportedPaths = new Set(
+    input.evidence.flatMap(({ supportedFieldPaths }) => supportedFieldPaths),
+  );
+  return Object.freeze(
+    momentumWorkerScoredMetrics.flatMap((metric) => {
+      const path = `momentumMetrics.${metric}` as const;
       return supportedPaths.has(path) ? [] : [path];
     }),
   );
@@ -199,17 +233,6 @@ function directEvidenceSelector(
           path === "signal.announcedAt" || path === "signal.effectiveFrom",
         fallbackToAllEvidence: true,
       };
-    case "actionability":
-      return {
-        expectedBasis: "server_derived",
-        rationale:
-          "Server-derived from documented response access and compliance-review facts.",
-        match: (path) =>
-          ["responsePath", "professionalResponsePath", "publicResponsePath"].includes(
-            path,
-          ) || path.startsWith("sensitiveDataAndCompliance."),
-        fallbackToAllEvidence: true,
-      };
     case "indiaFit":
       return {
         expectedBasis: "server_derived",
@@ -266,7 +289,21 @@ function precursorEvidenceSelector(
   throw new Error(`Unsupported precursor score component: ${component}`);
 }
 
-function momentumEvidenceSelector(): EvidenceSelector {
+function momentumEvidenceSelector(
+  component: (typeof momentumScoreEvidenceComponents)[number],
+): EvidenceSelector {
+  if (
+    component === "taxonomyConsistency" ||
+    component === "evidenceQuality"
+  ) {
+    const path = `momentumMetrics.${component}`;
+    return {
+      expectedBasis: "worker_evidence",
+      rationale:
+        "Worker metric is supported by public evidence cited for this momentum input.",
+      match: (candidate) => candidate === path,
+    };
+  }
   return allEvidenceSelector(
     "Server-derived from deduplicated public evidence, entity breadth, and the versioned momentum policy.",
   );
@@ -300,7 +337,9 @@ function selectorForComponent(
       component as (typeof precursorScoreEvidenceComponents)[number],
     );
   }
-  return momentumEvidenceSelector();
+  return momentumEvidenceSelector(
+    component as (typeof momentumScoreEvidenceComponents)[number],
+  );
 }
 
 function selectedCitations(

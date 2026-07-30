@@ -18,6 +18,7 @@ import {
 export const GLOBAL_RADAR_FICTIONAL_NOW = GLOBAL_RADAR_TEST_NOW;
 
 const directWorkerScoreEvidencePaths = [
+  "scoreComponents.actionability",
   "scoreComponents.commercialPotential",
   "scoreComponents.repeatability",
   "scoreComponents.strategicLearning",
@@ -713,7 +714,11 @@ const physicalAiPlatformMomentum = envelope({
           "Orbit published a fictional physical-AI platform direction focused on repeatable model evaluation.",
         englishSummary:
           "Orbit published a physical-AI platform direction for repeatable model evaluation.",
-        supportedFieldPaths: ["signal.factualSummary"],
+        supportedFieldPaths: [
+          "signal.factualSummary",
+          "momentumMetrics.taxonomyConsistency",
+          "momentumMetrics.evidenceQuality",
+        ],
       }),
       evidence({
         contributorEntityRef: platformEntityTwo.entityRef,

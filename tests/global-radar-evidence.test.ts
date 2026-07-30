@@ -198,10 +198,13 @@ describe("Global Radar evidence extraction", () => {
       "scoreComponents.repeatability",
       "scoreComponents.strategicLearning",
       "scoreComponents.complianceComplexity",
+      "scoreComponents.actionability",
       "scoreComponents.proximityToExternalDemand",
       "scoreComponents.fundingDeploymentMomentum",
       "scoreComponents.likelyDataHardwareIntensity",
       "scoreComponents.strategicRelevance",
+      "momentumMetrics.taxonomyConsistency",
+      "momentumMetrics.evidenceQuality",
     ];
 
     expect(
@@ -218,6 +221,9 @@ describe("Global Radar evidence extraction", () => {
       "scoreComponents.commercial_potential",
       "scoreComponents.commercialPotential.detail",
       "scoreComponents.workerSecret",
+      "momentumMetrics.taxonomy_consistency",
+      "momentumMetrics.evidenceQuality.detail",
+      "momentumMetrics.workerSecret",
     ]) {
       expect(
         normalizeRadarEvidence(
