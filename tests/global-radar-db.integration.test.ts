@@ -4586,6 +4586,7 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
       kind === "direct"
         ? validPersistenceBatch(claim.run.id, {
             externalSignalId: `admin-direct-${suffix}`,
+            observedAt: now.toISOString(),
             sourceUrl: `https://admin-${suffix}.example/direct`,
             stableIdentifierValue: `admin-direct-${suffix}`,
             websiteUrl: `https://admin-${suffix}.example`,
@@ -5225,6 +5226,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       .where(eq(globalRadarSignals.signalClass, "ecosystem_momentum"));
     if (!momentum) throw new Error("Momentum qualification signal missing.");
     await db
+      .update(globalSignalEvidence)
+      .set({ isSyndicated: false })
+      .where(eq(globalSignalEvidence.signalId, momentum.id));
+    await db
       .update(globalRadarSignals)
       .set({
         status: "needs_review",
@@ -5236,7 +5241,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       adminRepository.reviewSignal({
         signalId: momentum.id,
         actor,
-        envelope: envelope(0, "26"),
+        envelope: envelope(0, "26", "2026-07-30T15:00:00.000Z"),
         command: { type: "qualify" },
       }),
     ).resolves.toMatchObject({ outcome: "conflict", reason: "qualification_requirements_not_met" });
@@ -5245,7 +5250,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       adminRepository.reviewSignal({
         signalId: momentum.id,
         actor,
-        envelope: envelope(0, "27"),
+        envelope: envelope(0, "27", "2026-07-30T15:00:00.000Z"),
         command: { type: "qualify" },
       }),
     ).resolves.toMatchObject({ outcome: "updated" });
@@ -5685,6 +5690,7 @@ describe("PostgreSQL Global Radar administrator evidence and notes", () => {
       normalizedName: "unrelated evidence entity",
       canonicalDomain: "unrelated-evidence.example",
       websiteUrl: "https://unrelated-evidence.example",
+      linkedinUrl: null,
       stablePublicIdentifiers: ["official_registry:unrelated-evidence"],
       publicIdentityAnchor: "e".repeat(64),
     });
