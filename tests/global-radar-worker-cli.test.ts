@@ -665,6 +665,111 @@ describe("Global Radar worker CLI response safety", () => {
     }
   });
 
+  it.each([500, 502, 504])(
+    "keeps a readable submit HTTP %i response in unknown-success state",
+    async (httpStatus) => {
+      const privateDetail = "private-submit-server-error-body";
+      const result = await runCommand(
+        [
+          "submit",
+          "--claim-file",
+          privateClaimFile(),
+          "--file",
+          submissionBatchFile(),
+        ],
+        defaultRuntime({
+          fetch: vi.fn(async () =>
+            Response.json(
+              {
+                outcome: "conflict",
+                reason: "lease_mismatch",
+                rawPayload: privateDetail,
+              },
+              { status: httpStatus },
+            ),
+          ),
+        }),
+      );
+
+      expect(JSON.parse(result.stderr)).toEqual({
+        ok: false,
+        error: `The Global Radar API returned HTTP ${httpStatus} for submit.`,
+        httpStatus,
+        outcome: "unknown_success",
+        reason: "server_error",
+      });
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain(privateDetail);
+    },
+  );
+
+  it("keeps empty, malformed, and oversized submit 5xx bodies unknown", async () => {
+    const privateDetail = "private-submit-5xx-response-marker";
+    const responses = [
+      () => new Response(null, { status: 502 }),
+      () => new Response(`{${privateDetail}`, { status: 502 }),
+      () =>
+        new Response(
+          `${privateDetail}${"x".repeat(MAX_GLOBAL_RADAR_WORKER_FILE_BYTES)}`,
+          { status: 502 },
+        ),
+    ];
+
+    for (const response of responses) {
+      const result = await runCommand(
+        [
+          "submit",
+          "--claim-file",
+          privateClaimFile(),
+          "--file",
+          submissionBatchFile(),
+        ],
+        defaultRuntime({ fetch: vi.fn(async () => response()) }),
+      );
+
+      expect(JSON.parse(result.stderr)).toMatchObject({
+        ok: false,
+        httpStatus: 502,
+        outcome: "unknown_success",
+        reason: "server_error",
+      });
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain(privateDetail);
+    }
+  });
+
+  it("keeps a submit 5xx response-stream failure unknown", async () => {
+    const privateDetail = "private-submit-5xx-stream-detail";
+    const response = new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(new Error(privateDetail));
+        },
+      }),
+      { status: 502 },
+    );
+    const result = await runCommand(
+      [
+        "submit",
+        "--claim-file",
+        privateClaimFile(),
+        "--file",
+        submissionBatchFile(),
+      ],
+      defaultRuntime({ fetch: vi.fn(async () => response) }),
+    );
+
+    expect(JSON.parse(result.stderr)).toEqual({
+      ok: false,
+      error: "The Global Radar API response body could not be read for submit.",
+      outcome: "unknown_success",
+      reason: "response_body_error",
+      httpStatus: 502,
+    });
+    expect(result.stdout).toBe("");
+    expect(result.stderr).not.toContain(privateDetail);
+  });
+
   it("reports only allowlisted conflict metadata and never echoes response bodies", async () => {
     const privateValue = "private-response-body-and-token";
     const result = await runCommand(
@@ -749,7 +854,7 @@ describe("Global Radar worker CLI response safety", () => {
       defaultRuntime({
         environment: {
           GLOBAL_RADAR_API_BASE_URL: "https://user:password@mewtuals.example",
-          GLOBAL_RADAR_WORKER_SECRET: "private-secret",
+          GLOBAL_RADAR_WORKER_SECRET: RADAR_WORKER_SECRET,
         },
       }),
     );
@@ -757,8 +862,13 @@ describe("Global Radar worker CLI response safety", () => {
     expect(validated.exitCode).toBe(0);
     expect(missing.exitCode).toBe(1);
     expect(credentials.exitCode).toBe(1);
+    expect(JSON.parse(credentials.stderr)).toEqual({
+      ok: false,
+      error:
+        "GLOBAL_RADAR_API_BASE_URL must be a credential-free HTTP(S) URL.",
+    });
     expect(credentials.stderr).not.toContain("password");
-    expect(credentials.stderr).not.toContain("private-secret");
+    expect(credentials.stderr).not.toContain(RADAR_WORKER_SECRET);
   });
 
   it("requires a strong Radar secret distinct from the Discovery secret", async () => {

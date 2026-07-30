@@ -441,6 +441,17 @@ function invalidResponseDetails(
     : {};
 }
 
+function isSubmitServerError(
+  response: Response,
+  command: GlobalRadarWorkerNetworkCommand,
+): boolean {
+  return (
+    command === "submit" &&
+    response.status >= 500 &&
+    response.status <= 599
+  );
+}
+
 async function readWorkerResponseJson(
   response: Response,
   command: GlobalRadarWorkerNetworkCommand,
@@ -453,7 +464,8 @@ async function readWorkerResponseJson(
       `The Global Radar API response body could not be read for ${command}.`,
       {
         outcome:
-          response.ok && command === "submit"
+          (response.ok && command === "submit") ||
+          isSubmitServerError(response, command)
             ? "unknown_success"
             : "transport_failure",
         reason: responseBodyFailureReason(error),
@@ -502,6 +514,16 @@ async function postWorkerJson(
       command,
       MAX_API_ERROR_BYTES,
     );
+    if (isSubmitServerError(response, command)) {
+      throw new GlobalRadarCliError(
+        `The Global Radar API returned HTTP ${response.status} for ${command}.`,
+        {
+          httpStatus: response.status,
+          outcome: "unknown_success",
+          reason: "server_error",
+        },
+      );
+    }
     const safe = safeApiFailure(error);
     throw new GlobalRadarCliError(
       `The Global Radar API rejected ${command} with HTTP ${response.status}.`,
