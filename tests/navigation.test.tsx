@@ -28,6 +28,9 @@ describe("SiteHeader", () => {
     });
     expect(header.queryByRole("link", { name: "About" })).not.toBeInTheDocument();
     expect(header.queryByRole("link", { name: "Apply" })).not.toBeInTheDocument();
+    expect(
+      header.queryByRole("link", { name: "Global Demand Radar" }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens the compact menu and closes it after a destination is chosen", async () => {

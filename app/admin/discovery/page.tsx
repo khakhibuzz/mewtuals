@@ -4,7 +4,7 @@ import {
   DiscoveryDashboard,
   type DiscoveryDashboardSnapshot,
 } from "../../components/product/DiscoveryDashboard";
-import { ProductShell } from "../../components/product/ProductShell";
+import { AdminShell } from "../../components/product/AdminShell";
 import { getDiscoveryService } from "../../server/discovery";
 import { getCurrentSession } from "../../server/session";
 import type { DiscoveryAdminSnapshot } from "../../../db/repositories/discovery-repository";
@@ -142,21 +142,16 @@ export default async function DiscoveryAdminPage({
   if (!result.ok) redirect("/dashboard");
 
   return (
-    <ProductShell
+    <AdminShell
+      current="india-discovery"
       eyebrow="Discovery network"
       title="Discovery operations."
       intro="Review source-supported companies and creators before they enter the profile pipeline."
-      headerLinks={[
-        { href: "/admin/opportunity-briefs", label: "Opportunity Briefs" },
-        { href: "/admin/discovery", label: "Discovery" },
-        { href: "/admin/verifications", label: "Verification queue" },
-      ]}
-      wide
     >
       <DiscoveryDashboard
         snapshot={serializeDiscoverySnapshot(result.snapshot)}
         filters={filters}
       />
-    </ProductShell>
+    </AdminShell>
   );
 }

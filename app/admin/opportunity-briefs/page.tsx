@@ -2,8 +2,8 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { AdminShell } from "../../components/product/AdminShell";
 import { OpportunityBriefDashboard } from "../../components/product/OpportunityBriefDashboard";
-import { ProductShell } from "../../components/product/ProductShell";
 import { getOpportunityBriefService } from "../../server/opportunity-brief";
 import {
   parseOpportunityBriefAdminFilters,
@@ -34,19 +34,14 @@ export const serializeOpportunityBriefSnapshot =
 
 function OpportunityBriefAdminShell({ children }: { children: ReactNode }) {
   return (
-    <ProductShell
+    <AdminShell
+      current="opportunity-briefs"
       eyebrow="Opportunity Brief operations"
       title="Opportunity Brief requests."
       intro="Review public requests, record research progress, and connect exact Discovery candidates."
-      headerLinks={[
-        { href: "/admin/opportunity-briefs", label: "Opportunity Briefs" },
-        { href: "/admin/discovery", label: "Discovery" },
-        { href: "/admin/verifications", label: "Verification queue" },
-      ]}
-      wide
     >
       {children}
-    </ProductShell>
+    </AdminShell>
   );
 }
 

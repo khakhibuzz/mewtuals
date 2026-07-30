@@ -85,11 +85,11 @@ describe("Opportunity Brief administrator page", () => {
       "href",
       "/admin/opportunity-briefs",
     );
-    expect(screen.getByRole("link", { name: "Discovery" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "India Discovery" })).toHaveAttribute(
       "href",
       "/admin/discovery",
     );
-    expect(screen.getByRole("link", { name: "Verification queue" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Verification Queue" })).toHaveAttribute(
       "href",
       "/admin/verifications",
     );
@@ -193,7 +193,7 @@ describe("Opportunity Brief administrator page", () => {
       "href",
       "/admin/opportunity-briefs",
     );
-    expect(screen.getByRole("link", { name: "Discovery" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "India Discovery" })).toHaveAttribute(
       "href",
       "/admin/discovery",
     );
@@ -255,29 +255,20 @@ describe("Opportunity Brief administrator page", () => {
 });
 
 describe("administrator navigation", () => {
-  it("uses one Opportunity Briefs, Discovery, Verification order on every admin page", async () => {
-    const paths = [
-      "app/admin/opportunity-briefs/page.tsx",
-      "app/admin/discovery/page.tsx",
-      "app/admin/verifications/page.tsx",
-    ];
-    const sources = await Promise.all(
-      paths.map((path) =>
-        import("node:fs/promises").then((fs) =>
-          fs.readFile(`${process.cwd()}/${path}`, "utf8"),
-        ),
-      ),
-    );
-    const expectedOrder = [
-      "/admin/opportunity-briefs",
-      "/admin/discovery",
-      "/admin/verifications",
-    ];
+  it("migrates every existing admin page to the shared shell", async () => {
+    const expectations = [
+      ["app/admin/verifications/page.tsx", 'current="verification-queue"'],
+      ["app/admin/opportunity-briefs/page.tsx", 'current="opportunity-briefs"'],
+      ["app/admin/discovery/page.tsx", 'current="india-discovery"'],
+    ] as const;
 
-    for (const source of sources) {
-      const positions = expectedOrder.map((href) => source.indexOf(`href: "${href}"`));
-      expect(positions.every((position) => position >= 0)).toBe(true);
-      expect(positions).toEqual([...positions].sort((left, right) => left - right));
+    for (const [path, current] of expectations) {
+      const source = await import("node:fs/promises").then((fs) =>
+        fs.readFile(`${process.cwd()}/${path}`, "utf8"),
+      );
+      expect(source).toContain('import { AdminShell }');
+      expect(source).toContain(current);
+      expect(source).not.toContain("headerLinks=");
     }
   });
 });

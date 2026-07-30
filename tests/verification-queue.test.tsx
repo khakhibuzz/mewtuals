@@ -44,6 +44,16 @@ afterEach(() => {
 });
 
 describe("verification queue", () => {
+  it("uses the shared administrator shell with Verification Queue current", async () => {
+    const source = await import("node:fs/promises").then((fs) =>
+      fs.readFile(`${process.cwd()}/app/admin/verifications/page.tsx`, "utf8"),
+    );
+
+    expect(source).toContain('import { AdminShell }');
+    expect(source).toContain('current="verification-queue"');
+    expect(source).not.toContain("headerLinks=");
+  });
+
   it("server-renders a deterministic UTC timestamp with machine-readable time", () => {
     const html = renderToString(<VerificationQueue profiles={profiles} />);
 

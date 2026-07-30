@@ -11,7 +11,11 @@ type ProductShellProps = {
   intro?: string;
   children: ReactNode;
   headerAction?: { href: string; label: string };
-  headerLinks?: readonly { href: string; label: string }[];
+  headerLinks?: readonly {
+    href: string;
+    label: string;
+    current?: boolean;
+  }[];
   wide?: boolean;
 };
 
@@ -35,7 +39,12 @@ export function ProductShell({
           <div className={styles.headerControls}>
             <nav className={styles.headerNav} aria-label="Administrator">
               {headerLinks.map((link) => (
-                <Link className={styles.headerLink} href={link.href} key={link.href}>
+                <Link
+                  aria-current={link.current ? "page" : undefined}
+                  className={styles.headerLink}
+                  href={link.href}
+                  key={link.href}
+                >
                   {link.label}
                 </Link>
               ))}

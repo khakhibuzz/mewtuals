@@ -84,10 +84,13 @@ describe("discovery administrator page", () => {
     expect(
       screen.getByRole("heading", { name: "Discovery operations." }),
     ).toBeVisible();
-    expect(screen.getByRole("link", { name: "Verification queue" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Verification Queue" })).toHaveAttribute(
       "href",
       "/admin/verifications",
     );
+    expect(
+      screen.getByRole("link", { name: "India Discovery", current: "page" }),
+    ).toHaveAttribute("href", "/admin/discovery");
     expect(getAdminSummary).toHaveBeenCalledWith(
       { userId: "admin", email: "admin@mewtuals.com" },
       {},

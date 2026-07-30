@@ -33,8 +33,15 @@
 .headerControls,
 .headerNav {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 1rem;
+}
+
+.headerLink[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 650;
+  text-decoration-thickness: 2px;
 }
 
 .headerButton {
@@ -853,7 +860,8 @@
 .discoveryTextLink:focus-visible,
 .discoveryPagination a:focus-visible,
 .discoveryDrawer a:focus-visible,
-.headerNav a:focus-visible {
+.headerNav a:focus-visible,
+.headerButton:focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 3px;
 }
@@ -1571,12 +1579,14 @@
   }
 
   .headerControls {
+    max-width: calc(100% - 5.5rem);
     align-items: flex-end;
     flex-direction: column;
   }
 
   .headerNav {
     flex-wrap: wrap;
+    gap: 0.25rem 0.75rem;
     justify-content: flex-end;
   }
 
