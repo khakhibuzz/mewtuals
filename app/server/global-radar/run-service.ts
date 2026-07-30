@@ -27,6 +27,7 @@ import {
 import {
   publicGlobalRadarConfig,
   type GlobalRadarConfig,
+  type PublicGlobalRadarConfig,
 } from "./config";
 import { serializeGlobalRadarRun } from "./dto";
 import { verifyGlobalRadarBearer } from "./worker-auth";
@@ -196,6 +197,29 @@ function validDate(value: Date): boolean {
   return value instanceof Date && !Number.isNaN(value.getTime());
 }
 
+function publicConfigFromPlan(
+  plan: RadarPlan,
+): PublicGlobalRadarConfig | null {
+  if (
+    plan.sourceAdapters.length !== 1 ||
+    plan.sourceAdapters[0] !== "codex_public_web"
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    countries: Object.freeze([...plan.countries]),
+    languages: Object.freeze([...plan.languages]),
+    themes: Object.freeze([...plan.themes]),
+    enabledSources: Object.freeze(["codex_public_web"] as const),
+    resultLimit: plan.resultLimit,
+    thresholds: Object.freeze({
+      direct_demand: plan.thresholds.direct_demand,
+      demand_precursor: plan.thresholds.demand_precursor,
+      ecosystem_momentum: plan.thresholds.ecosystem_momentum,
+    }),
+  });
+}
+
 function normalizedAdminActor(
   actor: GlobalRadarAdminActor | null | undefined,
   adminEmails: ReadonlySet<string>,
@@ -346,7 +370,10 @@ export function createGlobalRadarRunService(
       result.privateClaim.planSnapshot,
       run.planFingerprint,
     );
-    if (!plan) return { outcome: "conflict" as const, reason: "invalid_plan" };
+    const claimedConfig = plan ? publicConfigFromPlan(plan) : null;
+    if (!plan || !claimedConfig) {
+      return { outcome: "conflict" as const, reason: "invalid_plan" };
+    }
     return {
       outcome: "claimed" as const,
       claim: {
@@ -363,7 +390,7 @@ export function createGlobalRadarRunService(
         },
         plan,
         queries: generateGlobalRadarQueries(plan),
-        config: publicConfig,
+        config: claimedConfig,
         outputSchema: dependencies.workerOutputSchema,
       },
     };

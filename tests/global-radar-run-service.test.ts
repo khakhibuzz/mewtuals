@@ -206,6 +206,96 @@ describe("Global Radar run service", () => {
     expect(JSON.stringify(result)).not.toContain(config.workerSecret);
   });
 
+  it("returns claim configuration from the persisted plan after runtime config drift", async () => {
+    const persistedPlan = planGlobalRadarRun({
+      ...planningInput("manual"),
+      administratorRequestId: "00000000-0000-4000-8000-000000000012",
+      config: {
+        ...planningInput("manual").config,
+        countries: ["China"],
+        languages: ["zh-CN"],
+        themes: ["industrial_robotics_data"],
+        resultLimit: 3,
+        thresholds: {
+          version: "global-radar-thresholds-v1",
+          direct_demand: 41,
+          demand_precursor: 42,
+          ecosystem_momentum: 43,
+        },
+      },
+    });
+    const driftedConfig: GlobalRadarConfig = Object.freeze({
+      ...config,
+      countries: ["United States"],
+      languages: ["en"] as const,
+      themes: ["robot_teleoperation_demonstrations"] as const,
+      resultLimit: 19,
+      thresholds: {
+        direct_demand: 91,
+        demand_precursor: 92,
+        ecosystem_momentum: 93,
+      },
+    });
+    const repository = repositoryDouble({
+      claimRun: vi.fn(async () => ({
+        outcome: "claimed" as const,
+        run: safeRun({
+          trigger: "manual",
+          scanMode: "manual",
+          planFingerprint: persistedPlan.fingerprint,
+        }),
+        privateClaim: {
+          leaseToken: "raw-lease-token",
+          leaseExpiresAt: new Date("2026-07-31T06:00:00.000Z"),
+          planSnapshot: structuredClone(persistedPlan),
+        },
+      })),
+    });
+    const service = createService(repository, vi.fn(), driftedConfig);
+    const authorization = service.authorizeWorker(
+      `Bearer ${driftedConfig.workerSecret}`,
+    );
+
+    const result = await service.claim(authorization, {});
+
+    expect(result).toMatchObject({
+      outcome: "claimed",
+      claim: {
+        plan: {
+          countries: ["China"],
+          languages: ["zh-CN"],
+          themes: ["industrial_robotics_data"],
+          resultLimit: 3,
+          thresholds: {
+            direct_demand: 41,
+            demand_precursor: 42,
+            ecosystem_momentum: 43,
+          },
+        },
+        config: {
+          countries: ["China"],
+          languages: ["zh-CN"],
+          themes: ["industrial_robotics_data"],
+          enabledSources: ["codex_public_web"],
+          resultLimit: 3,
+          thresholds: {
+            direct_demand: 41,
+            demand_precursor: 42,
+            ecosystem_momentum: 43,
+          },
+        },
+      },
+    });
+    expect(result).not.toMatchObject({
+      claim: {
+        config: {
+          resultLimit: driftedConfig.resultLimit,
+          thresholds: driftedConfig.thresholds,
+        },
+      },
+    });
+  });
+
   it("queues and claims one deterministic scheduled or trial plan with strict selectors", async () => {
     let calls = 0;
     let queuedPlan: RadarPlan | undefined;
