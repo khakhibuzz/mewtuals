@@ -30,6 +30,7 @@ import {
 import type { MewtualsDatabase } from "../client";
 import {
   globalEntities,
+  globalRadarAdminEvents,
   globalRadarSearchQueries,
   globalRadarSignalEntities,
   globalRadarSignals,
@@ -433,6 +434,7 @@ function signalInsertValues(
 
 function automatedSignalRefreshValues(
   proposed: typeof globalRadarSignals.$inferInsert,
+  preserveAdministratorNoIndiaFit: boolean,
 ): Partial<typeof globalRadarSignals.$inferInsert> {
   return {
     title: proposed.title,
@@ -449,7 +451,9 @@ function automatedSignalRefreshValues(
     targetCapabilityTags: proposed.targetCapabilityTags,
     requiredCounterpartyArchetypes:
       proposed.requiredCounterpartyArchetypes,
-    indiaRelevanceType: proposed.indiaRelevanceType,
+    ...(preserveAdministratorNoIndiaFit
+      ? {}
+      : { indiaRelevanceType: proposed.indiaRelevanceType }),
     indiaRelevanceRationale: proposed.indiaRelevanceRationale,
     indiaFitReasons: proposed.indiaFitReasons,
     indiaFitConstraints: proposed.indiaFitConstraints,
@@ -540,6 +544,26 @@ function automatedSignalRefreshValues(
       proposed.participantRightsComplexity,
     rawMetadata: proposed.rawMetadata,
   };
+}
+
+async function hasAdministratorNoIndiaFitDecision(
+  transaction: GlobalRadarTransaction,
+  signal: GlobalRadarSignal,
+): Promise<boolean> {
+  if (signal.indiaRelevanceType !== "no_current_India_fit") return false;
+  const [decision] = await transaction
+    .select({ id: globalRadarAdminEvents.id })
+    .from(globalRadarAdminEvents)
+    .where(
+      and(
+        eq(globalRadarAdminEvents.actorType, "administrator"),
+        eq(globalRadarAdminEvents.targetType, "signal"),
+        eq(globalRadarAdminEvents.targetId, signal.id),
+        eq(globalRadarAdminEvents.action, "mark_no_india_fit"),
+      ),
+    )
+    .limit(1);
+  return decision !== undefined;
 }
 
 function boundedHistoryText(value: string | null, maximum = 160): string | null {
@@ -889,6 +913,9 @@ async function persistSignals(
       const isNewer = observedAt.getTime() > existing.lastSeenAt.getTime();
       if (isNewer || graphChanged) {
         const latestObservedAt = isNewer ? observedAt : existing.lastSeenAt;
+        const preserveAdministratorNoIndiaFit =
+          isNewer &&
+          (await hasAdministratorNoIndiaFitDecision(transaction, existing));
         const reobservation =
           existing.signalClass === "direct_demand" &&
           signal.signalClass === "direct_demand" &&
@@ -913,7 +940,12 @@ async function persistSignals(
         const [updated] = await transaction
           .update(globalRadarSignals)
           .set({
-            ...(isNewer ? automatedSignalRefreshValues(proposed) : {}),
+            ...(isNewer
+              ? automatedSignalRefreshValues(
+                  proposed,
+                  preserveAdministratorNoIndiaFit,
+                )
+              : {}),
             reobserveBy:
               reobservation.reobserveBy === null
                 ? null
@@ -1230,7 +1262,8 @@ export async function expireGlobalRadarDirectDemand(
           ? "Known direct-demand deadline reached."
           : "Evergreen direct demand was not re-observed by its deadline.",
       observedAt: now,
-      idempotencyKey: `expiry:${signal.id}:${reason}`,
+      idempotencyKey:
+        `expiry:${signal.id}:revision:${expired.revision}:${reason}`,
       createdAt: now,
     });
   }

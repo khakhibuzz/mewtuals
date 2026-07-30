@@ -2939,6 +2939,199 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
     });
   });
 
+  it("preserves an administrator no-India-fit decision while refreshing every signal in the worker transaction", async () => {
+    const adminRepository = createGlobalRadarAdminRepository(db, {
+      scoreVersion: "global-radar-score-v1",
+      thresholds: {
+        direct_demand: 70,
+        demand_precursor: 65,
+        ecosystem_momentum: 70,
+      },
+    });
+    const actor = { userId: administratorUserId, email: userEmail };
+
+    function twoSignalBatch(
+      runId: string,
+      observedAt: string,
+      phase: "initial" | "rediscovered",
+    ) {
+      const primaryUrl = "https://acme.example/primary-request";
+      const batch = structuredClone(
+        validPersistenceBatch(runId, { observedAt, sourceUrl: primaryUrl }),
+      );
+      const primary = batch.signals[0]!;
+      primary.title =
+        phase === "initial"
+          ? "Acme primary request"
+          : "Acme refreshed primary request";
+
+      const secondary = structuredClone(primary);
+      const secondaryUrl = "https://acme.example/secondary-request";
+      secondary.externalSignalId = "signal-secondary-request";
+      secondary.title =
+        phase === "initial"
+          ? "Acme secondary request"
+          : "Acme refreshed secondary request";
+      secondary.targetGeographies = ["Japan"];
+      secondary.collectionGeographies = ["Japan"];
+      secondary.evidence[0]!.sourceUrl = secondaryUrl;
+      secondary.evidence[0]!.canonicalSourceUrl = secondaryUrl;
+      secondary.evidence[0]!.evidenceFingerprint = createEvidenceFingerprint({
+        sourceUrl: secondaryUrl,
+        canonicalSourceUrl: secondaryUrl,
+        isPrimarySource: true,
+      });
+      if (secondary.responsePath) {
+        secondary.responsePath.evidenceUrl = secondaryUrl;
+      }
+      if (phase === "initial") {
+        secondary.indiaRelevance = {
+          ...secondary.indiaRelevance,
+          relevanceType: "no_current_India_fit",
+          basis: "no_current_fit",
+          rationale:
+            "The initial public evidence establishes no current India fit.",
+          reasons: [],
+          unknowns: ["Future India relevance remains open to new evidence."],
+          confidence: 70,
+        };
+      }
+      batch.signals = [primary, secondary];
+      return rehashPersistenceBatch(batch);
+    }
+
+    const firstNow = new Date("2026-07-30T06:30:00.000Z");
+    await repository.queueRun(
+      queueInput("administrator-no-india-fit-first", { now: firstNow }),
+    );
+    const firstClaim = await repository.claimRun({ now: firstNow });
+    if (firstClaim.outcome !== "claimed") {
+      throw new Error("First no-India-fit fixture was not claimed.");
+    }
+    const firstBatch = twoSignalBatch(
+      firstClaim.run.id,
+      "2026-07-30T06:31:00.000Z",
+      "initial",
+    );
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          firstClaim.run.id,
+          firstClaim.privateClaim.leaseToken,
+          new Date("2026-07-30T06:32:00.000Z"),
+        ),
+        submissionHash: firstBatch.canonicalSubmissionHash,
+        batch: firstBatch,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "completed",
+      run: { numberNew: 2 },
+    });
+
+    const [primary] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(
+        eq(
+          globalRadarSignals.dedupeKey,
+          firstBatch.signals[0]!.dedupeKey,
+        ),
+      );
+    const [secondary] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(
+        eq(
+          globalRadarSignals.dedupeKey,
+          firstBatch.signals[1]!.dedupeKey,
+        ),
+      );
+    if (!primary || !secondary) {
+      throw new Error("Both no-India-fit fixtures were not persisted.");
+    }
+    expect(secondary.indiaRelevanceType).toBe("no_current_India_fit");
+
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: primary.id,
+        actor,
+        envelope: {
+          expectedRevision: 0,
+          idempotencyKey: "30000000-0000-4000-8000-000000000001",
+          reason:
+            "Administrator audited the evidence and found no current India fit.",
+          now: new Date("2026-07-30T06:33:00.000Z"),
+        },
+        command: { type: "mark_no_india_fit" },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "updated",
+      detail: {
+        signal: {
+          status: "monitoring",
+          indiaRelevanceType: "no_current_India_fit",
+          revision: 1,
+        },
+      },
+    });
+
+    const secondNow = new Date("2026-07-30T07:30:00.000Z");
+    await repository.queueRun(
+      queueInput("administrator-no-india-fit-second", { now: secondNow }),
+    );
+    const secondClaim = await repository.claimRun({ now: secondNow });
+    if (secondClaim.outcome !== "claimed") {
+      throw new Error("Second no-India-fit fixture was not claimed.");
+    }
+    const secondBatch = twoSignalBatch(
+      secondClaim.run.id,
+      "2026-07-30T07:31:00.000Z",
+      "rediscovered",
+    );
+    const completed = await repository.completeRun({
+      ...completionInput(
+        secondClaim.run.id,
+        secondClaim.privateClaim.leaseToken,
+        new Date("2026-07-30T07:32:00.000Z"),
+      ),
+      submissionHash: secondBatch.canonicalSubmissionHash,
+      batch: secondBatch,
+    });
+    expect(completed).toMatchObject({
+      outcome: "completed",
+      run: { numberUpdated: 2, numberNew: 0 },
+    });
+
+    const [refreshedPrimary] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, primary.id));
+    const [refreshedSecondary] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, secondary.id));
+    expect(refreshedPrimary).toMatchObject({
+      title: "Acme refreshed primary request",
+      status: "monitoring",
+      indiaRelevanceType: "no_current_India_fit",
+      revision: 1,
+      mostRecentRunId: secondClaim.run.id,
+    });
+    expect(refreshedSecondary).toMatchObject({
+      title: "Acme refreshed secondary request",
+      status: "newly_discovered",
+      indiaRelevanceType: "explicit_India",
+      revision: 0,
+      mostRecentRunId: secondClaim.run.id,
+    });
+    expect(
+      await db
+        .select()
+        .from(globalRadarAdminEvents)
+        .where(eq(globalRadarAdminEvents.action, "mark_no_india_fit")),
+    ).toHaveLength(1);
+  });
+
   it("uses material requirements and target geography in the versioned signal identity", async () => {
     const now = new Date("2026-07-30T08:00:00.000Z");
     await repository.queueRun(queueInput("signal-dedupe-dimensions", { now }));
@@ -3711,6 +3904,106 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
         .from(globalSignalUpdates)
         .where(eq(globalSignalUpdates.updateType, "status_changed")),
     ).toHaveLength(2);
+  });
+
+  it("re-expires a reopened signal without colliding with the prior expiry transition", async () => {
+    const queueAt = new Date("2026-07-30T14:30:00.000Z");
+    await repository.queueRun(
+      queueInput("expiry-reopen-cycle", { now: queueAt }),
+    );
+    const claim = await repository.claimRun({ now: queueAt });
+    if (claim.outcome !== "claimed") {
+      throw new Error("Expiry reopen fixture was not claimed.");
+    }
+    const batch = structuredClone(validPersistenceBatch(claim.run.id));
+    batch.signals[0]!.expiresAt = "2026-07-31T00:00:00.000Z";
+    const submitted = rehashPersistenceBatch(batch);
+    await repository.completeRun({
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(queueAt.getTime() + 1_000),
+      ),
+      submissionHash: submitted.canonicalSubmissionHash,
+      batch: submitted,
+    });
+    const [signal] = await db.select().from(globalRadarSignals);
+    if (!signal) throw new Error("Expiry reopen signal was not persisted.");
+
+    const dueAt = new Date("2026-07-31T00:00:00.000Z");
+    await expect(repository.expireDirectDemand({ now: dueAt })).resolves.toEqual(
+      { outcome: "completed", expired: 1 },
+    );
+    await expect(repository.expireDirectDemand({ now: dueAt })).resolves.toEqual(
+      { outcome: "completed", expired: 0 },
+    );
+
+    const adminRepository = createGlobalRadarAdminRepository(db, {
+      scoreVersion: "global-radar-score-v1",
+      thresholds: {
+        direct_demand: 70,
+        demand_precursor: 65,
+        ecosystem_momentum: 70,
+      },
+    });
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: signal.id,
+        actor: { userId: administratorUserId, email: userEmail },
+        envelope: {
+          expectedRevision: 1,
+          idempotencyKey: "30000000-0000-4000-8000-000000000002",
+          reason: "Reopen the demand for an explicit second expiry review.",
+          now: new Date("2026-07-31T00:01:00.000Z"),
+        },
+        command: { type: "reopen" },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "updated",
+      detail: { signal: { status: "needs_review", revision: 2 } },
+    });
+
+    const secondDueAt = new Date("2026-07-31T00:02:00.000Z");
+    await expect(
+      repository.expireDirectDemand({ now: secondDueAt }),
+    ).resolves.toEqual({ outcome: "completed", expired: 1 });
+    await expect(
+      repository.expireDirectDemand({ now: secondDueAt }),
+    ).resolves.toEqual({ outcome: "completed", expired: 0 });
+
+    const [expiredAgain] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    expect(expiredAgain).toMatchObject({ status: "expired", revision: 3 });
+    const expiryUpdates = await db
+      .select({
+        idempotencyKey: globalSignalUpdates.idempotencyKey,
+        newSafeState: globalSignalUpdates.newSafeState,
+      })
+      .from(globalSignalUpdates)
+      .where(eq(globalSignalUpdates.actorId, "global-radar:expiry"));
+    expect(expiryUpdates).toHaveLength(2);
+    expect(expiryUpdates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          idempotencyKey:
+            `expiry:${signal.id}:revision:1:known_expiry_reached`,
+          newSafeState: {
+            status: "expired",
+            reason: "known_expiry_reached",
+          },
+        }),
+        expect.objectContaining({
+          idempotencyKey:
+            `expiry:${signal.id}:revision:3:known_expiry_reached`,
+          newSafeState: {
+            status: "expired",
+            reason: "known_expiry_reached",
+          },
+        }),
+      ]),
+    );
   });
 
   it("advances a newer evergreen re-observation deadline without overwriting human state", async () => {
