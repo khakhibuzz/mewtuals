@@ -339,6 +339,55 @@ function EnglishSummary({ detail }: { detail: GlobalRadarSignalDetailDto }) {
   return items.length > 0 ? <div className={styles.detailCards}>{items.map((item) => <article className={styles.detailCard} key={text(item.id)} lang="en"><p>{text(item.summary)}</p><p>Translation confidence: {nullableNumber(item.translationConfidence) ?? "Not scored"}</p><a href={text(item.sourceUrl)} rel="noreferrer" target="_blank">View translated source evidence</a></article>)}</div> : <p lang="en">No English summary recorded.</p>;
 }
 
+function scoreComponentLabel(value: string) {
+  return displayLabel(
+    value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase(),
+  );
+}
+
+function ScoreEvidenceAssociations({ value }: { value: unknown }) {
+  const associations = records(value);
+  if (associations.length === 0) {
+    return <p>No score-component evidence associations recorded.</p>;
+  }
+  return (
+    <div className={styles.detailCards}>
+      {associations.map((association) => {
+        const component = text(association.component);
+        const citations = records(association.evidence);
+        return (
+          <article className={styles.detailCard} key={component}>
+            <h4>{scoreComponentLabel(component)}</h4>
+            <DefinitionList values={[
+              { label: "Value", value: numberValue(association.value) },
+              { label: "Basis", value: displayLabel(text(association.basis)) },
+            ]} />
+            <p>{text(association.rationale)}</p>
+            {citations.length > 0 ? (
+              <ul className={styles.evidenceList}>
+                {citations.map((citation) => (
+                  <li key={`${component}:${text(citation.id)}`}>
+                    <a href={text(citation.sourceUrl)} rel="noreferrer" target="_blank">
+                      {text(citation.sourceName)}
+                    </a>
+                    <ul className={styles.valueList}>
+                      {stringValues(citation.matchedFieldPaths).map((path) => (
+                        <li key={path}><code>{path}</code></li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>No matching public evidence association is recorded.</p>
+            )}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 function ScoreRationale({ detail }: { detail: GlobalRadarSignalDetailDto }) {
   const data = detailSection(detail, "score_rationale");
   return <><DefinitionList values={[
@@ -346,7 +395,8 @@ function ScoreRationale({ detail }: { detail: GlobalRadarSignalDetailDto }) {
     { label: "Score", value: nullableNumber(data.score) ?? "Not scored" },
     { label: "Coverage", value: numberValue(data.coverage) },
     { label: "Policy", value: text(data.policyVersion) },
-  ]} /><h3>Components</h3><SafeRecord value={data.components} /></>;
+    { label: "Evidence policy", value: text(data.evidenceVersion) },
+  ]} /><h3>Components</h3><SafeRecord value={data.components} /><h3>Evidence associations</h3><ScoreEvidenceAssociations value={data.componentEvidence} /></>;
 }
 
 function History({ detail }: { detail: GlobalRadarSignalDetailDto }) {

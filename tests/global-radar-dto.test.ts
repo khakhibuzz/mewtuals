@@ -232,7 +232,18 @@ function detailReadModel() {
           isSyndicated: false,
           supportsDirectDemand: true,
           supportsIndiaRelevance: false,
-          supportedFieldPaths: ["signal.factualSummary"],
+          supportedFieldPaths: [
+            "signal.factualSummary",
+            "signal.announcedAt",
+            "signal.effectiveFrom",
+            "directDemandAsk.supplier_registration",
+            "indiaRelevance.globally_open.manufacturing",
+            "responsePath",
+            "scoreComponents.commercialPotential",
+            "scoreComponents.repeatability",
+            "scoreComponents.strategicLearning",
+            "scoreComponents.complianceComplexity",
+          ],
           createdAt: observedAt,
         },
       ],
@@ -339,6 +350,208 @@ describe("Global Radar DTO serializers", () => {
       },
       allowedActions: ["append_note", "promote"],
     });
+  });
+
+  it("serializes bounded, versioned evidence associations for every active score component", () => {
+    const detail = detailReadModel();
+    const sourceEvidence = detail.evidence.items[0]!;
+    detail.evidence.items = Array.from({ length: 15 }, (_, index) => ({
+      ...sourceEvidence,
+      id: `00000000-0000-4000-8000-${String(index + 5).padStart(12, "0")}`,
+      workerAssociation: index % 2 === 0,
+      rawMetadata: { privatePrompt: `private-${index}` },
+    }));
+    detail.evidence.total = detail.evidence.items.length;
+
+    const dto = serializeGlobalRadarSignalDetail(detail);
+    const scoreSection = dto.sections.find(
+      ({ id }) => id === "score_rationale",
+    )!.data as {
+      evidenceVersion: string;
+      componentEvidence: Array<{
+        component: string;
+        value: number;
+        basis: string;
+        rationale: string;
+        evidence: Array<{
+          id: string;
+          sourceUrl: string;
+          sourceName: string;
+          matchedFieldPaths: string[];
+        }>;
+      }>;
+    };
+
+    expect(scoreSection.evidenceVersion).toBe(
+      "global-radar-score-evidence-v1",
+    );
+    expect(scoreSection.componentEvidence).toHaveLength(10);
+    expect(scoreSection.componentEvidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          component: "demandExplicitness",
+          value: 90,
+          basis: "server_derived",
+          rationale: expect.stringContaining("direct-demand ask"),
+          evidence: expect.arrayContaining([
+            expect.objectContaining({
+              sourceUrl: "https://example.com/suppliers",
+              matchedFieldPaths: ["directDemandAsk.supplier_registration"],
+            }),
+          ]),
+        }),
+        expect.objectContaining({
+          component: "commercialPotential",
+          value: 70,
+          basis: "worker_evidence",
+          evidence: expect.arrayContaining([
+            expect.objectContaining({
+              sourceName: "Example Robotics",
+              matchedFieldPaths: ["scoreComponents.commercialPotential"],
+            }),
+          ]),
+        }),
+      ]),
+    );
+    expect(
+      scoreSection.componentEvidence.every(
+        ({ evidence }) => evidence.length <= 10,
+      ),
+    ).toBe(true);
+    expect(
+      scoreSection.componentEvidence.every(
+        ({ basis, evidence }) => basis !== "unlinked" && evidence.length > 0,
+      ),
+    ).toBe(true);
+    const serializedAssociations = JSON.stringify(
+      scoreSection.componentEvidence,
+    );
+    expect(serializedAssociations).not.toContain("workerAssociation");
+    expect(serializedAssociations).not.toContain("privatePrompt");
+    expect(serializedAssociations).not.toContain(sourceEvidence.evidenceClaim);
+    expect(serializedAssociations).not.toContain(sourceEvidence.englishSummary);
+  });
+
+  it("associates every active momentum component with bounded public evidence", () => {
+    const detail = detailReadModel();
+    Object.assign(detail.signal, {
+      signalClass: "ecosystem_momentum",
+      signalType: "ecosystem_direction",
+      score: 78,
+    });
+    Object.assign(detail.scoreRationale.momentum, {
+      independentEntityCount: 4,
+      primarySourceCount: 3,
+      sourceFamilyCount: 2,
+      volume7Days: 4,
+      volume30Days: 8,
+      volume90Days: 12,
+      independentEntityBreadth: 85,
+      primarySourceDepth: 80,
+      sourceDiversity: 75,
+      weightedVolume: 70,
+      growthVsPreviousPeriod: 65,
+      taxonomyConsistency: 90,
+      evidenceQuality: 88,
+      score: 78,
+      policyVersion: "global-radar-momentum-policy-v1",
+      qualificationGatesPassed: true,
+    });
+
+    const dto = serializeGlobalRadarSignalDetail(detail);
+    const scoreSection = dto.sections.find(
+      ({ id }) => id === "score_rationale",
+    )!.data as {
+      componentEvidence: Array<{
+        component: string;
+        basis: string;
+        evidence: unknown[];
+      }>;
+    };
+
+    expect(scoreSection.componentEvidence).toHaveLength(13);
+    expect(scoreSection.componentEvidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          component: "independentEntityBreadth",
+          basis: "server_derived",
+        }),
+        expect.objectContaining({
+          component: "evidenceQuality",
+          basis: "server_derived",
+        }),
+      ]),
+    );
+    expect(
+      scoreSection.componentEvidence.every(
+        ({ basis, evidence }) =>
+          basis === "server_derived" &&
+          evidence.length > 0 &&
+          evidence.length <= 10,
+      ),
+    ).toBe(true);
+  });
+
+  it("links every active precursor component, including no-current-fit India scoring", () => {
+    const detail = detailReadModel();
+    Object.assign(detail.signal, {
+      signalClass: "demand_precursor",
+      signalType: "deployment",
+      score: 72,
+      indiaRelevanceType: "no_current_India_fit",
+    });
+    Object.assign(detail.scoreRationale.precursor, {
+      evidenceConfidence: 88,
+      proximityToExternalDemand: 70,
+      fundingDeploymentMomentum: 75,
+      likelyDataHardwareIntensity: 80,
+      indiaFit: 0,
+      estimatedTimeHorizon: 65,
+      strategicRelevance: 78,
+      score: 72,
+    });
+    detail.evidence.items[0]!.supportedFieldPaths = [
+      "signal.factualSummary",
+      "signal.effectiveFrom",
+      "precursorDevelopment.deployment",
+      "scoreComponents.proximityToExternalDemand",
+      "scoreComponents.fundingDeploymentMomentum",
+      "scoreComponents.likelyDataHardwareIntensity",
+      "scoreComponents.strategicRelevance",
+    ];
+
+    const dto = serializeGlobalRadarSignalDetail(detail);
+    const scoreSection = dto.sections.find(
+      ({ id }) => id === "score_rationale",
+    )!.data as {
+      componentEvidence: Array<{
+        component: string;
+        basis: string;
+        evidence: Array<{ matchedFieldPaths: string[] }>;
+      }>;
+    };
+
+    expect(scoreSection.componentEvidence).toHaveLength(7);
+    expect(
+      scoreSection.componentEvidence.every(
+        ({ basis, evidence }) =>
+          ["worker_evidence", "server_derived"].includes(basis) &&
+          evidence.length > 0,
+      ),
+    ).toBe(true);
+    expect(scoreSection.componentEvidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          component: "indiaFit",
+          basis: "server_derived",
+          evidence: [expect.objectContaining({ matchedFieldPaths: [] })],
+        }),
+        expect.objectContaining({
+          component: "strategicRelevance",
+          basis: "worker_evidence",
+        }),
+      ]),
+    );
   });
 
   it("allowlists every DTO and never copies recursive private material", () => {

@@ -339,6 +339,32 @@ export type {
 } from "./evidence";
 
 export {
+  GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
+  MAX_SCORE_COMPONENT_EVIDENCE_CITATIONS,
+  MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS,
+  deriveScoreComponentEvidenceAssociations,
+  directDemandScoreEvidenceComponents,
+  directDemandWorkerScoredComponents,
+  isWorkerScoredComponentEvidencePath,
+  missingWorkerScoredComponentEvidencePaths,
+  momentumScoreEvidenceComponents,
+  precursorScoreEvidenceComponents,
+  precursorWorkerScoredComponents,
+} from "./score-evidence";
+
+export type {
+  DirectDemandWorkerScoredComponent,
+  PrecursorWorkerScoredComponent,
+  ScoreComponentEvidenceAssociation,
+  ScoreComponentEvidenceCitation,
+  ScoreEvidenceBasis,
+  ScoreEvidenceComponent,
+  ScoreEvidenceSource,
+  WorkerScoredComponent,
+  WorkerScoredComponentEvidencePath,
+} from "./score-evidence";
+
+export {
   globalRadarBatchProposalSchema,
   globalRadarValidationProposalSchema,
   radarExecutedQueryProposalSchema,

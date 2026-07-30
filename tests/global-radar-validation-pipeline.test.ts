@@ -89,6 +89,10 @@ function evidence(overrides: Record<string, unknown> = {}) {
       "directDemandAsk.data_collection_request",
       "indiaRelevance.explicit_India.collection",
       "responsePath",
+      "scoreComponents.commercialPotential",
+      "scoreComponents.repeatability",
+      "scoreComponents.strategicLearning",
+      "scoreComponents.complianceComplexity",
     ],
     rawMetadata: {},
     ...overrides,
@@ -194,6 +198,58 @@ function directSignal(overrides: Record<string, unknown> = {}) {
     evidence: [evidence()],
     ...overrides,
   };
+}
+
+function precursorSignal(overrides: Record<string, unknown> = {}) {
+  return directSignal({
+    externalSignalId: "signal-acme-funding",
+    signalClass: "demand_precursor",
+    signalType: "hiring",
+    directDemandAsk: null,
+    precursorDevelopmentType: "funding",
+    momentumMetrics: null,
+    scoreComponents: {
+      evidenceConfidence: 5,
+      proximityToExternalDemand: 80,
+      fundingDeploymentMomentum: 80,
+      likelyDataHardwareIntensity: 80,
+      indiaFit: 5,
+      estimatedTimeHorizon: 5,
+      strategicRelevance: 80,
+    },
+    evergreen: null,
+    reobserveBy: null,
+    responsePath: null,
+    indiaRelevance: {
+      proposedType: "no_current_India_fit",
+      rationale: "No current India fit is publicly supported.",
+      reasons: [],
+      constraints: [],
+      unknowns: ["Future counterparties remain unknown."],
+      confidence: 70,
+      regulatoryFacts: null,
+      logisticsFacts: null,
+    },
+    evidence: [
+      evidence({
+        claim:
+          "Acme announced new funding for a robotics deployment and facility expansion.",
+        englishSummary:
+          "Acme announced funding for a robotics deployment and facility expansion.",
+        supportsDirectDemand: false,
+        supportsIndiaRelevance: false,
+        supportedFieldPaths: [
+          "signal.factualSummary",
+          "precursorDevelopment.funding",
+          "scoreComponents.proximityToExternalDemand",
+          "scoreComponents.fundingDeploymentMomentum",
+          "scoreComponents.likelyDataHardwareIntensity",
+          "scoreComponents.strategicRelevance",
+        ],
+      }),
+    ],
+    ...overrides,
+  });
 }
 
 function batch(overrides: Record<string, unknown> = {}) {
@@ -580,49 +636,7 @@ describe("Global Radar server-authoritative validation pipeline", () => {
   });
 
   it("validates a dated precursor and recomputes its class-local score", () => {
-    const precursorEvidence = evidence({
-      claim:
-        "Acme announced new funding for a robotics deployment and facility expansion.",
-      englishSummary:
-        "Acme announced funding for a robotics deployment and facility expansion.",
-      supportsDirectDemand: false,
-      supportsIndiaRelevance: false,
-      supportedFieldPaths: [
-        "signal.factualSummary",
-        "precursorDevelopment.funding",
-      ],
-    });
-    const precursor = directSignal({
-      externalSignalId: "signal-acme-funding",
-      signalClass: "demand_precursor",
-      signalType: "hiring",
-      directDemandAsk: null,
-      precursorDevelopmentType: "funding",
-      momentumMetrics: null,
-      scoreComponents: {
-        evidenceConfidence: 5,
-        proximityToExternalDemand: 80,
-        fundingDeploymentMomentum: 80,
-        likelyDataHardwareIntensity: 80,
-        indiaFit: 5,
-        estimatedTimeHorizon: 5,
-        strategicRelevance: 80,
-      },
-      evergreen: null,
-      reobserveBy: null,
-      responsePath: null,
-      indiaRelevance: {
-        proposedType: "no_current_India_fit",
-        rationale: "No current India fit is publicly supported.",
-        reasons: [],
-        constraints: [],
-        unknowns: ["Future counterparties remain unknown."],
-        confidence: 70,
-        regulatoryFacts: null,
-        logisticsFacts: null,
-      },
-      evidence: [precursorEvidence],
-    });
+    const precursor = precursorSignal();
     const validated = validate(batch({ signals: [precursor] }));
 
     expect(validated.signals).toHaveLength(1);
@@ -642,6 +656,76 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     expect(canonicalizeGlobalRadarPersistenceBatch(validated)).toMatchObject({
       valid: true,
     });
+  });
+
+  it("requires evidence for each non-null worker-scored direct component", () => {
+    const accepted = validate(batch());
+    const missingEvidencePath = evidence({
+      supportedFieldPaths: evidence().supportedFieldPaths.filter(
+        (path) => path !== "scoreComponents.repeatability",
+      ),
+    });
+    const rejected = validate(
+      batch({
+        signals: [directSignal({ evidence: [missingEvidencePath] })],
+      }),
+    );
+
+    expect(accepted.signals).toHaveLength(1);
+    expect(rejected.signals).toEqual([]);
+    expect(rejected.rejections.invalid_evidence).toBe(1);
+  });
+
+  it("requires evidence for each non-null worker-scored precursor component", () => {
+    const fullyLinked = precursorSignal();
+    const fullyLinkedEvidence = fullyLinked.evidence[0]!;
+    const rejected = validate(
+      batch({
+        signals: [
+          precursorSignal({
+            evidence: [
+              {
+                ...fullyLinkedEvidence,
+                supportedFieldPaths:
+                  fullyLinkedEvidence.supportedFieldPaths.filter(
+                    (path) =>
+                      path !== "scoreComponents.fundingDeploymentMomentum",
+                  ),
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    expect(validate(batch({ signals: [fullyLinked] })).signals).toHaveLength(1);
+    expect(rejected.signals).toEqual([]);
+    expect(rejected.rejections.invalid_evidence).toBe(1);
+  });
+
+  it("does not require evidence for a null worker-scored component", () => {
+    const scoreComponents = {
+      ...directSignal().scoreComponents,
+      repeatability: null,
+    };
+    const withoutRepeatabilityPath = evidence({
+      supportedFieldPaths: evidence().supportedFieldPaths.filter(
+        (path) => path !== "scoreComponents.repeatability",
+      ),
+    });
+    const validated = validate(
+      batch({
+        signals: [
+          directSignal({
+            scoreComponents,
+            evidence: [withoutRepeatabilityPath],
+          }),
+        ],
+      }),
+    );
+
+    expect(validated.signals).toHaveLength(1);
+    expect(validated.rejections.invalid_evidence).toBe(0);
   });
 
   it("derives valid momentum from independent entity evidence", () => {

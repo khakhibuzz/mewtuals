@@ -385,7 +385,28 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
         score: 82,
         coverage: 100,
         policyVersion: "global-radar-score-v1",
+        evidenceVersion: "global-radar-score-evidence-v1",
         components: scoreComponents,
+        componentEvidence: [
+          {
+            component: "commercialPotential",
+            value: 70,
+            basis: "worker_evidence",
+            rationale:
+              "Worker score is supported by public evidence cited for this component.",
+            evidence: [
+              {
+                id: "00000000-0000-4000-8000-000000000014",
+                sourceUrl:
+                  "https://fictional-robotics.example/suppliers",
+                sourceName: "Official supplier notice",
+                matchedFieldPaths: [
+                  "scoreComponents.commercialPotential",
+                ],
+              },
+            ],
+          },
+        ],
       },
     },
     {

@@ -6,6 +6,7 @@ import {
   GLOBAL_RADAR_PROMPT_VERSION,
   GLOBAL_RADAR_QUERY_VERSION,
   GLOBAL_RADAR_SCHEMA_VERSION,
+  GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
   GLOBAL_RADAR_SCORE_VERSION,
   GLOBAL_RADAR_TAXONOMY_VERSION,
   globalRadarDemandFamilies,
@@ -20,6 +21,8 @@ import {
   sensitiveDataFlagStates,
   signalClasses,
   signalStatuses,
+  MAX_SCORE_COMPONENT_EVIDENCE_CITATIONS,
+  MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS,
 } from "../../domain/global-radar";
 import { GLOBAL_RADAR_DETAIL_SECTIONS } from "./dto";
 import { globalRadarSafeRunSchema } from "./route-schemas";
@@ -571,6 +574,63 @@ const momentumScoreComponentsSchema = z.object({
   qualificationGatesPassed: z.boolean().nullable(),
 });
 
+const scoreEvidenceComponentSchema = z.enum([
+  "demandExplicitness",
+  "evidenceConfidence",
+  "freshness",
+  "actionability",
+  "indiaFit",
+  "commercialPotential",
+  "repeatability",
+  "responseAccessibility",
+  "strategicLearning",
+  "complianceComplexity",
+  "proximityToExternalDemand",
+  "fundingDeploymentMomentum",
+  "likelyDataHardwareIntensity",
+  "estimatedTimeHorizon",
+  "strategicRelevance",
+  "independentEntityCount",
+  "primarySourceCount",
+  "sourceFamilyCount",
+  "volume7Days",
+  "volume30Days",
+  "volume90Days",
+  "independentEntityBreadth",
+  "primarySourceDepth",
+  "sourceDiversity",
+  "weightedVolume",
+  "growthVsPreviousPeriod",
+  "taxonomyConsistency",
+  "evidenceQuality",
+]);
+
+const scoreComponentEvidenceAssociationSchema = z.object({
+  component: scoreEvidenceComponentSchema,
+  value: scoreSchema,
+  basis: z.enum(["worker_evidence", "server_derived"]),
+  rationale: boundedText(500),
+  evidence: z
+    .array(
+      z.object({
+        id: uuidSchema,
+        sourceUrl: boundedText(2_048),
+        sourceName: boundedText(200),
+        matchedFieldPaths: stringArray(
+          MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS,
+          200,
+        ),
+      }),
+    )
+    .min(1)
+    .max(MAX_SCORE_COMPONENT_EVIDENCE_CITATIONS),
+});
+
+const scoreEvidenceResponseShape = {
+  evidenceVersion: z.literal(GLOBAL_RADAR_SCORE_EVIDENCE_VERSION),
+  componentEvidence: z.array(scoreComponentEvidenceAssociationSchema).max(20),
+} as const;
+
 const scoreRationaleResponseSchema = z.discriminatedUnion("activeClass", [
   z.object({
     activeClass: z.literal("direct_demand"),
@@ -578,6 +638,7 @@ const scoreRationaleResponseSchema = z.discriminatedUnion("activeClass", [
     coverage: scoreSchema,
     policyVersion: z.literal(GLOBAL_RADAR_SCORE_VERSION),
     components: directDemandScoreComponentsSchema,
+    ...scoreEvidenceResponseShape,
   }),
   z.object({
     activeClass: z.literal("demand_precursor"),
@@ -585,6 +646,7 @@ const scoreRationaleResponseSchema = z.discriminatedUnion("activeClass", [
     coverage: scoreSchema,
     policyVersion: z.literal(GLOBAL_RADAR_SCORE_VERSION),
     components: precursorScoreComponentsSchema,
+    ...scoreEvidenceResponseShape,
   }),
   z.object({
     activeClass: z.literal("ecosystem_momentum"),
@@ -592,6 +654,7 @@ const scoreRationaleResponseSchema = z.discriminatedUnion("activeClass", [
     coverage: scoreSchema,
     policyVersion: z.literal(GLOBAL_RADAR_SCORE_VERSION),
     components: momentumScoreComponentsSchema,
+    ...scoreEvidenceResponseShape,
   }),
 ]);
 

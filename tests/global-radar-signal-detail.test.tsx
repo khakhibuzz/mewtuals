@@ -90,6 +90,27 @@ describe("GlobalRadarSignalDetail", () => {
     );
   });
 
+  it("renders score-component evidence associations and rationale", () => {
+    render(
+      <GlobalRadarSignalDetail
+        initialDetail={globalRadarDetailFixture() as never}
+        returnTo="/admin/global-demand-radar/direct-demand"
+      />,
+    );
+
+    const score = screen.getByRole("region", { name: "Score rationale" });
+    expect(within(score).getByText("Commercial potential")).toBeVisible();
+    expect(
+      within(score).getByText(
+        "Worker score is supported by public evidence cited for this component.",
+      ),
+    ).toBeVisible();
+    expect(
+      within(score).getByRole("link", { name: "Official supplier notice" }),
+    ).toHaveAttribute("rel", "noreferrer");
+    expect(score).toHaveTextContent("scoreComponents.commercialPotential");
+  });
+
   it("uses DTO language direction, English language, noreferrer evidence links, and an evidence-only response path", () => {
     const { container } = render(
       <GlobalRadarSignalDetail

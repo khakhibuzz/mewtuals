@@ -192,6 +192,41 @@ describe("Global Radar evidence extraction", () => {
     ).toMatchObject({ valid: true });
   });
 
+  it("allows only canonical worker-scored component provenance paths", () => {
+    const canonicalPaths = [
+      "scoreComponents.commercialPotential",
+      "scoreComponents.repeatability",
+      "scoreComponents.strategicLearning",
+      "scoreComponents.complianceComplexity",
+      "scoreComponents.proximityToExternalDemand",
+      "scoreComponents.fundingDeploymentMomentum",
+      "scoreComponents.likelyDataHardwareIntensity",
+      "scoreComponents.strategicRelevance",
+    ];
+
+    expect(
+      normalizeRadarEvidence(
+        evidenceProposal({ supportedFieldPaths: canonicalPaths }),
+      ),
+    ).toMatchObject({
+      valid: true,
+      evidence: { supportedFieldPaths: [...canonicalPaths].sort() },
+    });
+
+    for (const unsupportedPath of [
+      "scoreComponents.explicitness",
+      "scoreComponents.commercial_potential",
+      "scoreComponents.commercialPotential.detail",
+      "scoreComponents.workerSecret",
+    ]) {
+      expect(
+        normalizeRadarEvidence(
+          evidenceProposal({ supportedFieldPaths: [unsupportedPath] }),
+        ),
+      ).toEqual({ valid: false, reason: "unsupported_field_path" });
+    }
+  });
+
   it("preserves Chinese original evidence separately from its English summary", () => {
     const result = normalizeRadarEvidence(
       evidenceProposal({

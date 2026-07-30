@@ -17,6 +17,19 @@ import {
 
 export const GLOBAL_RADAR_FICTIONAL_NOW = GLOBAL_RADAR_TEST_NOW;
 
+const directWorkerScoreEvidencePaths = [
+  "scoreComponents.commercialPotential",
+  "scoreComponents.repeatability",
+  "scoreComponents.strategicLearning",
+  "scoreComponents.complianceComplexity",
+] as const;
+const precursorWorkerScoreEvidencePaths = [
+  "scoreComponents.proximityToExternalDemand",
+  "scoreComponents.fundingDeploymentMomentum",
+  "scoreComponents.likelyDataHardwareIntensity",
+  "scoreComponents.strategicRelevance",
+] as const;
+
 const teleoperatedEntity = entity({
   entityRef: "entity-atlas-teleop",
   canonicalName: "Atlas Teleoperation Labs",
@@ -123,6 +136,7 @@ const teleoperatedRobotData = envelope({
         supportedFieldPaths: [
           "signal.factualSummary",
           "directDemandAsk.data_collection_request",
+          ...directWorkerScoreEvidencePaths,
         ],
       }),
     ],
@@ -227,6 +241,7 @@ const humanoidDeployment = envelope({
         supportedFieldPaths: [
           "signal.factualSummary",
           "precursorDevelopment.deployment",
+          ...precursorWorkerScoreEvidencePaths,
         ],
       }),
     ],
@@ -350,6 +365,7 @@ const indiaAutonomousNavigationData = envelope({
           "signal.factualSummary",
           "directDemandAsk.data_collection_request",
           "indiaRelevance.explicit_India.roads_or_environments",
+          ...directWorkerScoreEvidencePaths,
         ],
       }),
     ],
@@ -464,6 +480,7 @@ const chineseIndianManufacturing = envelope({
           "signal.factualSummary",
           "directDemandAsk.manufacturing_request",
           "indiaRelevance.explicit_India.manufacturing",
+          ...directWorkerScoreEvidencePaths,
         ],
       }),
     ],
@@ -584,6 +601,7 @@ const noisyIndianLanguageSpeech = envelope({
           "signal.factualSummary",
           "directDemandAsk.data_collection_request",
           "indiaRelevance.explicit_India.languages",
+          ...directWorkerScoreEvidencePaths,
         ],
       }),
     ],

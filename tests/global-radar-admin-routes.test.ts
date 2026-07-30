@@ -122,6 +122,54 @@ function dependencies(
 function safeDetail() {
   const observedAt = "2026-07-31T05:00:00.000Z";
   const empty = () => ({ total: 0, truncated: false, items: [] });
+  const scoreComponents = {
+    demandExplicitness: 90,
+    evidenceConfidence: 80,
+    freshness: 90,
+    actionability: 80,
+    indiaFit: 75,
+    commercialPotential: 70,
+    repeatability: 70,
+    responseAccessibility: 85,
+    strategicLearning: 80,
+    complianceComplexity: 20,
+  };
+  const workerScorePaths = new Map([
+    ["commercialPotential", "scoreComponents.commercialPotential"],
+    ["repeatability", "scoreComponents.repeatability"],
+    ["strategicLearning", "scoreComponents.strategicLearning"],
+    ["complianceComplexity", "scoreComponents.complianceComplexity"],
+  ]);
+  const serverScorePaths = new Map([
+    ["demandExplicitness", "directDemandAsk.supplier_registration"],
+    ["evidenceConfidence", "signal.factualSummary"],
+    ["freshness", "signal.announcedAt"],
+    ["actionability", "responsePath"],
+    ["indiaFit", "indiaRelevance.globally_open.manufacturing"],
+    ["responseAccessibility", "responsePath"],
+  ]);
+  const componentEvidence = Object.entries(scoreComponents).map(
+    ([component, value]) => ({
+      component,
+      value,
+      basis: workerScorePaths.has(component)
+        ? "worker_evidence"
+        : "server_derived",
+      rationale: "This active score component is linked to public evidence.",
+      evidence: [
+        {
+          id: "00000000-0000-4000-8000-000000000220",
+          sourceUrl: "https://fictional.example/suppliers",
+          sourceName: "Fictional Robotics",
+          matchedFieldPaths: [
+            workerScorePaths.get(component) ??
+              serverScorePaths.get(component) ??
+              "signal.factualSummary",
+          ],
+        },
+      ],
+    }),
+  );
   return {
     id: SIGNAL_ID,
     revision: 2,
@@ -311,18 +359,9 @@ function safeDetail() {
           score: 82,
           coverage: 100,
           policyVersion: "global-radar-score-v1",
-          components: {
-            demandExplicitness: 90,
-            evidenceConfidence: 80,
-            freshness: 90,
-            actionability: 80,
-            indiaFit: 75,
-            commercialPotential: 70,
-            repeatability: 70,
-            responseAccessibility: 85,
-            strategicLearning: 80,
-            complianceComplexity: 20,
-          },
+          evidenceVersion: "global-radar-score-evidence-v1",
+          components: scoreComponents,
+          componentEvidence,
         },
       },
       {
@@ -1307,12 +1346,24 @@ describe("Global Radar administrator HTTP adapters", () => {
   });
 
   it("returns a generic 500 for invalid nested object and vocabulary values", async () => {
+    const scoreDetail = safeDetail();
+    const scoreSection = scoreDetail.sections.find(
+      ({ id }) => id === "score_rationale",
+    )!;
+    const scoreData = scoreSection.data as unknown as {
+      componentEvidence: Array<Record<string, unknown>>;
+    };
     for (const detail of [
       detailWithSectionData("india_fit_reasoning_and_constraints", {
         regulatoryFacts: "private malformed facts",
       }),
       detailWithSectionData("public_response_path", {
         type: "private_internal_path",
+      }),
+      detailWithSectionData("score_rationale", {
+        componentEvidence: scoreData.componentEvidence.map((association, index) =>
+          index === 0 ? { ...association, evidence: [] } : association,
+        ),
       }),
     ]) {
       const service = adminService({

@@ -77,6 +77,7 @@ import {
   type PrecursorScoreResult,
   type RadarClock,
 } from "./scoring";
+import { missingWorkerScoredComponentEvidencePaths } from "./score-evidence";
 import {
   assessComplianceReview,
   systemsContextSchema,
@@ -1138,6 +1139,16 @@ function validateSignal(
     now,
   );
   if (!evidenceResult.valid) return evidenceResult;
+  if (
+    proposal.signalClass !== "ecosystem_momentum" &&
+    missingWorkerScoredComponentEvidencePaths({
+      signalClass: proposal.signalClass,
+      scoreComponents: proposal.scoreComponents,
+      evidence: evidenceResult.items.map(({ evidence: item }) => item),
+    }).length > 0
+  ) {
+    return Object.freeze({ valid: false, reason: "invalid_evidence" });
+  }
   const observedAt = signalObservedAt(evidenceResult.items);
   if (
     proposal.announcedAt !== null &&

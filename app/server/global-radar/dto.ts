@@ -1,3 +1,8 @@
+import {
+  GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
+  deriveScoreComponentEvidenceAssociations,
+} from "../../domain/global-radar";
+
 export const GLOBAL_RADAR_DETAIL_SECTIONS = [
   ["organisation", "Organisation"],
   ["what_changed", "What changed"],
@@ -259,6 +264,16 @@ function evidenceCitation(value: unknown) {
       source.supportsIndiaRelevance,
       "India support flag",
     ),
+    supportedFieldPaths: stringArray(source.supportedFieldPaths),
+  };
+}
+
+function scoreEvidenceSource(value: unknown) {
+  const source = readRecord(value, "score evidence");
+  return {
+    id: readString(source.id, "score evidence id"),
+    sourceUrl: readString(source.sourceUrl, "score evidence URL"),
+    sourceName: readString(source.sourceName, "score evidence source name"),
     supportedFieldPaths: stringArray(source.supportedFieldPaths),
   };
 }
@@ -623,6 +638,19 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
     scoreRationale[activeScoreKey],
     "active score rationale",
   );
+  if (
+    signalClass !== "direct_demand" &&
+    signalClass !== "demand_precursor" &&
+    signalClass !== "ecosystem_momentum"
+  ) {
+    throw new Error("Invalid Global Radar signal class.");
+  }
+  const componentEvidence = deriveScoreComponentEvidenceAssociations({
+    signalClass,
+    signalType: readString(signal.signalType, "signal type"),
+    components: activeScore,
+    evidence: evidence.items.map(scoreEvidenceSource),
+  });
   const physicalRequirements = requirements.items.filter((item) => {
     const candidate = item as { kind: string };
     return ["physical_data", "robotics_hardware", "manufacturing"].includes(
@@ -809,11 +837,13 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
         scoreRationale.policyVersion,
         "score policy version",
       ),
+      evidenceVersion: GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
       components: safeJson(
         Object.fromEntries(
           Object.entries(activeScore).filter(([key]) => key !== "score"),
         ),
       ),
+      componentEvidence,
     },
     signal_history: history,
     admin_notes_and_actions: {

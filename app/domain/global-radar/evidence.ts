@@ -17,6 +17,7 @@ import {
 } from "./normalization";
 import { persistableRadarEvidenceSchema } from "./persistence";
 import { normalizedRequirementInputSchema } from "./requirements";
+import { isWorkerScoredComponentEvidencePath } from "./score-evidence";
 
 const applicationRefSchema = z
   .string()
@@ -221,6 +222,7 @@ export type RadarEvidenceNormalizationResult =
 
 export function isGlobalRadarEvidenceFieldPathSupported(path: string): boolean {
   if (responsePathFields.has(path)) return true;
+  if (isWorkerScoredComponentEvidencePath(path)) return true;
   const segments = path.split(".");
   if (segments[0] === "signal" && signalEvidenceFields.has(segments[1] ?? "")) {
     return segments.length === 2;
