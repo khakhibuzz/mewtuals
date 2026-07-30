@@ -31,26 +31,68 @@ const expectedOutcomes = {
   indiaAutonomousNavigationDataDirectDemand: {
     signalClass: "direct_demand",
     signalType: "data_collection_request",
+    initialStatus: "newly_discovered",
     indiaRelevance: { relevanceType: "explicit_India" },
   },
   chineseIndianManufacturingDirectDemand: {
     signalClass: "direct_demand",
     signalType: "manufacturing_request",
+    initialStatus: "newly_discovered",
     indiaRelevance: { relevanceType: "explicit_India" },
     sourceLanguage: "zh-CN",
   },
   noisyIndianLanguageSpeechDirectDemand: {
     signalClass: "direct_demand",
     signalType: "data_collection_request",
+    initialStatus: "newly_discovered",
     indiaRelevance: { relevanceType: "explicit_India" },
   },
   multiOrganisationPhysicalAiPlatformMomentum: {
     signalClass: "ecosystem_momentum",
     signalType: "ecosystem_direction",
+    initialStatus: "newly_discovered",
     score: {
       qualificationGatesPassed: true,
       counts: { evidenceItems: 2, independentEntities: 2 },
     },
+  },
+} as const;
+
+const expectedExampleDetails = {
+  teleoperatedRobotDataDirectDemandNeedsReview: {
+    requiredCapability: "teleoperated_trajectories",
+    systemsContext:
+      "Improve a robot manipulation policy with reviewed trajectories.",
+    adminStatus: "needs_review",
+  },
+  humanoidDeploymentDemandPrecursor: {
+    requiredCapability: "integration",
+    systemsContext:
+      "Deploy a humanoid system in controlled pilot facilities.",
+    adminStatus: "newly_discovered",
+  },
+  indiaAutonomousNavigationDataDirectDemand: {
+    requiredCapability: "indian_mixed_unstructured_roads",
+    systemsContext:
+      "Evaluate autonomous navigation on mixed and unstructured roads.",
+    adminStatus: "newly_discovered",
+  },
+  chineseIndianManufacturingDirectDemand: {
+    requiredCapability: "contract_manufacturing",
+    systemsContext:
+      "Assemble a fictional mobile robot platform from specified components.",
+    adminStatus: "newly_discovered",
+  },
+  noisyIndianLanguageSpeechDirectDemand: {
+    requiredCapability: "noisy_far_field_speech",
+    systemsContext:
+      "Evaluate human-robot speech understanding in noisy environments.",
+    adminStatus: "newly_discovered",
+  },
+  multiOrganisationPhysicalAiPlatformMomentum: {
+    requiredCapability: "model_evaluation",
+    systemsContext: null,
+    adminStatus: "newly_discovered",
   },
 } as const;
 
@@ -123,6 +165,18 @@ describe("fictional Global Demand Radar examples", () => {
       expect(validated.signals, label).toHaveLength(1);
       expect(validated.signals[0], label).toMatchObject(
         expectedOutcomes[label as keyof typeof expectedOutcomes],
+      );
+      const expectedDetail =
+        expectedExampleDetails[label as keyof typeof expectedExampleDetails];
+      expect(validated.signals[0]?.targetCapabilityTags, label).toContain(
+        expectedDetail.requiredCapability,
+      );
+      expect(
+        validated.signals[0]?.systemsContext?.higherLevelSystemGoal ?? null,
+        label,
+      ).toBe(expectedDetail.systemsContext);
+      expect(validated.signals[0]?.initialStatus, label).toBe(
+        expectedDetail.adminStatus,
       );
       expect(
         Object.values(validated.rejections).every((count) => count === 0),
@@ -207,14 +261,35 @@ describe("fictional Global Demand Radar examples", () => {
     ).toEqual([]);
   });
 
-  it("documents the class, India, translation, and momentum gates", () => {
+  it("documents every requested field for all six fictional examples", () => {
     const documentation = readFileSync(
       resolve(process.cwd(), "docs/global-demand-radar-fictional-examples.md"),
       "utf8",
     );
 
-    for (const label of Object.keys(expectedOutcomes)) {
-      expect(documentation).toContain(label);
+    for (const [label, expected] of Object.entries(expectedExampleDetails)) {
+      const heading = `### \`${label}\``;
+      const sectionStart = documentation.indexOf(heading);
+      const nextSection = documentation.indexOf("\n### `", sectionStart + 1);
+      const section = documentation.slice(
+        sectionStart,
+        nextSection === -1 ? undefined : nextSection,
+      );
+      const normalizedSection = section.replace(/\s+/gu, " ");
+
+      expect(sectionStart, label).toBeGreaterThanOrEqual(0);
+      expect(section, label).toContain("- Signal class:");
+      expect(section, label).toContain("- Evidence required:");
+      expect(section, label).toContain("- Required capabilities:");
+      expect(section, label).toContain(`\`${expected.requiredCapability}\``);
+      expect(section, label).toContain("- India relevance:");
+      expect(section, label).toContain("- Systems context:");
+      expect(normalizedSection, label).toContain(
+        expected.systemsContext ?? "Intentionally null",
+      );
+      expect(section, label).toContain(
+        `- Correct admin status: \`${expected.adminStatus}\``,
+      );
     }
     expect(documentation).toContain("fictionalExample");
     expect(documentation).toContain(".example");

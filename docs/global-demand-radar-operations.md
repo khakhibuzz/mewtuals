@@ -228,6 +228,94 @@ keep claim contents private, validate before submit, retry the exact file after
 unknown success, and clean up only after terminal evidence. Activating a Radar
 schedule must not edit or replace the India Discovery schedule.
 
+## Local Codex automation setup (not activated)
+
+This section is a copyable configuration contract for a later, separately
+approved Codex automation change. It does not authorize activation. Do not
+create, enable, or update either automation while following this runbook. Do
+not edit, replace, pause, or reuse the existing India Discovery automation.
+
+Before configuring a task, confirm that the ignored local `.env.local` supplies
+`GLOBAL_RADAR_API_BASE_URL` and `GLOBAL_RADAR_WORKER_SECRET` to the automation
+process. Keep the secret out of the task prompt, task title, logs, and reports.
+The Radar secret must remain different from `DISCOVERY_WORKER_SECRET`.
+
+Configure the proposed daily task with these exact standalone settings:
+
+- Name: `mewtuals-global-demand-radar-daily`
+- Working directory: `/Users/keshavgarg/Documents/Creativity`
+- Timezone: `Asia/Kolkata`
+- Schedule: `30 10 * * *`
+- Concurrency: one active run; do not start overlapping Radar work
+
+Paste this task prompt verbatim:
+
+```text
+Run only the Mewtuals Global Demand Radar daily leased-worker workflow from
+/Users/keshavgarg/Documents/Creativity. Do not run or modify India Discovery.
+Do not deploy, migrate production, create matches or opportunities, promote
+entities automatically, contact organisations, or send outreach.
+
+1. Run:
+   npm run global-radar:claim -- --trigger scheduled --scan-mode daily
+2. Parse only the command's bounded safe JSON output. When `claimed` is `false`, stop successfully
+   and report only that no Radar work was available.
+3. When claimed, treat the returned `claimFile` path as a secret capability.
+   Never display, paste, attach, upload, or quote the file or its lease token.
+   Read the immutable plan, queries, public configuration, and output schema
+   locally only as needed to execute the claimed work.
+4. Research only public, canonical evidence. Keep factual claims separate from
+   Mewtuals interpretation, preserve original-language evidence and a separate
+   English summary, record uncertainty, and never store full pages or private,
+   authenticated, paywalled, personal, or inferred contact data.
+5. Write the provider-neutral batch to a separate private directory with mode
+   0700 and a batch file with mode 0600. Use the claimed run ID, plan
+   fingerprint, exact planned queries, versions, thresholds, and result limit.
+   Never use fictional examples or reserved `.example` fixtures as live data.
+6. Validate before any submission:
+   npm run global-radar:validate -- --file <batch-file>
+7. Submit once using the unchanged private files:
+   npm run global-radar:submit -- --claim-file <claim-file> --file <batch-file>
+8. If submission times out or its outcome is unknown, retry the exact same submit command with the unchanged files.
+   Do not regenerate, reorder, reformat, fail, or abandon an ambiguously
+   submitted batch.
+9. If a known worker or source failure occurs while the lease is available,
+   use the same claim file and a bounded, non-secret message:
+   npm run global-radar:fail -- --claim-file <claim-file> --message <safe-message>
+   Use abandon only when the claim artifact or lease is irrecoverably lost and
+   the run ID is known:
+   npm run global-radar:abandon -- --run-id <run-id> --message <safe-message>
+10. Clean up private files only after confirmed terminal completion, replay, or failure.
+    Report only the run ID, safe terminal status, bounded counts/notices, and
+    cleanup result. Never report claim contents, queries, source bodies,
+    rejected payloads, secrets, leases, or private paths.
+```
+
+The angle-bracket values in the prompt are runtime paths returned or created by
+the task; they are not literal filenames. Preserve the exact same paths and
+bytes across an unknown-success retry.
+
+If the weekly thematic task is separately approved, create a second standalone
+task rather than adding a second schedule to the daily task:
+
+- Name: `mewtuals-global-demand-radar-weekly-thematic`
+- Working directory: `/Users/keshavgarg/Documents/Creativity`
+- Timezone: `Asia/Kolkata`
+- Schedule: `30 11 * * 0`
+- Concurrency: one active run; a safe `claimed: false` result is successful
+
+Use the same prompt, replacing only the claim command with:
+
+```bash
+npm run global-radar:claim -- --trigger scheduled --scan-mode thematic
+```
+
+After a future explicit activation approval, first use the task's normal
+scheduled execution or a separately approved trial run and inspect only its
+bounded result. Do not place secrets in the automation definition, do not run a
+worker command merely to test the documentation, and do not change the
+independent `08:30 Asia/Kolkata` India Discovery schedule.
+
 ## Replacing the worker provider
 
 Codex is an adapter, not a data owner. A later OpenAI web-search, Exa, internal
