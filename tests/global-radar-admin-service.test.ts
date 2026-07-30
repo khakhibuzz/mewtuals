@@ -326,6 +326,98 @@ describe("Global Radar administrator service", () => {
     ).resolves.toEqual({ outcome: "invalid" });
   });
 
+  it("distinguishes an empty filtered result from an honestly empty signal class", async () => {
+    const getClassMetrics = vi
+      .fn()
+      .mockResolvedValueOnce({
+        outcome: "listed",
+        metrics: {
+          total: 0,
+          highQuality: 0,
+          byStatus: {},
+          india: { explicit: 0, inferred: 0, other: 0 },
+          countries: { unitedStates: 0, china: 0, other: 0 },
+          requirementMix: { physicalData: 0, hardware: 0 },
+          demandFamilies: {},
+          active: 0,
+          expiring: 0,
+          horizon: {
+            within30Days: 0,
+            days31To90: 0,
+            days91To180: 0,
+            days181To365: 0,
+            unknown: 0,
+          },
+          qualified: 0,
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "listed",
+        metrics: {
+          total: 4,
+          highQuality: 1,
+          byStatus: { monitoring: 4 },
+          india: { explicit: 0, inferred: 1, other: 3 },
+          countries: { unitedStates: 2, china: 1, other: 1 },
+          requirementMix: { physicalData: 1, hardware: 1 },
+          demandFamilies: {},
+          active: 4,
+          expiring: 0,
+          horizon: {
+            within30Days: 0,
+            days31To90: 0,
+            days91To180: 0,
+            days181To365: 0,
+            unknown: 0,
+          },
+          qualified: 0,
+        },
+      });
+    const service = createService(
+      repositoryDouble({
+        listSignals: vi.fn(async () => ({
+          outcome: "listed",
+          page: 1,
+          pageSize: 25,
+          total: 0,
+          items: [],
+        })),
+        getClassMetrics,
+        getOverviewMetrics: vi.fn(async () => ({
+          outcome: "listed",
+          metrics: {
+            capabilityFamilies: [],
+            promotedEntities: 0,
+            latestRun: null,
+            sourceErrors: 0,
+            mergedDuplicates: 0,
+          },
+        })),
+      }),
+    );
+
+    await expect(
+      service.getClassSummary(ACTOR, {
+        signalClass: "direct_demand",
+        filters: { country: "Japan" },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "listed",
+      total: 0,
+      hasAnySignals: true,
+    });
+    expect(getClassMetrics).toHaveBeenNthCalledWith(1, {
+      signalClass: "direct_demand",
+      filters: { country: "Japan" },
+      now: NOW,
+    });
+    expect(getClassMetrics).toHaveBeenNthCalledWith(2, {
+      signalClass: "direct_demand",
+      filters: {},
+      now: NOW,
+    });
+  });
+
   it("returns paginated run and enriched watchlist DTOs", async () => {
     const entry = watchlistReadModel();
     const repository = repositoryDouble({

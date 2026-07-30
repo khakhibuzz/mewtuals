@@ -458,28 +458,48 @@ export function createGlobalRadarAdminService(
     const signalClass = input.signalClass as SignalClass;
     const filters = normalizedFilters(signalClass, input.filters ?? {});
     if (!filters) return { outcome: "invalid" as const };
-    const [list, classMetrics, overview] = await Promise.all([
+    const observedAt = now();
+    const hasActiveFilters = Object.keys(filters).some(
+      (key) => key !== "page",
+    );
+    const [list, classMetrics, overview, unfilteredClassMetrics] = await Promise.all([
       dependencies.repository.listSignals({ signalClass, filters }),
       dependencies.repository.getClassMetrics({
         signalClass,
         filters,
-        now: now(),
+        now: observedAt,
       }),
-      dependencies.repository.getOverviewMetrics({ now: now() }),
+      dependencies.repository.getOverviewMetrics({ now: observedAt }),
+      hasActiveFilters
+        ? dependencies.repository.getClassMetrics({
+            signalClass,
+            filters: {},
+            now: observedAt,
+          })
+        : Promise.resolve(null),
     ]);
     if (
       list.outcome !== "listed" ||
       classMetrics.outcome !== "listed" ||
       overview.outcome !== "listed" ||
+      (hasActiveFilters && unfilteredClassMetrics?.outcome !== "listed") ||
       !Array.isArray(list.items)
     ) {
       return { outcome: "invalid" as const };
     }
+    const baselineMetrics = hasActiveFilters
+      ? unfilteredClassMetrics?.metrics
+      : classMetrics.metrics;
     return {
       outcome: "listed" as const,
       page: numberValue(list.page),
       pageSize: numberValue(list.pageSize),
       total: numberValue(list.total),
+      hasAnySignals:
+        numberValue(
+          (baselineMetrics as Record<string, unknown> | null | undefined)
+            ?.total,
+        ) > 0,
       items: list.items.map(serializeGlobalRadarSignalListItem),
       metrics: {
         class: metricsRecord(classMetrics.metrics),
