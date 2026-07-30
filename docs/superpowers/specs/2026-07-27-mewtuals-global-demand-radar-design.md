@@ -897,8 +897,9 @@ revisions; if later administrator changes make restoration unsafe, it returns
 4. `/admin/global-demand-radar/watchlist`
 5. `/admin/global-demand-radar/runs`
 
-The shared administrator navigation becomes Verification Queue, India
-Discovery, and Global Demand Radar. It stays inside the authenticated product
+The shared administrator navigation becomes Verification Queue, Opportunity
+Briefs, India Discovery, and Global Demand Radar, preserving the already
+shipped Opportunity Brief workflow. It stays inside the authenticated product
 shell and never appears in the public header. Active destinations use
 `aria-current`.
 

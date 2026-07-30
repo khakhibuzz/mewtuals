@@ -70,8 +70,8 @@ Never paste worker secrets or private claim artifacts into test output, comments
 
 ### Administrator UI
 
-- Create `app/components/product/AdminShell.tsx` for shared Verification Queue, India Discovery, and Global Demand Radar navigation.
-- Modify `app/admin/verifications/page.tsx` and `app/admin/discovery/page.tsx` to use `AdminShell` without changing their behavior.
+- Create `app/components/product/AdminShell.tsx` for shared Verification Queue, Opportunity Briefs, India Discovery, and Global Demand Radar navigation.
+- Modify `app/admin/verifications/page.tsx`, `app/admin/opportunity-briefs/page.tsx`, and `app/admin/discovery/page.tsx` to use `AdminShell` without changing their behavior.
 - Create feature-scoped UI modules under `app/components/global-radar/`: `types.ts`, `GlobalRadarTabs.tsx`, `GlobalRadarMetrics.tsx`, `GlobalRadarSignalList.tsx`, `GlobalRadarWatchlist.tsx`, `GlobalRadarRuns.tsx`, `GlobalRadarSignalDetail.tsx`, `GlobalRadarActions.tsx`, and `GlobalRadarPromotionActions.tsx`.
 - Create routes under `app/admin/global-demand-radar/**` for the redirect, five tabs, and signal detail.
 - Modify `app/components/product/product.module.css` only for shared shell rules; create `app/components/global-radar/global-radar.module.css` for Radar-specific responsive styles.
@@ -885,15 +885,17 @@ The validation fixture in this task is a minimal reserved-domain worker batch, n
 - Modify: `app/components/product/ProductShell.tsx`
 - Modify: `app/components/product/product.module.css`
 - Modify: `app/admin/verifications/page.tsx`
+- Modify: `app/admin/opportunity-briefs/page.tsx`
 - Modify: `app/admin/discovery/page.tsx`
 - Create: `tests/admin-shell.test.tsx`
 - Modify: `tests/verification-queue.test.tsx`
+- Modify: `tests/opportunity-brief-admin-page.test.tsx`
 - Modify: `tests/discovery-page.test.tsx`
 - Modify: `tests/navigation.test.tsx`
 
 - [ ] **Step 1: RED/GREEN the single ordered admin navigation source**
 
-Create `AdminShell` with exact destinations: Verification Queue, India Discovery, Global Demand Radar. Accept an explicit current destination and emit `aria-current="page"`. Keep the navigation inside authenticated product chrome and out of `SiteHeader`.
+Create `AdminShell` with exact destinations, in order: Verification Queue, Opportunity Briefs, India Discovery, Global Demand Radar. Accept an explicit current destination and emit `aria-current="page"`. Keep the navigation inside authenticated product chrome and out of `SiteHeader`.
 
 ```tsx
 <AdminShell current="global-demand-radar" eyebrow="Global intelligence" title="Global Demand Radar">
@@ -903,7 +905,7 @@ Create `AdminShell` with exact destinations: Verification Queue, India Discovery
 
 - [ ] **Step 2: Migrate existing pages without behavior changes**
 
-Move Verification and Discovery from page-local `headerLinks` to `AdminShell`. Test their titles/content/auth behavior and current navigation state before and after. `ProductShell` remains usable for member pages.
+Move Verification, Opportunity Briefs, and Discovery from page-local `headerLinks` to `AdminShell`. Test their titles/content/auth behavior and current navigation state before and after. `ProductShell` remains usable for member pages.
 
 - [ ] **Step 3: RED/GREEN responsive/focus behavior**
 
@@ -912,10 +914,10 @@ At 320 px, the admin header wraps without page overflow; links and logout remain
 - [ ] **Step 4: Run and commit**
 
 ```bash
-npx vitest run tests/admin-shell.test.tsx tests/verification-queue.test.tsx tests/discovery-page.test.tsx tests/navigation.test.tsx
+npx vitest run tests/admin-shell.test.tsx tests/verification-queue.test.tsx tests/opportunity-brief-admin-page.test.tsx tests/discovery-page.test.tsx tests/navigation.test.tsx
 npm run typecheck
 git diff --check
-git add app/components/product/AdminShell.tsx app/components/product/ProductShell.tsx app/components/product/product.module.css app/admin/verifications/page.tsx app/admin/discovery/page.tsx tests/admin-shell.test.tsx tests/verification-queue.test.tsx tests/discovery-page.test.tsx tests/navigation.test.tsx
+git add app/components/product/AdminShell.tsx app/components/product/ProductShell.tsx app/components/product/product.module.css app/admin/verifications/page.tsx app/admin/opportunity-briefs/page.tsx app/admin/discovery/page.tsx tests/admin-shell.test.tsx tests/verification-queue.test.tsx tests/opportunity-brief-admin-page.test.tsx tests/discovery-page.test.tsx tests/navigation.test.tsx
 git commit -m "feat: unify administrator navigation"
 ```
 
