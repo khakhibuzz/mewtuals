@@ -30,7 +30,7 @@
 .pagination a:focus-visible,
 .signalTable a:focus-visible,
 .signalCard a:focus-visible,
-.actions button:focus-visible,
+.actions :is(button, a):focus-visible,
 .manualRun :is(select, button):focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 3px;
@@ -148,6 +148,8 @@
 
 .watchlistEditor fieldset label {
   display: flex;
+  min-width: 44px;
+  min-height: 44px;
   align-items: center;
 }
 
@@ -170,7 +172,7 @@
 
 .filterActions button,
 .filterActions a,
-.actions button,
+.actions :is(button, a),
 .manualRun button {
   display: inline-flex;
   min-height: 44px;
@@ -181,6 +183,12 @@
   background: var(--ink);
   color: var(--paper);
   cursor: pointer;
+}
+
+.actions a {
+  background: transparent;
+  color: var(--ink);
+  text-decoration: none;
 }
 
 .filterActions a {
@@ -282,6 +290,14 @@
   justify-self: end;
 }
 
+.pagination a {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+}
+
 .watchlistCard,
 .runCard {
   gap: 1.25rem;
@@ -344,6 +360,13 @@
   gap: 0;
   margin-top: 2rem;
   overflow-wrap: anywhere;
+}
+
+.detailDocument a {
+  display: inline-flex;
+  min-width: 44px;
+  min-height: 44px;
+  align-items: center;
 }
 
 .detailHeader {
@@ -600,7 +623,7 @@
   .runHeading { align-items: stretch; flex-direction: column; }
   .filterActions button,
   .filterActions a,
-  .actions button,
+  .actions :is(button, a),
   .manualRun button,
   .manualRun label { width: 100%; }
   .signalFacts,

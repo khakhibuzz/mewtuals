@@ -169,7 +169,7 @@ describe("Global Demand Radar responsive contract", () => {
       "overflow-x: auto",
       "overscroll-behavior-inline: contain",
     ]);
-    expectRule(globalRadarCss, ".tabRail:focus-visible,\n.tabLink:focus-visible,\n.filters :is(input, select, button, a):focus-visible,\n.pagination a:focus-visible,\n.signalTable a:focus-visible,\n.signalCard a:focus-visible,\n.actions button:focus-visible,\n.manualRun :is(select, button):focus-visible", [
+    expectRule(globalRadarCss, ".tabRail:focus-visible,\n.tabLink:focus-visible,\n.filters :is(input, select, button, a):focus-visible,\n.pagination a:focus-visible,\n.signalTable a:focus-visible,\n.signalCard a:focus-visible,\n.actions :is(button, a):focus-visible,\n.manualRun :is(select, button):focus-visible", [
       "outline: 2px solid var(--ink)",
     ]);
     expectRule(compact, ".tableFrame", ["display: none"]);
@@ -185,7 +185,7 @@ describe("Global Demand Radar responsive contract", () => {
       "align-items: stretch",
       "flex-direction: column",
     ]);
-    expectRule(mobile, ".filterActions button,\n  .filterActions a,\n  .actions button,\n  .manualRun button,\n  .manualRun label", ["width: 100%"]);
+    expectRule(mobile, ".filterActions button,\n  .filterActions a,\n  .actions :is(button, a),\n  .manualRun button,\n  .manualRun label", ["width: 100%"]);
     expectRule(globalRadarCss, ".filters input,\n.filters select,\n.manualRun select", [
       "width: 100%",
       "min-height: 44px",
@@ -197,6 +197,18 @@ describe("Global Demand Radar responsive contract", () => {
     expectRule(globalRadarCss, ".tableFrame", [
       "max-width: 100%",
       "overflow: hidden",
+    ]);
+    expectRule(globalRadarCss, ".watchlistEditor fieldset label", [
+      "min-width: 44px",
+      "min-height: 44px",
+    ]);
+    expectRule(globalRadarCss, ".pagination a", [
+      "min-width: 44px",
+      "min-height: 44px",
+    ]);
+    expectRule(globalRadarCss, ".detailDocument a", [
+      "min-width: 44px",
+      "min-height: 44px",
     ]);
   });
 });

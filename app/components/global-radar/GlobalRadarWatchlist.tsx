@@ -102,11 +102,15 @@ function WatchlistCard({
   item,
   approvedThemes,
   disabled,
+  pending,
+  unknown,
   mutate,
 }: {
   item: GlobalRadarWatchlistItem;
   approvedThemes: readonly string[];
   disabled: boolean;
+  pending: boolean;
+  unknown: boolean;
   mutate(item: GlobalRadarWatchlistItem, state: GlobalRadarWatchlistItem["state"], draft: ConfigurationDraft): void;
 }) {
   const [draft, setDraft] = useState(() => draftFrom(item));
@@ -165,10 +169,19 @@ function WatchlistCard({
         <label className={styles.wideField}><span>Update reason</span><textarea disabled={disabled} maxLength={2_000} onChange={(event) => set("reason", event.target.value)} required value={draft.reason} /></label>
       </div>
       <div className={styles.actions}>
-        <button disabled={disabled} onClick={() => mutate(item, item.state, draft)} type="button">Save settings for {item.entity.canonicalName}</button>
-        {item.state !== "enabled" ? <button disabled={disabled} onClick={() => mutate(item, "enabled", draft)} type="button">Enable {item.entity.canonicalName}</button> : null}
-        {item.state === "enabled" ? <button disabled={disabled} onClick={() => mutate(item, "paused", draft)} type="button">Pause {item.entity.canonicalName}</button> : null}
-        {item.state !== "disabled" ? <button disabled={disabled} onClick={() => mutate(item, "disabled", draft)} type="button">Disable {item.entity.canonicalName}</button> : null}
+        {unknown ? (
+          <>
+            <button disabled={pending} onClick={() => mutate(item, item.state, draft)} type="button">Retry exact update for {item.entity.canonicalName}</button>
+            <a href="/admin/global-demand-radar/watchlist">Review current watchlist state</a>
+          </>
+        ) : (
+          <>
+            <button disabled={disabled} onClick={() => mutate(item, item.state, draft)} type="button">Save settings for {item.entity.canonicalName}</button>
+            {item.state !== "enabled" ? <button disabled={disabled} onClick={() => mutate(item, "enabled", draft)} type="button">Enable {item.entity.canonicalName}</button> : null}
+            {item.state === "enabled" ? <button disabled={disabled} onClick={() => mutate(item, "paused", draft)} type="button">Pause {item.entity.canonicalName}</button> : null}
+            {item.state !== "disabled" ? <button disabled={disabled} onClick={() => mutate(item, "disabled", draft)} type="button">Disable {item.entity.canonicalName}</button> : null}
+          </>
+        )}
       </div>
     </section>
   );
@@ -184,11 +197,30 @@ export function GlobalRadarWatchlist({
   const router = useRouter();
   const [items, setItems] = useState([...initialItems]);
   const [pendingEntityId, setPendingEntityId] = useState<string | null>(null);
+  const [unknownEntityIds, setUnknownEntityIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [notice, setNotice] = useState<{ kind: "status" | "alert"; text: string } | null>(null);
   const noticeRef = useRef<HTMLParagraphElement>(null);
+  const unknownRequests = useRef(
+    new Map<string, Readonly<Record<string, unknown>>>(),
+  );
   useEffect(() => {
     if (notice?.kind === "alert") noticeRef.current?.focus();
   }, [notice]);
+
+  function markUnknown(entityId: string) {
+    setUnknownEntityIds((current) => new Set([...current, entityId]));
+  }
+
+  function clearUnknown(entityId: string) {
+    setUnknownEntityIds((current) => {
+      if (!current.has(entityId)) return current;
+      const next = new Set(current);
+      next.delete(entityId);
+      return next;
+    });
+  }
 
   async function mutate(
     item: GlobalRadarWatchlistItem,
@@ -196,17 +228,44 @@ export function GlobalRadarWatchlist({
     draft: ConfigurationDraft,
   ) {
     if (pendingEntityId) return;
-    const priority = Number(draft.priority);
-    const cadenceDays = Number(draft.cadenceDays);
-    const countries = joinedValues(draft.countries);
-    const reason = draft.reason.trim();
-    if (!reason || !draft.category.trim() || !draft.categorySearchTermEn.trim() ||
-        countries.length === 0 || draft.languages.length === 0 ||
-        !Number.isInteger(priority) || priority < 0 || priority > 100 ||
-        !Number.isInteger(cadenceDays) || cadenceDays < 1 || cadenceDays > 365) {
-      setNotice({ kind: "alert", text: "Review the watchlist configuration before saving." });
-      return;
+    const retainedRequest = unknownRequests.current.get(item.globalEntityId);
+    let requestBody = retainedRequest;
+    if (!requestBody) {
+      const priority = Number(draft.priority);
+      const cadenceDays = Number(draft.cadenceDays);
+      const countries = joinedValues(draft.countries);
+      const reason = draft.reason.trim();
+      if (!reason || !draft.category.trim() || !draft.categorySearchTermEn.trim() ||
+          countries.length === 0 || draft.languages.length === 0 ||
+          !Number.isInteger(priority) || priority < 0 || priority > 100 ||
+          !Number.isInteger(cadenceDays) || cadenceDays < 1 || cadenceDays > 365) {
+        setNotice({ kind: "alert", text: "Review the watchlist configuration before saving." });
+        return;
+      }
+      requestBody = {
+        entity: {
+          type: "existing",
+          entityId: item.globalEntityId,
+          expectedRevision: item.entity.revision,
+        },
+        expectedEntryRevision: item.revision,
+        idempotencyKey: globalThis.crypto.randomUUID(),
+        reason,
+        configuration: {
+          state,
+          priority,
+          theme: draft.theme,
+          category: draft.category.trim(),
+          categorySearchTermEn: draft.categorySearchTermEn.trim(),
+          categorySearchTermZhCn: draft.categorySearchTermZhCn.trim() || null,
+          countries,
+          languages: draft.languages,
+          cadenceDays,
+          nextScanAt: draft.nextScanAt.trim() || null,
+        },
+      };
     }
+    unknownRequests.current.set(item.globalEntityId, requestBody);
     setPendingEntityId(item.globalEntityId);
     setNotice(null);
     try {
@@ -215,33 +274,22 @@ export function GlobalRadarWatchlist({
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            entity: {
-              type: "existing",
-              entityId: item.globalEntityId,
-              expectedRevision: item.entity.revision,
-            },
-            expectedEntryRevision: item.revision,
-            idempotencyKey: globalThis.crypto.randomUUID(),
-            reason,
-            configuration: {
-              state,
-              priority,
-              theme: draft.theme,
-              category: draft.category.trim(),
-              categorySearchTermEn: draft.categorySearchTermEn.trim(),
-              categorySearchTermZhCn: draft.categorySearchTermZhCn.trim() || null,
-              countries,
-              languages: draft.languages,
-              cadenceDays,
-              nextScanAt: draft.nextScanAt.trim() || null,
-            },
-          }),
+          body: JSON.stringify(requestBody),
         },
       );
       const value: unknown = await response.json().catch(() => null);
       const latest = mutationBody(value);
       if (!response.ok) {
+        if (response.status >= 500) {
+          markUnknown(item.globalEntityId);
+          setNotice({
+            kind: "alert",
+            text: "The watchlist update outcome is unknown. Retry the exact same update or refresh before changing it.",
+          });
+          return;
+        }
+        unknownRequests.current.delete(item.globalEntityId);
+        clearUnknown(item.globalEntityId);
         if (response.status === 409 && latest) {
           setItems((current) => current.map((entry) =>
             entry.globalEntityId === latest.entry.globalEntityId
@@ -258,9 +306,15 @@ export function GlobalRadarWatchlist({
       }
       if (!isGlobalRadarRecord(value) || value.ok !== true ||
           !["created", "updated", "replayed"].includes(String(value.outcome)) || !latest) {
-        setNotice({ kind: "alert", text: "The watchlist update returned an invalid response." });
+        markUnknown(item.globalEntityId);
+        setNotice({
+          kind: "alert",
+          text: "The watchlist update outcome is unknown. Retry the exact same update or refresh before changing it.",
+        });
         return;
       }
+      unknownRequests.current.delete(item.globalEntityId);
+      clearUnknown(item.globalEntityId);
       setItems((current) => current.map((entry) =>
         entry.globalEntityId === latest.entry.globalEntityId
           ? updatedItem(entry, latest.entity, latest.entry)
@@ -268,7 +322,11 @@ export function GlobalRadarWatchlist({
       setNotice({ kind: "status", text: "Watchlist updated." });
       router.refresh();
     } catch {
-      setNotice({ kind: "alert", text: "The watchlist update outcome is unknown. Review the current state before retrying." });
+      markUnknown(item.globalEntityId);
+      setNotice({
+        kind: "alert",
+        text: "The watchlist update outcome is unknown. Retry the exact same update or refresh before changing it.",
+      });
     } finally {
       setPendingEntityId(null);
     }
@@ -283,10 +341,12 @@ export function GlobalRadarWatchlist({
       {items.map((item) => (
         <WatchlistCard
           approvedThemes={approvedThemes}
-          disabled={pendingEntityId !== null}
+          disabled={pendingEntityId !== null || unknownEntityIds.has(item.globalEntityId)}
           item={item}
           key={`${item.id}:${item.revision}:${item.entity.revision}`}
           mutate={(entry, state, draft) => void mutate(entry, state, draft)}
+          pending={pendingEntityId !== null}
+          unknown={unknownEntityIds.has(item.globalEntityId)}
         />
       ))}
     </div>

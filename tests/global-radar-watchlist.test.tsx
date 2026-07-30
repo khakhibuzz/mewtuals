@@ -226,6 +226,160 @@ describe("GlobalRadarWatchlist", () => {
     expect(refreshMock).not.toHaveBeenCalled();
   });
 
+  it("retries an unknown watchlist mutation with the exact same idempotent request", async () => {
+    const user = userEvent.setup();
+    const firstId = "00000000-0000-4000-8000-000000000099";
+    const secondId = "00000000-0000-4000-8000-000000000100";
+    const randomUUID = vi.fn()
+      .mockReturnValueOnce(firstId)
+      .mockReturnValueOnce(secondId);
+    vi.stubGlobal("crypto", { randomUUID });
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("unknown outcome"))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            outcome: "updated",
+            entity: mutationEntity,
+            entry: mutationEntry({ state: "paused" }),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <GlobalRadarWatchlist
+        approvedThemes={["robotics_manufacturing"]}
+        initialItems={[item]}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Pause Fictional Robotics Example" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "outcome is unknown",
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: "Retry exact update for Fictional Robotics Example",
+        }),
+      ).toBeEnabled(),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Disable Fictional Robotics Example" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Review current watchlist state" }),
+    ).toHaveAttribute("href", "/admin/global-demand-radar/watchlist");
+    await user.click(
+      screen.getByRole("button", {
+        name: "Retry exact update for Fictional Robotics Example",
+      }),
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Watchlist updated.",
+    );
+    const firstBody = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    const retryBody = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
+    expect(retryBody).toEqual(firstBody);
+    expect(firstBody.idempotencyKey).toBe(firstId);
+    expect(randomUUID).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the exact request across server errors and malformed 2xx outcomes", async () => {
+    const user = userEvent.setup();
+    const firstId = "00000000-0000-4000-8000-000000000099";
+    const secondId = "00000000-0000-4000-8000-000000000100";
+    const randomUUID = vi.fn()
+      .mockReturnValueOnce(firstId)
+      .mockReturnValueOnce(secondId);
+    vi.stubGlobal("crypto", { randomUUID });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, outcome: "server_error" }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, outcome: "updated" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            outcome: "updated",
+            entity: mutationEntity,
+            entry: mutationEntry({ state: "paused" }),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <GlobalRadarWatchlist
+        approvedThemes={["robotics_manufacturing"]}
+        initialItems={[item]}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Pause Fictional Robotics Example",
+      }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "outcome is unknown",
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: "Retry exact update for Fictional Robotics Example",
+        }),
+      ).toBeEnabled(),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "Retry exact update for Fictional Robotics Example",
+      }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "outcome is unknown",
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: "Retry exact update for Fictional Robotics Example",
+        }),
+      ).toBeEnabled(),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "Retry exact update for Fictional Robotics Example",
+      }),
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Watchlist updated.",
+    );
+    const bodies = fetchMock.mock.calls.map((call) =>
+      JSON.parse(call[1]!.body as string),
+    );
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[2]).toEqual(bodies[0]);
+    expect(bodies[0].idempotencyKey).toBe(firstId);
+    expect(randomUUID).toHaveBeenCalledTimes(1);
+  });
+
   it("does not adopt a shape-valid DTO from a mismatched success outcome", async () => {
     const user = userEvent.setup();
     vi.stubGlobal(
@@ -251,7 +405,9 @@ describe("GlobalRadarWatchlist", () => {
 
     await user.click(screen.getByRole("button", { name: "Pause Fictional Robotics Example" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("invalid response");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "outcome is unknown",
+    );
     expect(screen.getByText("Priority 30")).toBeVisible();
     expect(screen.queryByText("Priority 99")).not.toBeInTheDocument();
     expect(refreshMock).not.toHaveBeenCalled();
