@@ -362,6 +362,9 @@ describe("generated public-only service worker", () => {
   it("owns one complete allowlist for public assets", () => {
     expect(PUBLIC_ASSET_PATHS).toEqual(expectedPublicAssetPaths);
     expect(PUBLIC_ASSET_PATHS).not.toContain("/join");
+    expect(PUBLIC_ASSET_PATHS).not.toContain(
+      "/app/components/global-radar/global-radar.module.css",
+    );
   });
 
   it("serves the generated JavaScript without stale route caching", async () => {
@@ -514,6 +517,30 @@ describe("service worker cache behavior", () => {
     expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
   });
 
+  it("never records Radar assets requested by an administrator route", async () => {
+    const radarStylesheet =
+      "/app/components/global-radar/global-radar.module.css";
+    const worker = createWorkerHarness({
+      fetchResponse: (pathname) =>
+        pathname === radarStylesheet
+          ? new Response("Radar administrator styles", { status: 200 })
+          : publicShellResponder(pathname),
+    });
+    await worker.dispatchLifecycle("install");
+    const cachedBefore = [...worker.cache().entries.keys()].sort();
+
+    const result = await worker.dispatchFetch(
+      assetRequest(radarStylesheet),
+      "https://mewtuals.test/admin/global-demand-radar/direct-demand",
+    );
+
+    expect(result.intercepted).toBe(true);
+    await expect(result.response?.text()).resolves.toBe(
+      "Radar administrator styles",
+    );
+    expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
+  });
+
   it("never writes an unreferenced same-origin stylesheet to the public cache", async () => {
     const worker = createWorkerHarness({
       fetchResponse: (pathname) =>
@@ -564,6 +591,32 @@ describe("service worker cache behavior", () => {
     expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
   });
 
+  it("leaves every Radar API call outside the service worker", async () => {
+    const worker = createWorkerHarness({ fetchResponse: publicShellResponder });
+    await worker.dispatchLifecycle("install");
+    const cachedBefore = [...worker.cache().entries.keys()].sort();
+
+    for (const pathname of [
+      "/api/global-radar/worker/claim",
+      "/api/global-radar/worker/runs/00000000-0000-4000-8000-000000000001/complete",
+      "/api/global-radar/worker/runs/00000000-0000-4000-8000-000000000001/fail",
+      "/api/global-radar/worker/runs/00000000-0000-4000-8000-000000000001/abandon",
+      "/api/admin/global-demand-radar/runs",
+      "/api/admin/global-demand-radar/watchlist/00000000-0000-4000-8000-000000000001",
+      "/api/admin/global-demand-radar/signals/00000000-0000-4000-8000-000000000001/promote",
+    ]) {
+      const result = await worker.dispatchFetch({
+        method: "GET",
+        mode: "cors",
+        url: `https://mewtuals.test${pathname}`,
+      });
+
+      expect(result.intercepted).toBe(false);
+      expect(worker.fetchCalls).not.toContain(pathname);
+    }
+    expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
+  });
+
   it("uses the public root cache offline and the offline document for member routes", async () => {
     let offline = false;
     const worker = createWorkerHarness({
@@ -582,6 +635,26 @@ describe("service worker cache behavior", () => {
 
     await expect(root.response?.text()).resolves.toContain("landing-public.js");
     await expect(member.response?.text()).resolves.toBe("offline page");
+  });
+
+  it("uses only the public offline document for Radar administrator routes", async () => {
+    const radarPath =
+      "/admin/global-demand-radar/direct-demand?country=India&page=2";
+    let offline = false;
+    const worker = createWorkerHarness({
+      fetchResponse: (pathname) => {
+        if (offline && pathname === radarPath) throw new Error("offline");
+        return publicShellResponder(pathname);
+      },
+    });
+    await worker.dispatchLifecycle("install");
+    const cachedBefore = [...worker.cache().entries.keys()].sort();
+    offline = true;
+
+    const radar = await worker.dispatchFetch(documentRequest(radarPath));
+
+    await expect(radar.response?.text()).resolves.toBe("offline page");
+    expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
   });
 
   it("keeps transactional /join network-only and uses the offline document", async () => {

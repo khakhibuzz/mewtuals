@@ -7,6 +7,13 @@ const productCss = readFileSync(
   resolve(process.cwd(), "app/components/product/product.module.css"),
   "utf8",
 );
+const globalRadarCss = readFileSync(
+  resolve(
+    process.cwd(),
+    "app/components/global-radar/global-radar.module.css",
+  ),
+  "utf8",
+);
 
 function mobileBlock(source: string, query = "@media (max-width: 767px)") {
   const start = source.indexOf(query);
@@ -150,5 +157,46 @@ describe("member and admin mobile responsive contract", () => {
     expectRule(mobile, ".cardHeader", ["flex-direction: column"]);
     expectRule(mobile, ".reviewActions", ["flex-direction: column"]);
     expectRule(mobile, ".reviewActions > *", ["width: 100%"]);
+  });
+});
+
+describe("Global Demand Radar responsive contract", () => {
+  it("contains the tab rail and switches dense signal tables to complete cards", () => {
+    const compact = mobileBlock(globalRadarCss, "@media (max-width: 900px)");
+
+    expectRule(globalRadarCss, ".tabRail", [
+      "max-width: 100%",
+      "overflow-x: auto",
+      "overscroll-behavior-inline: contain",
+    ]);
+    expectRule(globalRadarCss, ".tabRail:focus-visible,\n.tabLink:focus-visible,\n.filters :is(input, select, button, a):focus-visible,\n.pagination a:focus-visible,\n.signalTable a:focus-visible,\n.signalCard a:focus-visible,\n.actions button:focus-visible,\n.manualRun :is(select, button):focus-visible", [
+      "outline: 2px solid var(--ink)",
+    ]);
+    expectRule(compact, ".tableFrame", ["display: none"]);
+    expectRule(compact, ".signalCards", ["display: grid"]);
+  });
+
+  it("uses the canonical mobile boundary for stacked, touch-safe controls and long values", () => {
+    const mobile = mobileBlock(globalRadarCss);
+
+    expect(mobile).not.toBe("");
+    expectRule(mobile, ".filters", ["grid-template-columns: 1fr"]);
+    expectRule(mobile, ".filterActions,\n  .actions,\n  .manualRun,\n  .runHeading", [
+      "align-items: stretch",
+      "flex-direction: column",
+    ]);
+    expectRule(mobile, ".filterActions button,\n  .filterActions a,\n  .actions button,\n  .manualRun button,\n  .manualRun label", ["width: 100%"]);
+    expectRule(globalRadarCss, ".filters input,\n.filters select,\n.manualRun select", [
+      "width: 100%",
+      "min-height: 44px",
+    ]);
+    expectRule(globalRadarCss, ".signalCard,\n.watchlistCard,\n.runCard", [
+      "min-width: 0",
+      "overflow-wrap: anywhere",
+    ]);
+    expectRule(globalRadarCss, ".tableFrame", [
+      "max-width: 100%",
+      "overflow: hidden",
+    ]);
   });
 });
