@@ -29,7 +29,7 @@ export default async function RadarRunsPage({
   if (result.outcome !== "listed") return <GlobalRadarPageError current="runs" retry={path} />;
   return (
     <GlobalRadarPageShell current="runs">
-      <GlobalRadarRuns approvedThemes={globalRadarThemes} initialRuns={result.runs as GlobalRadarRunItem[]} />
+      <GlobalRadarRuns approvedThemes={globalRadarThemes} initialRuns={result.runs as GlobalRadarRunItem[]} page={result.page} />
       <GlobalRadarPagePagination label="Radar Runs" page={result.page} pageSize={result.pageSize} path={path} total={result.total} />
     </GlobalRadarPageShell>
   );

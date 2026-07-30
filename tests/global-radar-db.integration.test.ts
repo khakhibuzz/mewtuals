@@ -4874,7 +4874,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       envelope: envelope(2, "33"),
       classification: {
         signalClass: "direct_demand",
-        signalType: "public_request",
+        signalType: "procurement",
         demandDomain: "robot_learning_and_manipulation",
         components: {
           explicitness: 90,
@@ -4955,7 +4955,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
         envelope: envelope(3, "331"),
         classification: {
           signalClass: "direct_demand",
-          signalType: "public_request",
+          signalType: "procurement",
           demandDomain: "robot_learning_and_manipulation",
           components: {
             explicitness: 90,

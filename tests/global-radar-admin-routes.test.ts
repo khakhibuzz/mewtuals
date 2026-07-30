@@ -772,7 +772,7 @@ describe("Global Radar administrator HTTP adapters", () => {
           ...envelope(),
           classification: {
             signalClass: "ecosystem_momentum",
-            signalType: "platform_launch",
+            signalType: "ecosystem_direction",
             demandDomain: "synthetic_data_and_evaluation",
             components: { taxonomyConsistency: 80, evidenceQuality: 75 },
           },
@@ -808,6 +808,15 @@ describe("Global Radar administrator HTTP adapters", () => {
         classification: {
           signalClass: "ecosystem_momentum",
           signalType: "platform_launch",
+          demandDomain: "synthetic_data_and_evaluation",
+          components: { taxonomyConsistency: 80, evidenceQuality: 75 },
+        },
+      },
+      {
+        ...envelope(),
+        classification: {
+          signalClass: "ecosystem_momentum",
+          signalType: "ecosystem_direction",
           demandDomain: "synthetic_data_and_evaluation",
           components: { taxonomyConsistency: 80, evidenceQuality: 75 },
           workerSecret: "private",

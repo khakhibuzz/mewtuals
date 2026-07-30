@@ -1,6 +1,7 @@
 export const RADAR_SIGNAL_ID = "00000000-0000-4000-8000-000000000002";
 export const RADAR_ENTITY_ID = "00000000-0000-4000-8000-000000000001";
 export const RADAR_DUPLICATE_ID = "00000000-0000-4000-8000-000000000003";
+export const RADAR_ASSOCIATED_ENTITY_ID = "00000000-0000-4000-8000-000000000012";
 
 export const RADAR_DETAIL_HEADINGS = [
   "Organisation",
@@ -129,9 +130,14 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
   const status = options.status ?? "monitoring";
   const revision = options.revision ?? 4;
   const signalClass = options.signalClass ?? "direct_demand";
+  const signalType = signalClass === "direct_demand"
+    ? "supplier_registration"
+    : signalClass === "demand_precursor"
+      ? "deployment"
+      : "ecosystem_direction";
   const scoreComponents = signalClass === "direct_demand"
     ? {
-        explicitness: 90,
+        demandExplicitness: 90,
         evidenceConfidence: 88,
         freshness: 84,
         actionability: 75,
@@ -171,7 +177,7 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
         associated: {
           total: 1,
           truncated: false,
-          items: [{ role: "partner", confidence: 75, organisation: { ...organisation, id: "00000000-0000-4000-8000-000000000012", canonicalName: "Fictional Partner Example" } }],
+          items: [{ role: "contributor", confidence: 75, organisation: { ...organisation, id: RADAR_ASSOCIATED_ENTITY_ID, canonicalName: "Fictional Partner Example" } }],
         },
       },
     },
@@ -190,7 +196,7 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
       title: RADAR_DETAIL_HEADINGS[2],
       data: {
         signalClass,
-        signalType: "supplier_registration",
+        signalType,
         theme: "robotics_manufacturing",
         demandDomain: "robotics_hardware_and_ecosystem_demand",
         sourceCountry: "China",

@@ -1,12 +1,14 @@
 import { z } from "zod";
 
 import {
+  directDemandAskTypes,
   directDemandComponentsSchema,
   globalRadarDemandFamilies,
   globalRadarThemes,
   isoTimestampSchema,
   linkedinOrganizationUrlSchema,
   persistableRadarEvidenceSchema,
+  precursorDevelopmentTypes,
   precursorComponentsSchema,
   publicHttpUrlSchema,
 } from "../../domain/global-radar";
@@ -59,12 +61,12 @@ const signalReviewSchema = z.strictObject({
 });
 
 const classificationTargetShape = {
-  signalType: z.string().trim().min(1).max(200),
   demandDomain: z.enum(globalRadarDemandFamilies),
 } as const;
 
 const directDemandClassificationSchema = z.strictObject({
   signalClass: z.literal("direct_demand"),
+  signalType: z.enum(directDemandAskTypes),
   ...classificationTargetShape,
   primaryEntityId: globalRadarRouteUuidSchema.optional(),
   components: directDemandComponentsSchema,
@@ -77,6 +79,7 @@ const directDemandClassificationSchema = z.strictObject({
 
 const precursorClassificationSchema = z.strictObject({
   signalClass: z.literal("demand_precursor"),
+  signalType: z.enum(precursorDevelopmentTypes),
   ...classificationTargetShape,
   primaryEntityId: globalRadarRouteUuidSchema.optional(),
   components: precursorComponentsSchema,
@@ -84,6 +87,7 @@ const precursorClassificationSchema = z.strictObject({
 
 const momentumClassificationSchema = z.strictObject({
   signalClass: z.literal("ecosystem_momentum"),
+  signalType: z.literal("ecosystem_direction"),
   ...classificationTargetShape,
   components: z.strictObject({
     taxonomyConsistency: z.number().int().min(0).max(100),

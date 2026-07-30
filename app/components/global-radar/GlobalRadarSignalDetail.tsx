@@ -7,7 +7,6 @@ import { useState } from "react";
 import { GlobalRadarActions } from "./GlobalRadarActions";
 import {
   adminSection,
-  booleanValue,
   collectionItems,
   detailSection,
   displayLabel,
@@ -56,18 +55,122 @@ function DefinitionList({
   );
 }
 
+const MAX_SAFE_VALUE_DEPTH = 5;
+const MAX_SAFE_COLLECTION_ITEMS = 50;
+const MAX_SAFE_RENDERED_VALUES = 250;
+
+type SafeValueResult = Readonly<{
+  node: ReactNode;
+  remaining: number;
+}>;
+
+function renderSafeValue({
+  value,
+  depth,
+  remaining,
+}: {
+  value: unknown;
+  depth: number;
+  remaining: number;
+}): SafeValueResult {
+  if (remaining <= 0) {
+    return { node: <span>Additional detail omitted.</span>, remaining: 0 };
+  }
+  const nextRemaining = remaining - 1;
+
+  if (value === null || value === undefined) {
+    return { node: <span>Unknown</span>, remaining: nextRemaining };
+  }
+  if (typeof value === "string") {
+    return { node: <span>{value}</span>, remaining: nextRemaining };
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return { node: <span>{value}</span>, remaining: nextRemaining };
+  }
+  if (typeof value === "boolean") {
+    return { node: <span>{String(value)}</span>, remaining: nextRemaining };
+  }
+
+  if (depth >= MAX_SAFE_VALUE_DEPTH) {
+    return {
+      node: <span>Additional nested detail omitted.</span>,
+      remaining: nextRemaining,
+    };
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return { node: <span>Not recorded</span>, remaining: nextRemaining };
+    }
+    const items = value.slice(0, MAX_SAFE_COLLECTION_ITEMS);
+    const nodes: ReactNode[] = [];
+    let available = nextRemaining;
+    for (const [index, item] of items.entries()) {
+      if (available <= 0) {
+        nodes.push(<li key="budget-omitted">Additional detail omitted.</li>);
+        break;
+      }
+      const result = renderSafeValue({ value: item, depth: depth + 1, remaining: available });
+      available = result.remaining;
+      nodes.push(<li key={index}>{result.node}</li>);
+    }
+    if (value.length > items.length) {
+      nodes.push(<li key="items-omitted">Additional items omitted.</li>);
+    }
+    return {
+      node: <ul className={styles.safeValueList}>{nodes}</ul>,
+      remaining: available,
+    };
+  }
+
+  const source = record(value);
+  const entries = Object.entries(source).slice(0, MAX_SAFE_COLLECTION_ITEMS);
+  if (entries.length === 0) {
+    return { node: <span>Not recorded</span>, remaining: nextRemaining };
+  }
+  const nodes: ReactNode[] = [];
+  let available = nextRemaining;
+  for (const [key, item] of entries) {
+    if (available <= 0) {
+      nodes.push(
+        <div key="budget-omitted">
+          <dt>Additional detail</dt>
+          <dd>Additional detail omitted.</dd>
+        </div>,
+      );
+      break;
+    }
+    const result = renderSafeValue({ value: item, depth: depth + 1, remaining: available });
+    available = result.remaining;
+    nodes.push(
+      <div key={key}>
+        <dt>{displayLabel(key)}</dt>
+        <dd>{result.node}</dd>
+      </div>,
+    );
+  }
+  if (Object.keys(source).length > entries.length) {
+    nodes.push(
+      <div key="fields-omitted">
+        <dt>Additional fields</dt>
+        <dd>Additional fields omitted.</dd>
+      </div>,
+    );
+  }
+  return {
+    node: <dl className={styles.safeRecord}>{nodes}</dl>,
+    remaining: available,
+  };
+}
+
 function SafeRecord({ value }: { value: unknown }) {
   const source = record(value);
-  const entries = Object.entries(source).filter(([, item]) =>
-    item === null || ["string", "number", "boolean"].includes(typeof item));
-  if (entries.length === 0) return <p>Not recorded</p>;
-  return (
-    <dl className={styles.detailFacts}>
-      {entries.map(([key, item]) => (
-        <div key={key}><dt>{displayLabel(key)}</dt><dd>{item === null ? "Unknown" : String(item)}</dd></div>
-      ))}
-    </dl>
-  );
+  if (Object.keys(source).length === 0) return <p>Not recorded</p>;
+  return <>{renderSafeValue({
+    value: source,
+    depth: 0,
+    remaining: MAX_SAFE_RENDERED_VALUES,
+  }).node}</>;
 }
 
 function Organisation({ detail }: { detail: GlobalRadarSignalDetailDto }) {
@@ -188,11 +291,16 @@ function ScaleTimeline({ detail }: { detail: GlobalRadarSignalDetailDto }) {
   const data = detailSection(detail, "scale_and_timeline");
   const timeline = record(data.timeline);
   const requirements = records(data.requirements);
+  const evergreen = timeline.evergreen === true
+    ? "Yes"
+    : timeline.evergreen === false
+      ? "No"
+      : "Not recorded";
   return <><DefinitionList values={[
     { label: "Announced", value: formatRadarDate(timeline.announcedAt) },
     { label: "Effective", value: formatRadarDate(timeline.effectiveFrom) },
     { label: "Expires", value: formatRadarDate(timeline.expiresAt) },
-    { label: "Evergreen", value: booleanValue(timeline.evergreen) ? "Yes" : "No" },
+    { label: "Evergreen", value: evergreen },
     { label: "Re-observe by", value: formatRadarDate(timeline.reobserveBy) },
     { label: "Observed", value: formatRadarDate(timeline.observedAt) },
   ]} />{requirements.map((item) => <div key={text(item.requirementId)}><h3>Requirement {text(item.requirementId)} scale</h3><SafeRecord value={item.scaleSpecification} /></div>)}</>;

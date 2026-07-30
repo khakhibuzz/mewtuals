@@ -126,7 +126,7 @@ export function parseGlobalRadarListQuery(
   for (const key of ["observedFrom", "observedTo", "expiresBefore"] as const) {
     if (filters[key] && !calendarDate(filters[key])) return null;
   }
-  if (filters.observedFrom && filters.observedTo && filters.observedFrom >= filters.observedTo) return null;
+  if (filters.observedFrom && filters.observedTo && filters.observedFrom > filters.observedTo) return null;
   if (filters.page && !validPage(filters.page)) return null;
 
   const canonical = new URLSearchParams();

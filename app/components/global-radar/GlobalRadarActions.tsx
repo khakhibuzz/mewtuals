@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  directDemandAskTypes,
   globalRadarDemandFamilies,
   globalRadarSourceFamilies,
   globalRadarThemes,
+  precursorDevelopmentTypes,
 } from "../../domain/global-radar";
 import {
   type GlobalRadarActionRequest,
@@ -14,6 +16,7 @@ import {
 import {
   adminSection,
   booleanValue,
+  collectionItems,
   detailSection,
   displayLabel,
   numberValue,
@@ -27,11 +30,16 @@ import {
   isGlobalRadarRecord,
   isGlobalRadarSignalDetail,
   type GlobalRadarAllowedAction,
+  type GlobalRadarSignalClass,
   type GlobalRadarSignalDetail,
 } from "./types";
 import styles from "./global-radar.module.css";
 
 type Feedback = { kind: "status" | "alert"; text: string };
+type StoredActionRequest = Readonly<{
+  request: GlobalRadarActionRequest;
+  bodyText: string;
+}>;
 
 const reviewActions = [
   ["request_review", "Request review"],
@@ -43,30 +51,51 @@ const reviewActions = [
   ["mark_no_india_fit", "Mark no India fit"],
 ] as const satisfies readonly (readonly [GlobalRadarAllowedAction, string])[];
 
-const directComponentKeys = [
-  "explicitness",
-  "evidenceConfidence",
-  "freshness",
-  "actionability",
-  "indiaFit",
-  "commercialPotential",
-  "repeatability",
-  "responseAccessibility",
-  "strategicLearning",
-  "complianceComplexity",
-] as const;
+type ScoreField = Readonly<{
+  key: string;
+  sourceKey: string;
+  label: string;
+}>;
 
-const precursorComponentKeys = [
-  "evidenceConfidence",
-  "proximityToExternalDemand",
-  "fundingDeploymentMomentum",
-  "likelyDataHardwareIntensity",
-  "indiaFit",
-  "estimatedTimeHorizon",
-  "strategicRelevance",
-] as const;
+const scoreFields: Record<GlobalRadarSignalClass, readonly ScoreField[]> = {
+  direct_demand: [
+    { key: "explicitness", sourceKey: "demandExplicitness", label: "Demand explicitness" },
+    { key: "evidenceConfidence", sourceKey: "evidenceConfidence", label: "Evidence confidence" },
+    { key: "freshness", sourceKey: "freshness", label: "Freshness" },
+    { key: "actionability", sourceKey: "actionability", label: "Actionability" },
+    { key: "indiaFit", sourceKey: "indiaFit", label: "India fit" },
+    { key: "commercialPotential", sourceKey: "commercialPotential", label: "Commercial potential" },
+    { key: "repeatability", sourceKey: "repeatability", label: "Repeatability" },
+    { key: "responseAccessibility", sourceKey: "responseAccessibility", label: "Response accessibility" },
+    { key: "strategicLearning", sourceKey: "strategicLearning", label: "Strategic learning" },
+    { key: "complianceComplexity", sourceKey: "complianceComplexity", label: "Compliance complexity" },
+  ],
+  demand_precursor: [
+    { key: "evidenceConfidence", sourceKey: "evidenceConfidence", label: "Evidence confidence" },
+    { key: "proximityToExternalDemand", sourceKey: "proximityToExternalDemand", label: "Proximity to external demand" },
+    { key: "fundingDeploymentMomentum", sourceKey: "fundingDeploymentMomentum", label: "Funding deployment momentum" },
+    { key: "likelyDataHardwareIntensity", sourceKey: "likelyDataHardwareIntensity", label: "Likely data hardware intensity" },
+    { key: "indiaFit", sourceKey: "indiaFit", label: "India fit" },
+    { key: "estimatedTimeHorizon", sourceKey: "estimatedTimeHorizon", label: "Estimated time horizon" },
+    { key: "strategicRelevance", sourceKey: "strategicRelevance", label: "Strategic relevance" },
+  ],
+  ecosystem_momentum: [
+    { key: "taxonomyConsistency", sourceKey: "taxonomyConsistency", label: "Taxonomy consistency" },
+    { key: "evidenceQuality", sourceKey: "evidenceQuality", label: "Evidence quality" },
+  ],
+};
 
-const momentumComponentKeys = ["taxonomyConsistency", "evidenceQuality"] as const;
+const signalClasses: readonly GlobalRadarSignalClass[] = [
+  "direct_demand",
+  "demand_precursor",
+  "ecosystem_momentum",
+];
+
+const signalTypeOptions: Record<GlobalRadarSignalClass, readonly string[]> = {
+  direct_demand: directDemandAskTypes,
+  demand_precursor: precursorDevelopmentTypes,
+  ecosystem_momentum: ["ecosystem_direction"],
+};
 
 function mutationEnvelope(detail: GlobalRadarSignalDetail, reason: string) {
   return {
@@ -143,46 +172,86 @@ function ClassificationAction({ detail, pending, run, invalid }: ActionFormProps
   const classification = detailSection(detail, "signal_class");
   const timeline = record(detailSection(detail, "scale_and_timeline").timeline);
   const components = record(detailSection(detail, "score_rationale").components);
-  const organisation = primaryOrganisation(detail);
+  const primary = primaryOrganisation(detail);
+  const entityOptions = [
+    primary,
+    ...collectionItems(detailSection(detail, "organisation").associated)
+      .map((association) => record(association.organisation)),
+  ].flatMap((organisation) => {
+    const id = optionalText(organisation.id);
+    const name = optionalText(organisation.canonicalName);
+    return id && name ? [{ id, name }] : [];
+  }).filter((candidate, index, candidates) =>
+    candidates.findIndex(({ id }) => id === candidate.id) === index);
   const [reason, setReason] = useState("");
-  const [signalType, setSignalType] = useState(() => text(classification.signalType, ""));
-  const [demandDomain, setDemandDomain] = useState(() => text(classification.demandDomain, globalRadarDemandFamilies[0]));
-  const [evergreen, setEvergreen] = useState(() => booleanValue(timeline.evergreen));
-  const [expiresAt, setExpiresAt] = useState(() => optionalText(timeline.expiresAt) ?? "");
-  const [reobserveBy, setReobserveBy] = useState(() => optionalText(timeline.reobserveBy) ?? "");
-  const keys = detail.signalClass === "direct_demand"
-    ? directComponentKeys
-    : detail.signalClass === "demand_precursor"
-      ? precursorComponentKeys
-      : momentumComponentKeys;
-  const [scores, setScores] = useState<Record<string, string>>(() => Object.fromEntries(
-    keys.map((key) => [key, typeof components[key] === "number" ? String(components[key]) : ""]),
-  ));
+  const [targetClass, setTargetClass] = useState<GlobalRadarSignalClass>(detail.signalClass);
+  const [signalTypesByClass, setSignalTypesByClass] = useState<Record<GlobalRadarSignalClass, string>>(() => {
+    const existingSignalType = text(classification.signalType, "");
+    return Object.fromEntries(signalClasses.map((signalClass) => [
+      signalClass,
+      signalClass === detail.signalClass && signalTypeOptions[signalClass].includes(existingSignalType)
+        ? existingSignalType
+        : "",
+    ])) as Record<GlobalRadarSignalClass, string>;
+  });
+  const [demandDomain, setDemandDomain] = useState(() => text(classification.demandDomain, ""));
+  const [primaryEntityId, setPrimaryEntityId] = useState(() => optionalText(primary.id) ?? "");
+  const [evergreen, setEvergreen] = useState(() =>
+    detail.signalClass === "direct_demand" && typeof timeline.evergreen === "boolean"
+      ? String(timeline.evergreen)
+      : "");
+  const [expiresAt, setExpiresAt] = useState(() =>
+    detail.signalClass === "direct_demand" ? optionalText(timeline.expiresAt) ?? "" : "");
+  const [reobserveBy, setReobserveBy] = useState(() =>
+    detail.signalClass === "direct_demand" ? optionalText(timeline.reobserveBy) ?? "" : "");
+  const [scoresByClass, setScoresByClass] = useState<Record<GlobalRadarSignalClass, Record<string, string>>>(() =>
+    Object.fromEntries(signalClasses.map((signalClass) => [
+      signalClass,
+      Object.fromEntries(scoreFields[signalClass].map((field) => [
+        field.key,
+        signalClass === detail.signalClass && typeof components[field.sourceKey] === "number"
+          ? String(components[field.sourceKey])
+          : "",
+      ])),
+    ])) as Record<GlobalRadarSignalClass, Record<string, string>>);
+  const fields = scoreFields[targetClass];
+  const scores = scoresByClass[targetClass];
+  const signalType = signalTypesByClass[targetClass];
+
+  function setScore(key: string, value: string) {
+    setScoresByClass((current) => ({
+      ...current,
+      [targetClass]: { ...current[targetClass], [key]: value },
+    }));
+  }
 
   function submit() {
     const parsedComponents: Record<string, number | null> = {};
-    for (const key of keys) {
-      const parsed = numberOrNull(scores[key] ?? "");
-      if (parsed === undefined || (detail.signalClass === "ecosystem_momentum" && parsed === null)) {
+    for (const field of fields) {
+      const parsed = numberOrNull(scores[field.key] ?? "");
+      if (parsed === undefined || (targetClass === "ecosystem_momentum" && parsed === null)) {
         invalid("Every classification score must be an integer from 0 to 100, or blank where allowed.");
         return;
       }
-      parsedComponents[key] = parsed;
+      parsedComponents[field.key] = parsed;
     }
-    if (!reason.trim() || !signalType.trim() || !globalRadarDemandFamilies.includes(demandDomain as (typeof globalRadarDemandFamilies)[number])) {
+    if (!reason.trim() || !signalTypeOptions[targetClass].includes(signalType) ||
+        !globalRadarDemandFamilies.includes(demandDomain as (typeof globalRadarDemandFamilies)[number]) ||
+        (targetClass !== "ecosystem_momentum" &&
+          !entityOptions.some(({ id }) => id === primaryEntityId)) ||
+        (targetClass === "direct_demand" && !["true", "false"].includes(evergreen))) {
       invalid("Review the classification target and reason.");
       return;
     }
-    const primaryEntityId = optionalText(organisation.id);
     const classificationBody: Record<string, unknown> = {
-      signalClass: detail.signalClass,
-      signalType: signalType.trim(),
+      signalClass: targetClass,
+      signalType,
       demandDomain,
-      ...(detail.signalClass !== "ecosystem_momentum" && primaryEntityId ? { primaryEntityId } : {}),
+      ...(targetClass !== "ecosystem_momentum" ? { primaryEntityId } : {}),
       components: parsedComponents,
-      ...(detail.signalClass === "direct_demand" ? {
+      ...(targetClass === "direct_demand" ? {
         activity: {
-          evergreen,
+          evergreen: evergreen === "true",
           expiresAt: expiresAt.trim() || null,
           reobserveBy: reobserveBy.trim() || null,
         },
@@ -207,10 +276,12 @@ function ClassificationAction({ detail, pending, run, invalid }: ActionFormProps
       <fieldset disabled={pending}>
         <legend>Classification</legend>
         <label><span>Classification reason</span><textarea maxLength={2_000} onChange={(event) => setReason(event.target.value)} required value={reason} /></label>
-        <label><span>Signal type</span><input maxLength={200} onChange={(event) => setSignalType(event.target.value)} required value={signalType} /></label>
-        <label><span>Demand domain</span><select onChange={(event) => setDemandDomain(event.target.value)} value={demandDomain}>{globalRadarDemandFamilies.map((domain) => <option key={domain} value={domain}>{displayLabel(domain)}</option>)}</select></label>
-        <div className={styles.scoreGrid}>{keys.map((key) => <label key={key}><span>{displayLabel(key)}</span><input max={100} min={0} onChange={(event) => setScores((current) => ({ ...current, [key]: event.target.value }))} type="number" value={scores[key] ?? ""} /></label>)}</div>
-        {detail.signalClass === "direct_demand" ? <div className={styles.actionGrid}><label className={styles.confirmation}><input checked={evergreen} onChange={(event) => setEvergreen(event.target.checked)} type="checkbox" /><span>Evergreen</span></label><label><span>Classification expires at (ISO timestamp)</span><input onChange={(event) => setExpiresAt(event.target.value)} value={expiresAt} /></label><label><span>Classification re-observe by (ISO timestamp)</span><input onChange={(event) => setReobserveBy(event.target.value)} value={reobserveBy} /></label></div> : null}
+        <label><span>Target signal class</span><select onChange={(event) => setTargetClass(event.target.value as GlobalRadarSignalClass)} value={targetClass}>{signalClasses.map((signalClass) => <option key={signalClass} value={signalClass}>{displayLabel(signalClass)}</option>)}</select></label>
+        <label><span>Signal type</span><select onChange={(event) => setSignalTypesByClass((current) => ({ ...current, [targetClass]: event.target.value }))} required value={signalType}><option value="">Select a signal type</option>{signalTypeOptions[targetClass].map((option) => <option key={option} value={option}>{displayLabel(option)}</option>)}</select></label>
+        <label><span>Demand domain</span><select onChange={(event) => setDemandDomain(event.target.value)} required value={demandDomain}><option value="">Select a demand domain</option>{globalRadarDemandFamilies.map((domain) => <option key={domain} value={domain}>{displayLabel(domain)}</option>)}</select></label>
+        {targetClass !== "ecosystem_momentum" ? <label><span>Primary organisation</span><select onChange={(event) => setPrimaryEntityId(event.target.value)} required value={primaryEntityId}><option value="">Select a primary organisation</option>{entityOptions.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}</select></label> : null}
+        <div className={styles.scoreGrid}>{fields.map((field) => <label key={field.key}><span>{field.label}</span><input max={100} min={0} onChange={(event) => setScore(field.key, event.target.value)} type="number" value={scores[field.key] ?? ""} /></label>)}</div>
+        {targetClass === "direct_demand" ? <div className={styles.actionGrid}><label><span>Evergreen classification</span><select onChange={(event) => setEvergreen(event.target.value)} required value={evergreen}><option value="">Select an activity type</option><option value="false">No</option><option value="true">Yes</option></select></label><label><span>Classification expires at (ISO timestamp)</span><input onChange={(event) => setExpiresAt(event.target.value)} value={expiresAt} /></label><label><span>Classification re-observe by (ISO timestamp)</span><input onChange={(event) => setReobserveBy(event.target.value)} value={reobserveBy} /></label></div> : null}
         <button type="submit">Save classification</button>
       </fieldset>
     </form>
@@ -390,9 +461,14 @@ export function GlobalRadarActions({
 }) {
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [unknownRequest, setUnknownRequest] = useState<StoredActionRequest | null>(null);
   const feedbackRef = useFeedbackFocus(feedback);
   const actionsRef = useRef<HTMLDivElement>(null);
   const allowed = new Set(detail.allowedActions);
+
+  function isCurrentDetail(value: unknown): value is GlobalRadarSignalDetail {
+    return isGlobalRadarSignalDetail(value) && value.id === detail.id;
+  }
 
   async function refreshDetail() {
     const response = await fetch(`/api/admin/global-demand-radar/signals/${detail.id}`, {
@@ -401,27 +477,44 @@ export function GlobalRadarActions({
     });
     const value: unknown = await response.json().catch(() => null);
     if (!response.ok || !isGlobalRadarRecord(value) || value.ok !== true ||
-        value.outcome !== "found" || !isGlobalRadarSignalDetail(value.detail)) return false;
+        value.outcome !== "found" || !isCurrentDetail(value.detail)) return false;
     onDetailChange(value.detail);
     return true;
   }
 
-  async function execute(request: GlobalRadarActionRequest) {
+  function retainUnknownRequest(stored: StoredActionRequest) {
+    setUnknownRequest(stored);
+    setFeedback({
+      kind: "alert",
+      text: "The action outcome is unknown. Inputs are locked until the latest safe record is refreshed and this exact request is retried.",
+    });
+  }
+
+  async function submit(stored: StoredActionRequest, refreshBeforeRetry: boolean) {
     if (pendingKey) return;
+    const { request, bodyText } = stored;
     setPendingKey(request.key);
     setFeedback(null);
     try {
+      if (refreshBeforeRetry && !await refreshDetail()) {
+        setFeedback({
+          kind: "alert",
+          text: "The action outcome is still unknown because the latest safe record could not be refreshed.",
+        });
+        return;
+      }
       const response = await fetch(request.path, {
         method: request.method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request.body),
+        body: bodyText,
       });
       const value: unknown = await response.json().catch(() => null);
       const body = isGlobalRadarRecord(value) ? value : null;
       if (response.status === 409) {
-        const latest = body && isGlobalRadarSignalDetail(body.latest)
+        setUnknownRequest(null);
+        const latest = body && isCurrentDetail(body.latest)
           ? body.latest
-          : body && isGlobalRadarSignalDetail(body.survivor)
+          : body && isCurrentDetail(body.survivor)
             ? body.survivor
             : null;
         if (latest) onDetailChange(latest);
@@ -429,31 +522,51 @@ export function GlobalRadarActions({
         setFeedback({ kind: "alert", text: "The record changed. Review the latest safe state before retrying." });
         return;
       }
-      if (!response.ok || !body || body.ok !== true ||
-          typeof body.outcome !== "string" || !request.successOutcomes.includes(body.outcome)) {
+      if (response.status >= 500) {
+        retainUnknownRequest(stored);
+        return;
+      }
+      if (!response.ok) {
+        setUnknownRequest(null);
         setFeedback({ kind: "alert", text: "The administrator action could not be completed." });
         return;
       }
+      if (!body || body.ok !== true || typeof body.outcome !== "string" ||
+          !request.successOutcomes.includes(body.outcome)) {
+        retainUnknownRequest(stored);
+        return;
+      }
       let adopted = false;
-      if (request.responseMode === "detail" && isGlobalRadarSignalDetail(body.detail)) {
+      if (request.responseMode === "detail" && isCurrentDetail(body.detail)) {
         onDetailChange(body.detail);
         adopted = true;
-      } else if (request.responseMode === "merge" && isGlobalRadarSignalDetail(body.survivor)) {
+      } else if (request.responseMode === "merge" && isCurrentDetail(body.survivor)) {
         onDetailChange(body.survivor);
         adopted = true;
       } else if (request.responseMode === "refresh") {
         adopted = await refreshDetail();
       }
       if (!adopted) {
-        setFeedback({ kind: "alert", text: "The action completed without a valid safe detail response. Reload before continuing." });
+        retainUnknownRequest(stored);
         return;
       }
+      setUnknownRequest(null);
       setFeedback({ kind: "status", text: request.successMessage });
     } catch {
-      setFeedback({ kind: "alert", text: "The action outcome is unknown. Review the current record before retrying." });
+      retainUnknownRequest(stored);
     } finally {
       setPendingKey(null);
     }
+  }
+
+  function execute(request: GlobalRadarActionRequest) {
+    if (pendingKey || unknownRequest) return;
+    void submit({ request, bodyText: JSON.stringify(request.body) }, false);
+  }
+
+  function retryUnknownRequest() {
+    if (!unknownRequest || pendingKey) return;
+    void submit(unknownRequest, true);
   }
 
   function invalid(message: string) {
@@ -463,7 +576,10 @@ export function GlobalRadarActions({
   const feedbackMessage = feedback ? (
     <div ref={feedbackRef} role={feedback.kind} tabIndex={feedback.kind === "alert" ? -1 : undefined}>
       <p>{feedback.text}</p>
-      {feedback.kind === "alert" ? <button onClick={() => actionsRef.current?.focus()} type="button">Review latest state and retry</button> : null}
+      {feedback.kind === "alert" ? unknownRequest
+        ? <button disabled={pendingKey !== null} onClick={retryUnknownRequest} type="button">Refresh and retry exact request</button>
+        : <button onClick={() => actionsRef.current?.focus()} type="button">Review latest state and retry</button>
+        : null}
     </div>
   ) : null;
 
@@ -471,10 +587,11 @@ export function GlobalRadarActions({
     return <>{feedbackMessage}<p>No administrator mutations are currently allowed for this signal.</p></>;
   }
 
+  const actionsLocked = pendingKey !== null || unknownRequest !== null;
   const formProps: ActionFormProps = {
     detail,
-    pending: pendingKey !== null,
-    run: (request) => void execute(request),
+    pending: actionsLocked,
+    run: execute,
     invalid,
   };
   const actionStateKey = `${detail.id}:${detail.revision}`;
@@ -488,7 +605,7 @@ export function GlobalRadarActions({
       {allowed.has("append_note") ? <NoteAction {...formProps} key={`note:${actionStateKey}`} /> : null}
       {allowed.has("merge") ? <MergeAction {...formProps} key={`merge:${actionStateKey}`} /> : null}
       {allowed.has("edit_watchlist") ? <WatchlistAction {...formProps} key={`watchlist:${actionStateKey}`} /> : null}
-      <GlobalRadarPromotionActions detail={detail} key={`promotion:${actionStateKey}`} pending={pendingKey !== null} run={(request) => void execute(request)} validationError={invalid} />
+      <GlobalRadarPromotionActions detail={detail} key={`promotion:${actionStateKey}`} pending={actionsLocked} run={execute} validationError={invalid} />
     </div>
   );
 }

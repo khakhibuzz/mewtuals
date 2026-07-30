@@ -1,5 +1,7 @@
 import {
+  directDemandAskTypeLookup,
   globalRadarDemandFamilyLookup,
+  precursorDevelopmentTypeLookup,
   scoreDemandPrecursor,
   scoreDirectDemand,
 } from "../../app/domain/global-radar";
@@ -130,6 +132,7 @@ export function canonicalizeGlobalRadarAdminClassification(
 
   if (value.signalClass === "direct_demand") {
     if (
+      !Object.prototype.hasOwnProperty.call(directDemandAskTypeLookup, signalType) ||
       Object.keys(value).some(
         (key) =>
           ![
@@ -183,6 +186,7 @@ export function canonicalizeGlobalRadarAdminClassification(
 
   if (value.signalClass === "demand_precursor") {
     if (
+      !Object.prototype.hasOwnProperty.call(precursorDevelopmentTypeLookup, signalType) ||
       Object.keys(value).some(
         (key) =>
           ![
@@ -211,6 +215,7 @@ export function canonicalizeGlobalRadarAdminClassification(
 
   if (value.signalClass === "ecosystem_momentum") {
     if (
+      signalType !== "ecosystem_direction" ||
       Object.keys(value).some(
         (key) =>
           !["signalClass", "signalType", "demandDomain", "components"].includes(

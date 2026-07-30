@@ -118,6 +118,137 @@ describe("GlobalRadarSignalDetail", () => {
     expect(responsePath.querySelector('a[href^="mailto:"]')).toBeNull();
     expect(responsePath).not.toHaveTextContent(/contact now|apply now|send/i);
   });
+
+  it("renders nested bounded specification, regulatory, and logistics values without raw JSON", () => {
+    const detail = globalRadarDetailFixture() as unknown as {
+      sections: Array<{ id: string; data: Record<string, unknown> }>;
+    };
+    const physical = detail.sections.find(
+      (section) => section.id === "physical_data_or_hardware_specifications",
+    );
+    const indiaFit = detail.sections.find(
+      (section) => section.id === "india_fit_reasoning_and_constraints",
+    );
+    const physicalData = physical?.data as {
+      items?: Array<Record<string, unknown>>;
+    };
+
+    physicalData.items![0].technicalSpecification = {
+      certification: {
+        standards: ["ISO 9001", "IEC 61508"],
+        audit: { country: "India", status: "documented" },
+        technicalIdentifier: "ISO_9001",
+        sourceUrl: "https://example.test/spec_sheet_v2",
+      },
+    };
+    indiaFit!.data.regulatoryFacts = {
+      exportReview: {
+        states: ["pending", "documented"],
+        owner: { jurisdiction: "India" },
+      },
+    };
+    indiaFit!.data.logisticsFacts = {
+      shipping: {
+        modes: ["sea", "air"],
+        packaging: { requirement: "shock rated" },
+      },
+    };
+
+    render(
+      <GlobalRadarSignalDetail
+        initialDetail={detail as never}
+        returnTo="/admin/global-demand-radar/direct-demand"
+      />,
+    );
+
+    const physicalRegion = screen.getByRole("region", {
+      name: "Physical-data or hardware specifications",
+    });
+    expect(within(physicalRegion).getByText("Standards")).toBeVisible();
+    expect(within(physicalRegion).getByText("IEC 61508")).toBeVisible();
+    expect(within(physicalRegion).getByText("Audit")).toBeVisible();
+    expect(within(physicalRegion).getAllByText("documented")).not.toHaveLength(0);
+    expect(within(physicalRegion).getByText("ISO_9001")).toBeVisible();
+    expect(within(physicalRegion).getByText("https://example.test/spec_sheet_v2")).toBeVisible();
+
+    const indiaFitRegion = screen.getByRole("region", {
+      name: "India-fit reasoning and constraints",
+    });
+    expect(within(indiaFitRegion).getByText("States")).toBeVisible();
+    expect(within(indiaFitRegion).getByText("Jurisdiction")).toBeVisible();
+    expect(within(indiaFitRegion).getByText("Modes")).toBeVisible();
+    expect(within(indiaFitRegion).getByText("shock rated")).toBeVisible();
+    expect(physicalRegion.querySelector("pre")).toBeNull();
+    expect(indiaFitRegion.querySelector("pre")).toBeNull();
+  });
+
+  it("caps defensive traversal before rendering over-deep or oversized nested values", () => {
+    const detail = globalRadarDetailFixture() as unknown as {
+      sections: Array<{ id: string; data: Record<string, unknown> }>;
+    };
+    const physical = detail.sections.find(
+      (section) => section.id === "physical_data_or_hardware_specifications",
+    );
+    const physicalData = physical?.data as {
+      items?: Array<Record<string, unknown>>;
+    };
+
+    physicalData.items![0].technicalSpecification = {
+      visible: {
+        levelTwo: {
+          levelThree: {
+            levelFour: {
+              levelFive: {
+                privateLeafThatMustNotRender: "private value",
+              },
+            },
+          },
+        },
+      },
+      boundedItems: Array.from({ length: 55 }, (_, index) => `Item ${index + 1}`),
+    };
+
+    render(
+      <GlobalRadarSignalDetail
+        initialDetail={detail as never}
+        returnTo="/admin/global-demand-radar/direct-demand"
+      />,
+    );
+
+    const region = screen.getByRole("region", {
+      name: "Physical-data or hardware specifications",
+    });
+    expect(within(region).getByText("Visible")).toBeVisible();
+    expect(within(region).getByText("Additional nested detail omitted.")).toBeVisible();
+    expect(within(region).getByText("Additional items omitted.")).toBeVisible();
+    expect(within(region).queryByText("Private value")).toBeNull();
+    expect(within(region).getByText("Item 50")).toBeVisible();
+    expect(within(region).queryByText("Item 51")).toBeNull();
+  });
+
+  it("shows an unrecorded evergreen value as not recorded instead of no", () => {
+    const detail = globalRadarDetailFixture() as unknown as {
+      sections: Array<{ id: string; data: Record<string, unknown> }>;
+    };
+    const timelineSection = detail.sections.find(
+      (section) => section.id === "scale_and_timeline",
+    );
+    const timeline = (timelineSection?.data.timeline ?? {}) as Record<string, unknown>;
+    timeline.evergreen = null;
+
+    render(
+      <GlobalRadarSignalDetail
+        initialDetail={detail as never}
+        returnTo="/admin/global-demand-radar/direct-demand"
+      />,
+    );
+
+    const region = screen.getByRole("region", { name: "Scale and timeline" });
+    const evergreenFact = within(region).getByText("Evergreen").closest("div");
+    expect(evergreenFact).not.toBeNull();
+    expect(within(evergreenFact!).getByText("Not recorded")).toBeVisible();
+    expect(within(evergreenFact!).queryByText("No", { exact: true })).toBeNull();
+  });
 });
 
 describe("Global Radar signal detail page", () => {

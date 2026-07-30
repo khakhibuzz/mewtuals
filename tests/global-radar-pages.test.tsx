@@ -198,6 +198,20 @@ describe("Global Radar pages", () => {
     });
   });
 
+  it("accepts one calendar day as an inclusive observed-through range", () => {
+    expect(parseGlobalRadarListQuery("direct_demand", {
+      observedFrom: "2026-07-30",
+      observedTo: "2026-07-30",
+    })).toMatchObject({
+      serviceFilters: {
+        observedFrom: "2026-07-30",
+        observedTo: "2026-07-30",
+      },
+      canonicalPath:
+        "/admin/global-demand-radar/direct-demand?observedFrom=2026-07-30&observedTo=2026-07-30",
+    });
+  });
+
   it.each([
     { unknown: "value" },
     { status: ["qualified", "monitoring"] },
@@ -209,7 +223,7 @@ describe("Global Radar pages", () => {
     { demandDomain: "not_a_domain" },
     { capability: "not_a_capability" },
     { observedFrom: "2026-02-30" },
-    { observedFrom: "2026-07-30", observedTo: "2026-07-30" },
+    { observedFrom: "2026-07-31", observedTo: "2026-07-30" },
     { expiresBefore: "2026-13-01" },
     { page: "0" },
     { page: "01" },

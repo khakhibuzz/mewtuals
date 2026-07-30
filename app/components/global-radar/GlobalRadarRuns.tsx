@@ -36,36 +36,72 @@ function noticeCount(count: number | undefined) {
   return `${count} source ${count === 1 ? "error" : "errors"}`;
 }
 
+function isNonNegativeInteger(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 export function GlobalRadarRuns({
   initialRuns,
   approvedThemes,
+  page = 1,
 }: {
   initialRuns: readonly GlobalRadarRunItem[];
   approvedThemes: readonly string[];
+  page?: number;
 }) {
   const [runs, setRuns] = useState([...initialRuns]);
   const [theme, setTheme] = useState("");
   const [pending, setPending] = useState(false);
   const [unknownOutcome, setUnknownOutcome] = useState(false);
   const [notice, setNotice] = useState<{ kind: "status" | "alert"; text: string } | null>(null);
-  const requestId = useRef<string | null>(null);
+  const requestBody = useRef<string | null>(null);
+
+  async function refreshRuns() {
+    const response = await fetch(`/api/admin/global-demand-radar/runs?page=${page}`, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+    });
+    const value: unknown = await response.json().catch(() => null);
+    if (!response.ok || !isGlobalRadarRecord(value) || value.ok !== true ||
+        value.outcome !== "listed" || !Array.isArray(value.runs) ||
+        !value.runs.every(isGlobalRadarRunItem) || value.page !== page ||
+        !isNonNegativeInteger(value.total) || !isNonNegativeInteger(value.pageSize) ||
+        value.pageSize === 0) return false;
+    setRuns(value.runs);
+    return true;
+  }
 
   async function queue() {
     if (pending) return;
-    requestId.current ??= globalThis.crypto.randomUUID();
+    const retryingUnknownRequest = unknownOutcome && requestBody.current !== null;
+    requestBody.current ??= JSON.stringify({
+      requestId: globalThis.crypto.randomUUID(),
+      ...(theme ? { theme } : {}),
+    });
+    const exactRequestBody = requestBody.current;
     setPending(true);
     setNotice(null);
     try {
+      if (retryingUnknownRequest && !await refreshRuns()) {
+        setNotice({
+          kind: "alert",
+          text: "The manual Radar run outcome is still unknown because the latest run list could not be refreshed.",
+        });
+        return;
+      }
       const response = await fetch("/api/admin/global-demand-radar/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId: requestId.current,
-          ...(theme ? { theme } : {}),
-        }),
+        body: exactRequestBody,
       });
       const value: unknown = await response.json().catch(() => null);
       if (!response.ok) {
+        if (response.status >= 500) {
+          setUnknownOutcome(true);
+          setNotice({ kind: "alert", text: "The manual Radar run outcome is unknown. Resubmit the same request." });
+          return;
+        }
+        requestBody.current = null;
         setUnknownOutcome(false);
         setNotice({
           kind: "alert",
@@ -77,14 +113,15 @@ export function GlobalRadarRuns({
       }
       if (!isGlobalRadarRecord(value) || value.ok !== true ||
           !["queued", "replayed"].includes(String(value.outcome)) ||
-          !isGlobalRadarRunItem(value.run)) {
+          !isGlobalRadarRunItem(value.run) || value.run.trigger !== "manual" ||
+          value.run.scanMode !== "manual") {
         setUnknownOutcome(true);
         setNotice({ kind: "alert", text: "The manual Radar run outcome is unknown. Resubmit the same request." });
         return;
       }
       const safeRun = value.run;
       setRuns((current) => [safeRun, ...current.filter(({ id }) => id !== safeRun.id)]);
-      requestId.current = null;
+      requestBody.current = null;
       setUnknownOutcome(false);
       setNotice({
         kind: "status",

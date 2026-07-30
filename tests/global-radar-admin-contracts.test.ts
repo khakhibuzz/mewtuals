@@ -109,7 +109,7 @@ describe("Global Radar administrator classification contracts", () => {
     const direct = canonicalizeGlobalRadarAdminClassification(
       {
         signalClass: "direct_demand",
-        signalType: "public_request",
+        signalType: "procurement",
         demandDomain: "robot_learning_and_manipulation",
         components: {
           explicitness: 90,
@@ -175,6 +175,57 @@ describe("Global Radar administrator classification contracts", () => {
       signalClass: "ecosystem_momentum",
       components: { taxonomyConsistency: 85, evidenceQuality: 80 },
     });
+    expect(canonicalizeGlobalRadarAdminClassification(
+      {
+        signalClass: "direct_demand",
+        signalType: "funding",
+        demandDomain: "robot_learning_and_manipulation",
+        components: {
+          explicitness: 90,
+          evidenceConfidence: 85,
+          freshness: 80,
+          actionability: 80,
+          indiaFit: 75,
+          commercialPotential: 75,
+          repeatability: 70,
+          responseAccessibility: 70,
+          strategicLearning: 70,
+          complianceComplexity: 20,
+        },
+        activity: {
+          evergreen: false,
+          expiresAt: "2026-09-30T00:00:00.000Z",
+          reobserveBy: null,
+        },
+      },
+      now,
+    )).toBeNull();
+    expect(canonicalizeGlobalRadarAdminClassification(
+      {
+        signalClass: "demand_precursor",
+        signalType: "supplier_registration",
+        demandDomain: "robot_learning_and_manipulation",
+        components: {
+          evidenceConfidence: 80,
+          proximityToExternalDemand: 70,
+          fundingDeploymentMomentum: 80,
+          likelyDataHardwareIntensity: 70,
+          indiaFit: 80,
+          estimatedTimeHorizon: 80,
+          strategicRelevance: 75,
+        },
+      },
+      now,
+    )).toBeNull();
+    expect(canonicalizeGlobalRadarAdminClassification(
+      {
+        signalClass: "ecosystem_momentum",
+        signalType: "platform_launch",
+        demandDomain: "robot_learning_and_manipulation",
+        components: { taxonomyConsistency: 85, evidenceQuality: 80 },
+      },
+      now,
+    )).toBeNull();
   });
 
   it("derives momentum windows, components, score, and gates from eligible evidence", () => {

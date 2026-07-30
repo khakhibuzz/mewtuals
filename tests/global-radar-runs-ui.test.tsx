@@ -41,6 +41,15 @@ const run: GlobalRadarRunItem = {
   updatedAt: "2026-07-30T04:35:00.000Z",
 };
 
+const manualRun: GlobalRadarRunItem = {
+  ...run,
+  status: "queued",
+  trigger: "manual",
+  scanMode: "manual",
+  startedAt: null,
+  completedAt: null,
+};
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("GlobalRadarRuns", () => {
@@ -75,7 +84,7 @@ describe("GlobalRadarRuns", () => {
         JSON.stringify({
           ok: true,
           outcome: "queued",
-          run: { ...run, id: requestId, trigger: "manual", scanMode: "manual" },
+          run: { ...manualRun, id: requestId },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -114,7 +123,7 @@ describe("GlobalRadarRuns", () => {
     const requestId = "89ef0f37-c99b-40f6-9c9f-4d809551f4f5";
     vi.stubGlobal("crypto", { randomUUID: vi.fn(() => requestId) });
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ ok: true, outcome: "replayed", run }), {
+      new Response(JSON.stringify({ ok: true, outcome: "replayed", run: manualRun }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
@@ -128,7 +137,41 @@ describe("GlobalRadarRuns", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("already queued");
   });
 
-  it("reuses one request UUID after network or malformed unknown success and rotates only after terminal success", async () => {
+  it("rotates the request UUID after a definitive client rejection", async () => {
+    const user = userEvent.setup();
+    const firstId = "89ef0f37-c99b-40f6-9c9f-4d809551f4f5";
+    const secondId = "89ef0f37-c99b-40f6-9c9f-4d809551f4f6";
+    const randomUUID = vi.fn().mockReturnValueOnce(firstId).mockReturnValueOnce(secondId);
+    vi.stubGlobal("crypto", { randomUUID });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, outcome: "invalid_request" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, outcome: "queued", run: manualRun }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<GlobalRadarRuns initialRuns={[]} approvedThemes={[]} />);
+
+    await user.click(screen.getByRole("button", { name: "Queue manual Radar run" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not be queued");
+    expect(screen.getByLabelText("Optional theme")).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Queue manual Radar run" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("queued");
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string).requestId).toBe(firstId);
+    expect(JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string).requestId).toBe(secondId);
+    expect(randomUUID).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes before replaying the exact request after a network-unknown outcome", async () => {
     const user = userEvent.setup();
     const firstId = "89ef0f37-c99b-40f6-9c9f-4d809551f4f5";
     const secondId = "89ef0f37-c99b-40f6-9c9f-4d809551f4f6";
@@ -140,13 +183,26 @@ describe("GlobalRadarRuns", () => {
       .fn()
       .mockRejectedValueOnce(new Error("unknown"))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ ok: true, outcome: "queued", run }), {
+        new Response(JSON.stringify({
+          ok: true,
+          outcome: "listed",
+          page: 3,
+          pageSize: 25,
+          total: 0,
+          runs: [],
+        }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ ok: true, outcome: "queued", run }), {
+        new Response(JSON.stringify({ ok: true, outcome: "queued", run: manualRun }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, outcome: "queued", run: manualRun }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),
@@ -156,6 +212,7 @@ describe("GlobalRadarRuns", () => {
       <GlobalRadarRuns
         initialRuns={[]}
         approvedThemes={["robot_teleoperation_demonstrations"]}
+        page={3}
       />,
     );
 
@@ -173,12 +230,148 @@ describe("GlobalRadarRuns", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("queued");
     await user.click(screen.getByRole("button", { name: "Queue manual Radar run" }));
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toEqual(
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[1]).toEqual([
+      "/api/admin/global-demand-radar/runs?page=3",
+      expect.objectContaining({ method: "GET" }),
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[2]![1]!.body as string)).toEqual(
       JSON.parse(fetchMock.mock.calls[0]![1]!.body as string),
     );
     expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).requestId).toBe(firstId);
-    expect(JSON.parse(fetchMock.mock.calls[2]![1]!.body as string).requestId).toBe(secondId);
+    expect(JSON.parse(fetchMock.mock.calls[3]![1]!.body as string).requestId).toBe(secondId);
     expect(randomUUID).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a server error as unknown and refreshes before replaying the exact UUID and body", async () => {
+    const user = userEvent.setup();
+    const requestId = "89ef0f37-c99b-40f6-9c9f-4d809551f4f5";
+    vi.stubGlobal("crypto", { randomUUID: vi.fn(() => requestId) });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, outcome: "internal_error" }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          ok: true,
+          outcome: "listed",
+          page: 1,
+          pageSize: 25,
+          total: 0,
+          runs: [],
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, outcome: "queued", run: manualRun }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <GlobalRadarRuns
+        initialRuns={[]}
+        approvedThemes={["robot_teleoperation_demonstrations"]}
+      />,
+    );
+
+    await user.selectOptions(
+      screen.getByLabelText("Optional theme"),
+      "robot_teleoperation_demonstrations",
+    );
+    await user.click(screen.getByRole("button", { name: "Queue manual Radar run" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("outcome is unknown");
+    expect(screen.getByLabelText("Optional theme")).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Retry same manual request" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("queued");
+    expect(fetchMock.mock.calls[1]).toEqual([
+      "/api/admin/global-demand-radar/runs?page=1",
+      expect.objectContaining({ method: "GET" }),
+    ]);
+    expect((fetchMock.mock.calls[2]![1] as RequestInit).body).toBe(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body,
+    );
+    expect(vi.mocked(globalThis.crypto.randomUUID)).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a mismatched manual result and wrong-page refresh before an exact replay", async () => {
+    const user = userEvent.setup();
+    const requestId = "89ef0f37-c99b-40f6-9c9f-4d809551f4f5";
+    vi.stubGlobal("crypto", { randomUUID: vi.fn(() => requestId) });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          ok: true,
+          outcome: "queued",
+          run,
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          ok: true,
+          outcome: "listed",
+          page: 2,
+          pageSize: 25,
+          total: 0,
+          runs: [],
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          ok: true,
+          outcome: "listed",
+          page: 1,
+          pageSize: 25,
+          total: 0,
+          runs: [],
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, outcome: "replayed", run: manualRun }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<GlobalRadarRuns initialRuns={[]} approvedThemes={[]} />);
+
+    await user.click(screen.getByRole("button", { name: "Queue manual Radar run" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("outcome is unknown");
+    expect(screen.getByLabelText("Optional theme")).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Retry same manual request" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("still unknown");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Retry same manual request" })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole("button", { name: "Retry same manual request" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("already queued");
+    expect(fetchMock.mock.calls[2]).toEqual([
+      "/api/admin/global-demand-radar/runs?page=1",
+      expect.objectContaining({ method: "GET" }),
+    ]);
+    expect((fetchMock.mock.calls[3]![1] as RequestInit).body).toBe(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body,
+    );
+    expect(vi.mocked(globalThis.crypto.randomUUID)).toHaveBeenCalledTimes(1);
   });
 });
