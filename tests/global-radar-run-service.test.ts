@@ -41,6 +41,11 @@ const config: GlobalRadarConfig = Object.freeze({
   },
 });
 
+const PLANNED_THRESHOLDS = Object.freeze({
+  version: "global-radar-thresholds-v1" as const,
+  ...config.thresholds,
+});
+
 function planningInput(scanMode: RadarPlan["scanMode"] = "daily") {
   return {
     now: NOW,
@@ -111,7 +116,10 @@ function repositoryDouble(
   return {
     queueRun: vi.fn(),
     claimRun: vi.fn(),
-    lookupCompletionReplay: vi.fn(async () => ({ outcome: "not_terminal" })),
+    lookupCompletionReplay: vi.fn(async () => ({
+      outcome: "not_terminal",
+      plannedThresholds: PLANNED_THRESHOLDS,
+    })),
     completeRun: vi.fn(),
     failRun: vi.fn(),
     abandonRun: vi.fn(),
@@ -122,10 +130,11 @@ function repositoryDouble(
 function createService(
   repository: GlobalRadarRunRepositoryPort,
   validateBatch = vi.fn(),
+  serviceConfig: GlobalRadarConfig = config,
 ) {
   return createGlobalRadarRunService({
     repository,
-    config,
+    config: serviceConfig,
     adminEmails: ["admin@example.com"],
     now: () => NOW,
     validateBatch,
@@ -322,11 +331,11 @@ describe("Global Radar run service", () => {
     });
     expect(validateBatch).toHaveBeenCalledWith(
       body,
-      expect.objectContaining({
+      {
         runId: validated.runId,
         now: NOW,
-        config: expect.not.objectContaining({ workerSecret: expect.anything() }),
-      }),
+        thresholds: PLANNED_THRESHOLDS,
+      },
     );
     expect(repository.completeRun).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -335,6 +344,76 @@ describe("Global Radar run service", () => {
         submissionHash: validated.canonicalSubmissionHash,
       }),
     );
+  });
+
+  it("validates a fresh completion with immutable planned thresholds after runtime config drift", async () => {
+    const plannedThresholds = Object.freeze({
+      version: "global-radar-thresholds-v1" as const,
+      direct_demand: 41,
+      demand_precursor: 42,
+      ecosystem_momentum: 43,
+    });
+    const driftedConfig: GlobalRadarConfig = Object.freeze({
+      ...config,
+      thresholds: Object.freeze({
+        direct_demand: 91,
+        demand_precursor: 92,
+        ecosystem_momentum: 93,
+      }),
+    });
+    const validated: GlobalRadarValidatedBatchPort = {
+      runId: "00000000-0000-4000-8000-000000000010",
+      planFingerprint: "b".repeat(64),
+      canonicalSubmissionHash: "c".repeat(64),
+      executedQueries: [],
+      entities: [],
+      signals: [],
+      sourceErrors: [],
+      rejections: {},
+    };
+    const repository = repositoryDouble({
+      lookupCompletionReplay: vi.fn(async () => ({
+        outcome: "not_terminal" as const,
+        plannedThresholds,
+      })),
+      completeRun: vi.fn(async (input) => ({
+        outcome: "completed" as const,
+        run: safeRun({
+          status: "succeeded",
+          completedAt: input.now,
+          planFingerprint: input.planFingerprint,
+        }),
+      })),
+    });
+    const validateBatch = vi.fn(() => validated);
+    const service = createService(repository, validateBatch, driftedConfig);
+    const authorization = service.authorizeWorker(
+      `Bearer ${driftedConfig.workerSecret}`,
+    );
+    const body = {
+      schemaVersion: "global-radar-batch-v1",
+      promptVersion: "codex-public-web-v1",
+      taxonomyVersion: "global-radar-v1",
+      runId: validated.runId,
+      planFingerprint: validated.planFingerprint,
+      executedQueries: [],
+      entities: [],
+      signals: [],
+      sourceErrors: [],
+    };
+
+    await expect(
+      service.complete(authorization, {
+        runId: validated.runId,
+        leaseToken: "raw-lease-token",
+        batch: body,
+      }),
+    ).resolves.toMatchObject({ outcome: "completed" });
+    expect(validateBatch).toHaveBeenCalledWith(body, {
+      runId: validated.runId,
+      now: NOW,
+      thresholds: plannedThresholds,
+    });
   });
 
   it("replays an exact durable completion before a later clock can revalidate the saved batch", async () => {

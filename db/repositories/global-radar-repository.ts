@@ -23,6 +23,7 @@ import {
   radarRunTriggers,
   radarScanModes,
   type PersistableGlobalRadarBatch,
+  type GlobalRadarThresholds,
   type MomentumPolicy,
   type RadarPlan,
   type RadarRunStatus,
@@ -200,7 +201,10 @@ export type RadarRunMutationResult =
   | { outcome: "not_found" };
 
 export type GlobalRadarCompletionReplayLookupResult =
-  | { outcome: "not_terminal" }
+  | {
+      outcome: "not_terminal";
+      plannedThresholds: GlobalRadarThresholds;
+    }
   | { outcome: "replayed"; run: SafeRadarRun }
   | { outcome: "conflict"; reason: RadarRunConflictReason; run?: SafeRadarRun }
   | { outcome: "not_found" };
@@ -939,7 +943,21 @@ export function createGlobalRadarRepository(
         .limit(1);
       if (!run) return { outcome: "not_found" };
       if (run.status === "queued" || run.status === "running") {
-        return { outcome: "not_terminal" };
+        const plan = parseGlobalRadarPlanSnapshot(
+          run.planSnapshot,
+          run.planFingerprint,
+        );
+        if (!plan) {
+          return {
+            outcome: "conflict",
+            reason: "invalid_input",
+            run: toSafeRun(run),
+          };
+        }
+        return {
+          outcome: "not_terminal",
+          plannedThresholds: plan.thresholds,
+        };
       }
       return terminalCompletionResult(run, {
         leaseTokenHash: inputLeaseHash,
@@ -1039,7 +1057,13 @@ export function createGlobalRadarRepository(
             run: toSafeRun(run),
           };
         }
+        const persistedPlan = parseGlobalRadarPlanSnapshot(
+          run.planSnapshot,
+          run.planFingerprint,
+        );
         if (
+          !persistedPlan ||
+          canonical.batch.signals.length > persistedPlan.resultLimit ||
           !globalRadarExecutedQueriesMatchPlan(
             canonical.batch.executedQueries,
             run.planSnapshot,

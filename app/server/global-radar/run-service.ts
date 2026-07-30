@@ -16,6 +16,7 @@ import {
   parseGlobalRadarPlanSnapshot,
   planGlobalRadarRun,
   type GlobalRadarTheme,
+  type GlobalRadarThresholds,
   type RadarCoverageState,
   type RadarPlan,
   type PersistableGlobalRadarBatch,
@@ -73,7 +74,7 @@ export type GlobalRadarValidatedBatchPort = PersistableGlobalRadarBatch;
 export type GlobalRadarValidationContextPort = Readonly<{
   runId: string;
   now: Date;
-  config: ReturnType<typeof publicGlobalRadarConfig>;
+  thresholds: GlobalRadarThresholds;
 }>;
 
 export type GlobalRadarQueueRunPortInput = Readonly<{
@@ -104,7 +105,10 @@ type RunMutationResult =
   | { outcome: "conflict"; reason: string; run?: unknown };
 
 type CompletionReplayLookupResult =
-  | { outcome: "not_terminal" }
+  | {
+      outcome: "not_terminal";
+      plannedThresholds: GlobalRadarThresholds;
+    }
   | { outcome: "replayed"; run: unknown }
   | { outcome: "not_found" }
   | { outcome: "conflict"; reason: string; run?: unknown };
@@ -468,7 +472,7 @@ export function createGlobalRadarRunService(
       batch = dependencies.validateBatch(input.batch, {
         runId: runId.data,
         now: completedAt,
-        config: publicConfig,
+        thresholds: replay.plannedThresholds,
       });
     } catch {
       return { outcome: "invalid" as const };

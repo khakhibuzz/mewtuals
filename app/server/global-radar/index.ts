@@ -146,9 +146,9 @@ export function createGlobalRadarApplicationDependencies(
       clock: { now: () => new Date(context.now.getTime()) },
       expectedRunId: context.runId,
       qualificationThresholds: {
-        directDemand: context.config.thresholds.direct_demand,
-        precursor: context.config.thresholds.demand_precursor,
-        momentum: context.config.thresholds.ecosystem_momentum,
+        directDemand: context.thresholds.direct_demand,
+        precursor: context.thresholds.demand_precursor,
+        momentum: context.thresholds.ecosystem_momentum,
       },
     });
   return Object.freeze({

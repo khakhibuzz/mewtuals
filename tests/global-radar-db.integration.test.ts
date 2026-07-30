@@ -61,6 +61,13 @@ function testRadarPlan(
   scanMode: QueueGlobalRadarRunInput["scanMode"] = "daily",
   administratorRequestId?: string,
   identityScope = "default",
+  resultLimit = 20,
+  thresholds: RadarPlan["thresholds"] = {
+    version: "global-radar-thresholds-v1",
+    direct_demand: 70,
+    demand_precursor: 65,
+    ecosystem_momentum: 70,
+  },
 ) {
   const scope = createHash("sha256").update(identityScope).digest("hex").slice(0, 12);
   return planGlobalRadarRun({
@@ -76,14 +83,9 @@ function testRadarPlan(
     themes: ["robot_teleoperation_demonstrations"],
     enabledSourceAdapters: ["codex_public_web"],
     sourceFamilies: ["official_company_material"],
-    resultLimit: 20,
+    resultLimit,
     scoreVersion: "global-radar-score-v1",
-    thresholds: {
-      version: "global-radar-thresholds-v1",
-      direct_demand: 70,
-      demand_precursor: 65,
-      ecosystem_momentum: 70,
-    },
+    thresholds,
     },
     coverageState: {
       countryLastCoveredAt: {},
@@ -169,12 +171,18 @@ async function closeIndependentDatabases(databases: IndependentDatabase[]) {
 function queueInput(
   suffix: string,
   overrides: Partial<QueueGlobalRadarRunInput> = {},
+  options: {
+    resultLimit?: number;
+    thresholds?: RadarPlan["thresholds"];
+  } = {},
 ): QueueGlobalRadarRunInput {
   const trigger = overrides.trigger ?? "scheduled";
   const plan = testRadarPlan(
     overrides.scanMode ?? "daily",
     overrides.administratorRequestId ?? undefined,
     suffix,
+    options.resultLimit,
+    options.thresholds,
   );
   const queries = generateGlobalRadarQueries(plan);
   const unique = <Value>(values: readonly Value[]) => [...new Set(values)];
@@ -1701,6 +1709,89 @@ describe("PostgreSQL Global Radar repository completion and safe reads", () => {
     ).resolves.toMatchObject({ outcome: "conflict", reason: "lease_expired" });
   });
 
+  it("rejects canonical signals beyond the immutable planned result limit without writes", async () => {
+    const now = new Date("2026-07-29T18:30:00.000Z");
+    await repository.queueRun(
+      queueInput("complete-result-limit", { now }, { resultLimit: 1 }),
+    );
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+
+    const first = validPersistenceBatch(claim.run.id);
+    const second = validPersistenceBatch(claim.run.id, {
+      entityRef: "entity-beta",
+      entityName: "Beta Robotics",
+      websiteUrl: "https://beta.example/about",
+      linkedinOrganizationUrl: "https://www.linkedin.com/company/beta-robotics/",
+      stableIdentifierValue: "beta-robotics",
+      sourceUrl: "https://beta.example/public-request",
+      externalSignalId: "signal-beta-request",
+    });
+    second.entities[0]!.canonicalCorporateGroupId = "group:beta-robotics";
+    const overLimitBatch = rehashPersistenceBatch({
+      ...first,
+      entities: [...first.entities, ...second.entities],
+      signals: [...first.signals, ...second.signals],
+    });
+    const graphBefore = await graphRowCounts();
+    const runBefore = await runningPersistenceSnapshot(claim.run.id);
+
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          claim.run.id,
+          claim.privateClaim.leaseToken,
+          new Date(now.getTime() + 60_000),
+        ),
+        planFingerprint: overLimitBatch.planFingerprint,
+        submissionHash: overLimitBatch.canonicalSubmissionHash,
+        batchFingerprint: overLimitBatch.canonicalSubmissionHash,
+        batch: overLimitBatch,
+      }),
+    ).resolves.toMatchObject({ outcome: "conflict", reason: "invalid_input" });
+    expect(await graphRowCounts()).toEqual(graphBefore);
+    expect(await runningPersistenceSnapshot(claim.run.id)).toEqual(runBefore);
+  });
+
+  it("replays an exact completion accepted at the immutable planned result limit", async () => {
+    const now = new Date("2026-07-29T18:45:00.000Z");
+    await repository.queueRun(
+      queueInput("complete-result-limit-replay", { now }, { resultLimit: 1 }),
+    );
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+    const batch = validPersistenceBatch(claim.run.id);
+    const input = {
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(now.getTime() + 60_000),
+      ),
+      planFingerprint: batch.planFingerprint,
+      submissionHash: batch.canonicalSubmissionHash,
+      batchFingerprint: batch.canonicalSubmissionHash,
+      batch,
+    };
+
+    await expect(repository.completeRun(input)).resolves.toMatchObject({
+      outcome: "completed",
+      run: { numberSignalsFound: 1 },
+    });
+    const graphAfterCompletion = await graphRowCounts();
+    const runAfterCompletion = await runningPersistenceSnapshot(claim.run.id);
+
+    await expect(
+      repository.completeRun({
+        ...input,
+        now: new Date(now.getTime() + 3 * 60 * 60 * 1_000),
+      }),
+    ).resolves.toMatchObject({ outcome: "replayed" });
+    expect(await graphRowCounts()).toEqual(graphAfterCompletion);
+    expect(await runningPersistenceSnapshot(claim.run.id)).toEqual(
+      runAfterCompletion,
+    );
+  });
+
   it("replays exact terminal completion identity after expiry and rejects every changed identity", async () => {
     const now = new Date("2026-07-29T19:00:00.000Z");
     await repository.queueRun(queueInput("complete-replay", { now }));
@@ -1767,7 +1858,19 @@ describe("PostgreSQL Global Radar repository completion and safe reads", () => {
 
   it("looks up an exact durable completion before replay validation and rejects a changed saved batch", async () => {
     const now = new Date("2026-07-29T19:30:00.000Z");
-    await repository.queueRun(queueInput("complete-replay-lookup", { now }));
+    const plannedThresholds = {
+      version: "global-radar-thresholds-v1" as const,
+      direct_demand: 41,
+      demand_precursor: 42,
+      ecosystem_momentum: 43,
+    };
+    await repository.queueRun(
+      queueInput(
+        "complete-replay-lookup",
+        { now },
+        { thresholds: plannedThresholds },
+      ),
+    );
     const claim = await repository.claimRun({ now });
     if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
     const batchFingerprint = HASH_B;
@@ -1787,7 +1890,7 @@ describe("PostgreSQL Global Radar repository completion and safe reads", () => {
         planFingerprint: input.planFingerprint,
         batchFingerprint,
       }),
-    ).resolves.toEqual({ outcome: "not_terminal" });
+    ).resolves.toEqual({ outcome: "not_terminal", plannedThresholds });
     await expect(repository.completeRun(input)).resolves.toMatchObject({
       outcome: "completed",
     });
