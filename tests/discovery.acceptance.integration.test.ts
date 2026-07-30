@@ -13,6 +13,7 @@ import {
 } from "../app/server/discovery-route";
 import { createDiscoveryService } from "../app/server/discovery-service";
 import { closeDb, getDb } from "../db/client";
+import { writeDiscoveryCandidates } from "../db/repositories/discovery-candidate-writer";
 import { createDiscoveryRepository } from "../db/repositories/discovery-repository";
 import {
   discoveryCandidateIdentifiers,
@@ -185,6 +186,10 @@ function creatorCandidate(): DiscoveryCandidateInput {
 }
 
 describe("Mewtuals discovery acceptance selection", () => {
+  it("keeps candidate persistence behind the shared transaction-scoped writer", () => {
+    expect(writeDiscoveryCandidates).toBeTypeOf("function");
+  });
+
   it("keeps PostgreSQL acceptance out of unit tests and in both database suites", async () => {
     const packageJson = JSON.parse(
       await readFile(resolve(process.cwd(), "package.json"), "utf8"),
@@ -211,6 +216,78 @@ describe("Mewtuals discovery control-plane acceptance", () => {
     } finally {
       await closeDb();
     }
+  });
+
+  it("reports only the V1 identity-group leader as newly created", async () => {
+    const repository = createDiscoveryRepository(database);
+    const now = new Date("2026-07-22T05:45:00.000Z");
+    const run = await repository.queueRun({
+      externalRunKey: `discovery-writer-group-${testId}`,
+      trigger: "trial",
+      now,
+      geography: `${geography} Writer Group`,
+      candidateType: "company",
+      sourcesUsed: ["characterization"],
+      requestedCount: 2,
+      companyPercentage: 100,
+      requestedByEmail: adminEmail,
+    });
+    createdRunIds.add(run.id);
+    const websiteUrl = `https://writer-group-${compactTestId}.example`;
+    const common = {
+      type: "company" as const,
+      websiteUrl,
+      primarySocialUrl: null,
+      linkedinUrl: null,
+      discoveredDescription: "V1 grouped Discovery writer characterization.",
+      category: "AI",
+      subcategory: null,
+      geography: `${geography} Writer Group`,
+      discoveryScore: 80,
+      rawMetadata: {},
+    };
+
+    const result = await database.transaction((transaction) =>
+      writeDiscoveryCandidates(transaction, {
+        runId: run.id,
+        now,
+        candidates: [
+          {
+            ...common,
+            name: "Writer Group Leader",
+            canonicalUrl: websiteUrl,
+            sourceName: "Characterization A",
+            sourceUrl: `https://writer-source-a-${compactTestId}.example/result`,
+          },
+          {
+            ...common,
+            name: "Writer Group Duplicate",
+            canonicalUrl: `${websiteUrl}/profile`,
+            sourceName: "Characterization B",
+            sourceUrl: `https://writer-source-b-${compactTestId}.example/result`,
+          },
+        ],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      outcome: "written",
+      newCount: 1,
+      duplicateCount: 1,
+      candidates: [
+        { candidateIndex: 0, created: true },
+        { candidateIndex: 1, created: false },
+      ],
+    });
+    if (result.outcome === "written") {
+      for (const { candidateId } of result.candidates) {
+        createdCandidateIds.add(candidateId);
+      }
+    }
+
+    await cleanupDiscoveryAcceptanceRows();
+    createdCandidateIds.clear();
+    createdRunIds.clear();
   });
 
   it("abandons a running discovery job when its private lease is irrecoverably lost", async () => {

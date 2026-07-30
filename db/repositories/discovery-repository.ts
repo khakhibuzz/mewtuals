@@ -7,13 +7,12 @@ import {
   inArray,
   lt,
   lte,
-  or,
+  ne,
   sql,
   type SQL,
 } from "drizzle-orm";
 
 import {
-  candidateIdentifiers,
   candidateStatuses,
   type DiscoveryBatchCandidate,
   type DiscoveryCandidate as DomainDiscoveryCandidate,
@@ -22,7 +21,6 @@ import type { MewtualsDatabase } from "../client";
 import { getDb } from "../client";
 import {
   candidateResearchVersions,
-  discoveryCandidateIdentifiers,
   discoveryCandidates,
   discoveryCandidateSources,
   discoveryRuns,
@@ -33,6 +31,7 @@ import type {
   DiscoveryCandidateSource,
   DiscoveryRun,
 } from "../types";
+import { writeDiscoveryCandidates } from "./discovery-candidate-writer";
 
 export const MAX_DISCOVERY_ADMIN_PAGE = 100;
 
@@ -225,43 +224,6 @@ function isActiveRunUniqueViolation(error: unknown): boolean {
   return false;
 }
 
-function normalizedCandidateName(name: string): string {
-  return name.trim().replace(/\s+/g, " ").toLocaleLowerCase("en");
-}
-
-function canonicalIdentityKey(
-  identifier: ReturnType<typeof candidateIdentifiers>[number],
-): string {
-  return `${identifier.kind}:${identifier.value}`;
-}
-
-function displayCanonicalUrl(
-  candidate: DomainDiscoveryCandidate,
-  primaryKind: ReturnType<typeof candidateIdentifiers>[number]["kind"],
-): string {
-  if (primaryKind === "website_host") {
-    return candidate.websiteUrl ?? candidate.canonicalUrl;
-  }
-  if (primaryKind === "linkedin_url") {
-    return candidate.linkedinUrl ?? candidate.canonicalUrl;
-  }
-  if (primaryKind === "social_url") {
-    return candidate.primarySocialUrl ?? candidate.canonicalUrl;
-  }
-  return candidate.canonicalUrl;
-}
-
-function identifierRank(
-  candidateType: DomainDiscoveryCandidate["type"],
-  kind: ReturnType<typeof candidateIdentifiers>[number]["kind"],
-): number {
-  const priorities =
-    candidateType === "company"
-      ? ["website_host", "linkedin_url", "social_url", "canonical"]
-      : ["social_url", "canonical", "linkedin_url", "website_host"];
-  return priorities.indexOf(kind);
-}
-
 function boundedSourceErrors(sourceErrors: readonly DiscoverySourceError[]) {
   return sourceErrors.slice(0, 20).map((sourceError) => ({
     sourceName: sourceError.sourceName.slice(0, 100),
@@ -380,7 +342,11 @@ export function createDiscoveryRepository(
               .select({ id: discoveryRuns.id })
               .from(discoveryRuns)
               .where(
-                and(eq(discoveryRuns.status, "queued"), ...selectors),
+                and(
+                  eq(discoveryRuns.status, "queued"),
+                  ne(discoveryRuns.trigger, "radar_promotion"),
+                  ...selectors,
+                ),
               )
               .orderBy(
                 sql`case ${discoveryRuns.trigger}
@@ -511,451 +477,25 @@ export function createDiscoveryRepository(
           };
         }
 
-        const preparedCandidates = input.candidates.map(
-          (candidate, candidateIndex) => {
-            const identifiers = candidateIdentifiers(candidate);
-            const primaryIdentifier = identifiers[0];
-            if (!primaryIdentifier) {
-              throw new Error("Discovery candidate has no stable identifier.");
-            }
-            return {
-              candidate,
-              candidateIndex,
-              identifiers,
-              primaryIdentifier,
-            };
-          },
-        );
-        const identifierValuesByType = new Map<
-          DomainDiscoveryCandidate["type"],
-          Set<string>
-        >();
-        for (const { candidate, identifiers } of preparedCandidates) {
-          const values =
-            identifierValuesByType.get(candidate.type) ?? new Set<string>();
-          for (const { value } of identifiers) values.add(value);
-          identifierValuesByType.set(candidate.type, values);
-        }
-        const identifierSelectors = [...identifierValuesByType.entries()].map(
-          ([candidateType, values]) =>
-            and(
-              eq(discoveryCandidateIdentifiers.candidateType, candidateType),
-              inArray(discoveryCandidateIdentifiers.normalizedValue, [
-                ...values,
-              ]),
-            ),
-        );
-        const matchedIdentifiers =
-          identifierSelectors.length === 0
-            ? []
-            : await transaction
-                .select({
-                  candidateId: discoveryCandidateIdentifiers.candidateId,
-                  candidateType: discoveryCandidateIdentifiers.candidateType,
-                  kind: discoveryCandidateIdentifiers.kind,
-                  normalizedValue:
-                    discoveryCandidateIdentifiers.normalizedValue,
-                })
-                .from(discoveryCandidateIdentifiers)
-                .where(or(...identifierSelectors));
-        const candidateIdByIdentifier = new Map(
-          matchedIdentifiers.map((identifier) => [
-            `${identifier.candidateType}:${identifier.normalizedValue}`,
-            identifier.candidateId,
-          ]),
-        );
-        const matchedCandidateIds = [
-          ...new Set(
-            matchedIdentifiers.map(({ candidateId }) => candidateId),
-          ),
-        ].sort();
-        const lockedCandidates =
-          matchedCandidateIds.length === 0
-            ? []
-            : await transaction
-                .select()
-                .from(discoveryCandidates)
-                .where(inArray(discoveryCandidates.id, matchedCandidateIds))
-                .orderBy(asc(discoveryCandidates.id))
-                .for("update");
-        const lockedCandidateById = new Map(
-          lockedCandidates.map((candidate) => [candidate.id, candidate]),
-        );
-        if (lockedCandidates.length !== matchedCandidateIds.length) {
-          throw new Error("Discovery identifier owner could not be read.");
-        }
-        const storedIdentifierKinds =
-          matchedCandidateIds.length === 0
-            ? []
-            : await transaction
-                .select({
-                  candidateId: discoveryCandidateIdentifiers.candidateId,
-                  kind: discoveryCandidateIdentifiers.kind,
-                })
-                .from(discoveryCandidateIdentifiers)
-                .where(
-                  inArray(
-                    discoveryCandidateIdentifiers.candidateId,
-                    matchedCandidateIds,
-                  ),
-                );
-        const storedKindsByCandidateId = new Map<
-          string,
-          Array<(typeof storedIdentifierKinds)[number]["kind"]>
-        >();
-        for (const identifier of storedIdentifierKinds) {
-          const kinds =
-            storedKindsByCandidateId.get(identifier.candidateId) ?? [];
-          kinds.push(identifier.kind);
-          storedKindsByCandidateId.set(identifier.candidateId, kinds);
-        }
-
-        const identityConflicts: Array<{
-          candidateType: DomainDiscoveryCandidate["type"];
-          identifiers: string[];
-          candidateIds: string[];
-        }> = [];
-        const resolutions: Array<
-          (typeof preparedCandidates)[number] & {
-            candidateId: string | null;
-            existing: StoredDiscoveryCandidate | null;
-            newCandidateGroupIndex: number | null;
-          }
-        > = [];
-        const strictDuplicateCandidates = input.candidates.some(
-          (candidate) => "research" in candidate,
-        );
-        const firstCandidateIndexByStoredId = new Map<string, number>();
-        const firstNewCandidateGroupByIdentifier = new Map<string, number>();
-        for (const prepared of preparedCandidates) {
-          const identifierKeys = prepared.identifiers.map(
-            ({ value }) => `${prepared.candidate.type}:${value}`,
-          );
-          const resolvedCandidateIds = [
-            ...new Set(
-              identifierKeys
-                .map((identifierKey) =>
-                  candidateIdByIdentifier.get(identifierKey),
-                )
-                .filter((candidateId): candidateId is string =>
-                  Boolean(candidateId),
-                ),
-            ),
-          ].sort();
-          const newCandidateGroupIndexes = [
-            ...new Set(
-              identifierKeys
-                .map((identifierKey) =>
-                  firstNewCandidateGroupByIdentifier.get(identifierKey),
-                )
-                .filter((candidateIndex): candidateIndex is number =>
-                  candidateIndex !== undefined,
-                ),
-            ),
-          ].sort((left, right) => left - right);
-          if (
-            resolvedCandidateIds.length > 1 ||
-            (resolvedCandidateIds.length > 0 &&
-              newCandidateGroupIndexes.length > 0)
-          ) {
-            if (identityConflicts.length < 20) {
-              identityConflicts.push({
-                candidateType: prepared.candidate.type,
-                identifiers: prepared.identifiers
-                  .map(({ value }) => value.slice(0, 512))
-                  .slice(0, 4),
-                candidateIds: resolvedCandidateIds.slice(0, 4),
-              });
-            }
-            continue;
-          }
-
-          const candidateId = resolvedCandidateIds[0] ?? null;
-          if (candidateId) {
-            const firstCandidateIndex =
-              firstCandidateIndexByStoredId.get(candidateId);
-            if (firstCandidateIndex !== undefined) {
-              if (strictDuplicateCandidates) {
-                return {
-                  outcome: "conflict" as const,
-                  reason: "duplicate_candidate_in_batch" as const,
-                  details: {
-                    candidateIndexes: [
-                      firstCandidateIndex,
-                      prepared.candidateIndex,
-                    ] as [number, number],
-                  },
-                  run,
-                };
-              }
-            } else {
-              firstCandidateIndexByStoredId.set(
-                candidateId,
-                prepared.candidateIndex,
-              );
-            }
-          }
-
-          if (!candidateId && newCandidateGroupIndexes.length > 1) {
-            if (identityConflicts.length < 20) {
-              identityConflicts.push({
-                candidateType: prepared.candidate.type,
-                identifiers: prepared.identifiers
-                  .map(({ value }) => value.slice(0, 512))
-                  .slice(0, 4),
-                candidateIds: [],
-              });
-            }
-            continue;
-          }
-
-          const newCandidateGroupIndex = candidateId
-            ? null
-            : (newCandidateGroupIndexes[0] ?? prepared.candidateIndex);
-          if (
-            !candidateId &&
-            newCandidateGroupIndexes.length === 1 &&
-            strictDuplicateCandidates
-          ) {
-            return {
-              outcome: "conflict" as const,
-              reason: "duplicate_candidate_in_batch" as const,
-              details: {
-                candidateIndexes: [
-                  newCandidateGroupIndexes[0]!,
-                  prepared.candidateIndex,
-                ] as [number, number],
-              },
-              run,
-            };
-          }
-          if (newCandidateGroupIndex !== null) {
-            for (const identifierKey of identifierKeys) {
-              firstNewCandidateGroupByIdentifier.set(
-                identifierKey,
-                newCandidateGroupIndex,
-              );
-            }
-          }
-          resolutions.push({
-            ...prepared,
-            candidateId,
-            existing: candidateId
-              ? (lockedCandidateById.get(candidateId) ?? null)
-              : null,
-            newCandidateGroupIndex,
-          });
-        }
-
-        const newResolutions = resolutions.filter(
-          (resolution) =>
-            resolution.candidateId === null &&
-            resolution.newCandidateGroupIndex === resolution.candidateIndex,
-        );
-        const createdCandidates =
-          newResolutions.length === 0
-            ? []
-            : await transaction
-                .insert(discoveryCandidates)
-                .values(
-                  newResolutions.map(({ candidate, primaryIdentifier }) => ({
-                    type: candidate.type,
-                    name: candidate.name,
-                    normalizedName: normalizedCandidateName(candidate.name),
-                    canonicalIdentityKey:
-                      canonicalIdentityKey(primaryIdentifier),
-                    canonicalUrl: displayCanonicalUrl(
-                      candidate,
-                      primaryIdentifier.kind,
-                    ),
-                    websiteUrl: candidate.websiteUrl ?? null,
-                    primarySocialUrl: candidate.primarySocialUrl ?? null,
-                    linkedinUrl: candidate.linkedinUrl ?? null,
-                    discoveredDescription: candidate.discoveredDescription,
-                    category: candidate.category,
-                    subcategory: candidate.subcategory ?? null,
-                    geography: candidate.geography,
-                    firstSourceName: candidate.sourceName,
-                    firstSourceUrl: candidate.sourceUrl,
-                    discoveredAt: input.now,
-                    lastSeenAt: input.now,
-                    createdAt: input.now,
-                    updatedAt: input.now,
-                    mostRecentRunId: run.id,
-                    discoveryScore: candidate.discoveryScore,
-                    status: "discovered" as const,
-                    rawMetadata: candidate.rawMetadata,
-                  })),
-                )
-                .returning({
-                  id: discoveryCandidates.id,
-                  type: discoveryCandidates.type,
-                  canonicalIdentityKey:
-                    discoveryCandidates.canonicalIdentityKey,
-                });
-        const createdCandidateIdByKey = new Map(
-          createdCandidates.map((candidate) => [
-            `${candidate.type}:${candidate.canonicalIdentityKey}`,
-            candidate.id,
-          ]),
-        );
-        const createdCandidateIdByGroupIndex = new Map<number, string>();
-        for (const resolution of newResolutions) {
-          const createdId = createdCandidateIdByKey.get(
-            `${resolution.candidate.type}:${canonicalIdentityKey(resolution.primaryIdentifier)}`,
-          );
-          if (!createdId) {
-            throw new Error("Discovery candidate was not created.");
-          }
-          createdCandidateIdByGroupIndex.set(
-            resolution.candidateIndex,
-            createdId,
-          );
-        }
-        for (const resolution of resolutions) {
-          if (resolution.candidateId) continue;
-          const createdId = createdCandidateIdByGroupIndex.get(
-            resolution.newCandidateGroupIndex!,
-          );
-          if (!createdId) {
-            throw new Error("Discovery candidate group was not created.");
-          }
-          resolution.candidateId = createdId;
-        }
-
-        const existingResolutions = resolutions.filter(
-          (
-            resolution,
-          ): resolution is typeof resolution & {
-            candidateId: string;
-            existing: StoredDiscoveryCandidate;
-          } => Boolean(resolution.candidateId && resolution.existing),
-        );
-        for (const {
-          candidate,
-          candidateId,
-          existing,
-          primaryIdentifier,
-        } of existingResolutions) {
-            const storedKinds = storedKindsByCandidateId.get(candidateId) ?? [];
-            const currentBestRank = Math.min(
-              ...storedKinds.map((kind) =>
-                identifierRank(candidate.type, kind),
-              ),
-            );
-            const incomingRank = identifierRank(
-              candidate.type,
-              primaryIdentifier.kind,
-            );
-            await transaction
-              .update(discoveryCandidates)
-              .set({
-                name: candidate.name,
-                normalizedName: normalizedCandidateName(candidate.name),
-                canonicalUrl:
-                  incomingRank < currentBestRank
-                    ? displayCanonicalUrl(candidate, primaryIdentifier.kind)
-                    : existing.canonicalUrl,
-                websiteUrl: candidate.websiteUrl ?? existing.websiteUrl,
-                primarySocialUrl:
-                  candidate.primarySocialUrl ?? existing.primarySocialUrl,
-                linkedinUrl: candidate.linkedinUrl ?? existing.linkedinUrl,
-                discoveredDescription: candidate.discoveredDescription,
-                category: candidate.category,
-                subcategory: candidate.subcategory ?? existing.subcategory,
-                geography: candidate.geography,
-                lastSeenAt: input.now,
-                updatedAt: input.now,
-                mostRecentRunId: run.id,
-                discoveryScore: Math.max(
-                  existing.discoveryScore,
-                  candidate.discoveryScore,
-                ),
-                rawMetadata: candidate.rawMetadata,
-              })
-              .where(eq(discoveryCandidates.id, candidateId));
-        }
-
-        const persistedResolutions = resolutions.map((resolution) => {
-          if (!resolution.candidateId) {
-            throw new Error("Discovery candidate identity was not resolved.");
-          }
-          return { ...resolution, candidateId: resolution.candidateId };
+        const candidateWrite = await writeDiscoveryCandidates(transaction, {
+          runId: run.id,
+          now: input.now,
+          candidates: input.candidates,
         });
-        const identifierRows = persistedResolutions.flatMap(
-          ({ candidate, candidateId, identifiers }) =>
-            identifiers.map((identifier) => ({
-              candidateId,
-              candidateType: candidate.type,
-              kind: identifier.kind,
-              normalizedValue: identifier.value,
-              createdAt: input.now,
-            })),
-        );
-        if (identifierRows.length > 0) {
-          await transaction
-            .insert(discoveryCandidateIdentifiers)
-            .values(identifierRows)
-            .onConflictDoNothing({
-              target: [
-                discoveryCandidateIdentifiers.candidateType,
-                discoveryCandidateIdentifiers.normalizedValue,
+        if (candidateWrite.outcome === "conflict") {
+          return {
+            outcome: "conflict" as const,
+            reason: candidateWrite.reason,
+            details: {
+              candidateIndexes: [...candidateWrite.candidateIndexes] as [
+                number,
+                number,
               ],
-            });
+            },
+            run,
+          };
         }
-        const sourceRows = persistedResolutions.map(
-          ({ candidate, candidateId }) => ({
-            candidateId,
-            discoveryRunId: run.id,
-            sourceName: candidate.sourceName,
-            sourceUrl: candidate.sourceUrl,
-            firstSeenAt: input.now,
-            lastSeenAt: input.now,
-            rawMetadata: candidate.rawMetadata,
-            createdAt: input.now,
-          }),
-        );
-        if (sourceRows.length > 0) {
-          await transaction
-            .insert(discoveryCandidateSources)
-            .values(sourceRows)
-            .onConflictDoUpdate({
-              target: [
-                discoveryCandidateSources.candidateId,
-                discoveryCandidateSources.sourceName,
-                discoveryCandidateSources.sourceUrl,
-              ],
-              set: {
-                discoveryRunId: sql`excluded.discovery_run_id`,
-                lastSeenAt: sql`excluded.last_seen_at`,
-                rawMetadata: sql`excluded.raw_metadata`,
-              },
-            });
-        }
-        const researchRows = persistedResolutions.flatMap(
-          ({ candidate, candidateId }) =>
-            "research" in candidate
-              ? [
-                  {
-                    candidateId,
-                    discoveryRunId: run.id,
-                    summary: candidate.research.summary,
-                    findings: candidate.research.findings,
-                    sourceUrls: candidate.research.sourceUrls,
-                    analysisVersion: candidate.research.analysisVersion,
-                    createdAt: input.now,
-                  },
-                ]
-              : [],
-        );
-        if (researchRows.length > 0) {
-          await transaction
-            .insert(candidateResearchVersions)
-            .values(researchRows);
-        }
-
-        const newCount = newResolutions.length;
-        const duplicateCount = persistedResolutions.length - newCount;
+        const { newCount, duplicateCount, identityConflicts } = candidateWrite;
 
         const sourceErrors = boundedSourceErrors(input.sourceErrors);
         const status =
@@ -1219,6 +759,7 @@ export function createDiscoveryRepository(
             duplicateCount: discoveryRuns.duplicateCount,
           })
           .from(discoveryRuns)
+          .where(ne(discoveryRuns.trigger, "radar_promotion"))
           .orderBy(desc(discoveryRuns.createdAt), desc(discoveryRuns.id))
           .limit(1);
         const [candidateTotal] = await transaction
