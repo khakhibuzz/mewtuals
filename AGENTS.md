@@ -71,8 +71,10 @@ gate before delivery:
 ```bash
 npm test
 npm run test:db
+npm run test:migrations
 npm run test:acceptance
 npm run test:e2e
+npm run typecheck
 npm run lint
 npm run build
 git diff --check

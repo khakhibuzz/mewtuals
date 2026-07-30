@@ -15,6 +15,7 @@ import {
   globalRadarSourceFamilies,
   globalRadarThemes,
 } from "../app/domain/taxonomies/global-radar-v1";
+import { createQueryFingerprint } from "../app/domain/global-radar/normalization";
 
 const planningConfig: PublicGlobalRadarPlanningConfig = {
   countries: ["US", "China"],
@@ -154,6 +155,11 @@ describe("Global Radar query generator", () => {
     expect(first.every((query) => /^[a-f0-9]{64}$/.test(query.fingerprint))).toBe(
       true,
     );
+    expect(
+      first.every(
+        (query) => query.fingerprint === createQueryFingerprint(query),
+      ),
+    ).toBe(true);
     expect(first.every(Object.isFrozen)).toBe(true);
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.keys(first[0])).toEqual([

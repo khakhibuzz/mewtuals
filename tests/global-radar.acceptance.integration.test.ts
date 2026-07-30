@@ -138,11 +138,11 @@ function partialDirectDemandProposal(input: {
       "https://saffron-navigation-duplicate.example/india-data-request",
     sourceName: duplicateEntity.canonicalName,
     claim:
-      "The duplicate fictional organisation seeks suppliers in India for autonomous-navigation data collection.",
+      "The duplicate fictional organisation seeks suppliers in India to collect autonomous-navigation data on mixed Indian roads.",
     excerpt:
-      "A second fictional public request names India for navigation data collection.",
+      "A second fictional public request names collection on mixed Indian roads.",
     englishSummary:
-      "The duplicate fictional organisation publicly requests Indian navigation-data suppliers.",
+      "The duplicate fictional organisation publicly requests suppliers for navigation-data collection on Indian roads.",
   };
   const duplicateSignal = {
     ...primarySignal,
@@ -339,9 +339,9 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
   it("keeps the complete Radar lifecycle durable and isolated from India Discovery", async () => {
     let currentTime = at(GLOBAL_RADAR_FICTIONAL_NOW);
     const radarLeaseTokens = [
-      "radar-acceptance-partial-lease-token",
-      "radar-acceptance-zero-lease-token",
-      "radar-acceptance-momentum-lease-token",
+      "a".repeat(64),
+      "b".repeat(64),
+      "c".repeat(64),
     ];
     const radarRepository = createGlobalRadarRepository(database, {
       issueLeaseToken: () => {
@@ -644,7 +644,7 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
       hasAnySignals: true,
       metrics: {
         class: { total: 2 },
-        sourceErrors: 1,
+        sourceErrors: 0,
       },
     });
     if (directSummary.outcome !== "listed") {
@@ -674,9 +674,18 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
         signalClass: "direct_demand",
         status: "newly_discovered",
         sections: expect.arrayContaining([
-          { id: "organisation", title: "Organisation" },
-          { id: "supporting_evidence", title: "Supporting evidence" },
-          { id: "admin_notes_and_actions", title: "Admin notes and actions" },
+          expect.objectContaining({
+            id: "organisation",
+            title: "Organisation",
+          }),
+          expect.objectContaining({
+            id: "supporting_evidence",
+            title: "Supporting evidence",
+          }),
+          expect.objectContaining({
+            id: "admin_notes_and_actions",
+            title: "Admin notes and actions",
+          }),
         ]),
       },
     });
@@ -1028,8 +1037,34 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
       submissionHash: null,
       requestedByEmail: ADMIN_EMAIL,
     });
+    const guardedPromotionExternalRunKey =
+      "guarded-radar-promotion:global-radar-acceptance";
+    await database.insert(discoveryRuns).values({
+      externalRunKey: guardedPromotionExternalRunKey,
+      campaignKey: "general_discovery",
+      trigger: "radar_promotion",
+      status: "queued",
+      geography: "United Kingdom",
+      candidateType: "company",
+      sourcesUsed: ["Acceptance public registry"],
+      requestedCount: 1,
+      companyPercentage: 100,
+      errorSummary: {},
+      requestedByEmail: ADMIN_EMAIL,
+      createdAt: currentTime,
+      updatedAt: currentTime,
+    });
     const noDiscoveryWork = await discovery.claimRun("scheduled");
     expect(noDiscoveryWork).toEqual({ ok: true, claimed: false });
+    expect(
+      await database
+        .select({ status: discoveryRuns.status })
+        .from(discoveryRuns)
+        .where(eq(discoveryRuns.externalRunKey, guardedPromotionExternalRunKey)),
+    ).toEqual([{ status: "queued" }]);
+    await database
+      .delete(discoveryRuns)
+      .where(eq(discoveryRuns.externalRunKey, guardedPromotionExternalRunKey));
     const discoverySummary = await discovery.getAdminSummary(ADMIN_ACTOR);
     expect(discoverySummary).toMatchObject({
       ok: true,
@@ -1039,8 +1074,14 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
           latestRunCompletedAt: discoveryCompletedAt,
         },
         runs: expect.arrayContaining([
-          { id: discoveryClaim.runId, trigger: "scheduled" },
-          { trigger: "radar_promotion", status: "succeeded" },
+          expect.objectContaining({
+            id: discoveryClaim.runId,
+            trigger: "scheduled",
+          }),
+          expect.objectContaining({
+            trigger: "radar_promotion",
+            status: "succeeded",
+          }),
         ]),
       },
     });

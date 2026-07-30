@@ -1,8 +1,6 @@
 import type { SignalClass } from "./contracts";
 import {
   executableGlobalRadarLanguagesForCountry,
-  GLOBAL_RADAR_QUERY_VERSION,
-  stableGlobalRadarFingerprint,
   type GlobalRadarCategorySearchTerms,
   type GlobalRadarLanguage,
   type GlobalRadarSourceAdapter,
@@ -10,6 +8,7 @@ import {
   type GlobalRadarTheme,
   type RadarPlan,
 } from "./planner";
+import { createQueryFingerprint } from "./normalization";
 import {
   globalRadarLeafIdentifierLookup,
   type GlobalRadarLeafIdentifier,
@@ -201,7 +200,6 @@ function buildQuery(
   signalIntent: SignalClass,
   sourceFamily: GlobalRadarSourceFamily,
   ordinal: number,
-  category?: string,
   categorySearchTerm?: string,
 ): SearchQuery {
   const query = queryText(
@@ -222,12 +220,7 @@ function buildQuery(
     recencyDays: recencyByIntent[signalIntent],
   };
   return Object.freeze({
-    fingerprint: stableGlobalRadarFingerprint({
-      version: GLOBAL_RADAR_QUERY_VERSION,
-      sourceFamily,
-      ...(category ? { watchlistCategory: category } : {}),
-      ...queryFields,
-    }),
+    fingerprint: createQueryFingerprint(queryFields),
     ...queryFields,
     ordinal,
   });
@@ -289,18 +282,10 @@ export function generateGlobalRadarQueries(
               signalIntent,
               sourceFamily,
               queries.length + index,
-              workItem.category,
               workItem.categorySearchTerms?.[language],
             ),
           );
           if (candidateGroup.length === 0) continue;
-          const seenCount = candidateGroup.filter((query) =>
-            seen.has(query.fingerprint),
-          ).length;
-          if (seenCount > 0) continue;
-          if (queries.length + candidateGroup.length > 120) {
-            return Object.freeze(queries);
-          }
           if (
             workItem.category &&
             candidateGroup.some((query) => {
@@ -316,6 +301,13 @@ export function generateGlobalRadarQueries(
             throw new Error(
               "Global Radar watchlist contains duplicate semantic query text across categories.",
             );
+          }
+          const seenCount = candidateGroup.filter((query) =>
+            seen.has(query.fingerprint),
+          ).length;
+          if (seenCount > 0) continue;
+          if (queries.length + candidateGroup.length > 120) {
+            return Object.freeze(queries);
           }
           candidateGroup.forEach((query) => {
             seen.add(query.fingerprint);
