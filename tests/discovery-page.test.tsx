@@ -191,6 +191,7 @@ describe("discovery administrator page", () => {
         {
           id: "8ca708dd-83ca-40fe-8c54-33e27ac82e46",
           externalRunKey: "internal-key",
+          campaignKey: "robotics_hardware_india",
           trigger: "trial",
           status: "failed",
           startedAt: new Date("2026-07-22T04:00:00.000Z"),

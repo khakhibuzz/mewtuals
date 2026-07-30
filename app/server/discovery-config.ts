@@ -3,6 +3,28 @@ import { allocateCandidates } from "../domain/discovery";
 import type { EnvironmentSource } from "./env";
 
 const defaultCompanyCategories = [
+  "robot makers and integrators",
+  "components and actuation",
+  "sensing and perception",
+  "electronics and compute",
+  "embedded software and AI",
+  "manufacturing and testing",
+  "distribution and deployment",
+  "research and ecosystem support",
+] as const;
+
+const defaultCreatorCategories = [
+  "robotics engineering",
+  "hardware building",
+  "physical AI research",
+  "manufacturing and industrial technology",
+  "robotics education and ecosystem",
+] as const;
+
+export const PHYSICAL_AI_CAMPAIGN_KEY = "robotics_hardware_india" as const;
+export const GENERAL_DISCOVERY_CAMPAIGN_KEY = "general_discovery" as const;
+
+export const GENERAL_DISCOVERY_COMPANY_CATEGORIES = [
   "startups",
   "consumer brands",
   "AI",
@@ -15,7 +37,7 @@ const defaultCompanyCategories = [
   "fintech",
 ] as const;
 
-const defaultCreatorCategories = [
+export const GENERAL_DISCOVERY_CREATOR_CATEGORIES = [
   "technology",
   "startups/business",
   "AI",
@@ -30,6 +52,7 @@ const defaultCreatorCategories = [
 const discoveryEnvironments = new Set(["development", "test", "production"]);
 
 export type DiscoveryConfig = {
+  campaignKey: string;
   geographies: readonly string[];
   companyCategories: readonly string[];
   creatorCategories: readonly string[];
@@ -103,6 +126,7 @@ export function readDiscoveryConfig(
   }
 
   return {
+    campaignKey: PHYSICAL_AI_CAMPAIGN_KEY,
     geographies: commaSeparated(source.DISCOVERY_GEOGRAPHIES, ["India"]),
     companyCategories: commaSeparated(
       source.DISCOVERY_COMPANY_CATEGORIES,
@@ -122,7 +146,7 @@ export function readDiscoveryConfig(
     companyPercentage: boundedInteger(
       "DISCOVERY_COMPANY_PERCENTAGE",
       source.DISCOVERY_COMPANY_PERCENTAGE,
-      50,
+      75,
       0,
       100,
     ),
@@ -138,6 +162,7 @@ export function publicDiscoveryWorkerConfig(
   config: DiscoveryConfig,
 ): PublicDiscoveryWorkerConfig {
   return {
+    campaignKey: config.campaignKey,
     geographies: config.geographies,
     companyCategories: config.companyCategories,
     creatorCategories: config.creatorCategories,
@@ -150,4 +175,10 @@ export function publicDiscoveryWorkerConfig(
       config.companyPercentage,
     ),
   };
+}
+
+export function physicalAiSeedConfig(
+  config: DiscoveryConfig,
+): DiscoveryConfig {
+  return { ...config, totalCandidates: 50, companyPercentage: 100 };
 }

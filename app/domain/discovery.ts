@@ -9,7 +9,10 @@ export const candidateStatuses = [
   "rejected",
   "queued_for_profile",
 ] as const;
-export const MAX_DISCOVERY_BATCH_BYTES = 512 * 1_024;
+export const DISCOVERY_V1_PROMPT_VERSION = "codex-web-v1" as const;
+export const DISCOVERY_V2_PROMPT_VERSION = "codex-web-v2" as const;
+export const PHYSICAL_AI_ANALYSIS_VERSION = "physical-ai-v1" as const;
+export const MAX_DISCOVERY_BATCH_BYTES = 1_024 * 1_024;
 const MAX_RAW_METADATA_BYTES = 8_192;
 const MAX_MINIMAL_ARRAY_ELEMENTS = Math.floor(
   (MAX_RAW_METADATA_BYTES - 1) / 2,
@@ -265,30 +268,93 @@ export const discoverySourceErrorSchema = z.strictObject({
   message: boundedRequiredString("Discovery source error", 1_000),
 });
 
-const discoveryBatchObjectSchema = z.strictObject({
+export const candidateResearchSchema = z.strictObject({
+  summary: z.string().trim().min(80).max(1_200),
+  findings: z.string().trim().min(600).max(12_000),
+  sourceUrls: z
+    .array(z.string().trim().max(2_048).pipe(publicDiscoveryUrlSchema))
+    .min(1)
+    .max(12)
+    .refine((urls) => new Set(urls).size === urls.length, {
+      message: "Research source URLs must be unique.",
+    }),
+  analysisVersion: z.literal(PHYSICAL_AI_ANALYSIS_VERSION),
+});
+
+export const physicalAiDiscoveryCandidateInputSchema =
+  discoveryCandidateInputSchema.extend({ research: candidateResearchSchema });
+
+const discoveryBatchFields = {
   runId: z.string().uuid({ message: "Discovery run id must be a valid UUID." }),
   leaseToken: boundedRequiredString("Discovery lease token", 512),
-  promptVersion: z.literal("codex-web-v1", {
-    error: "Discovery prompt version must be codex-web-v1.",
-  }),
-  candidates: z.array(discoveryCandidateInputSchema).max(50, {
-    message: "Discovery batch must contain at most 50 candidates.",
-  }),
   sourceErrors: z.array(discoverySourceErrorSchema).max(20, {
     message: "Discovery batch must contain at most 20 source errors.",
   }),
+} as const;
+
+export const discoveryV1BatchSchema = z.strictObject({
+  ...discoveryBatchFields,
+  promptVersion: z.literal(DISCOVERY_V1_PROMPT_VERSION),
+  candidates: z.array(discoveryCandidateInputSchema).max(50, {
+    message: "Discovery batch must contain at most 50 candidates.",
+  }),
 });
 
-export const discoveryBatchSchema = discoveryBatchObjectSchema.superRefine(
-  (batch, context) => {
+export const discoveryV2BatchSchema = z.strictObject({
+  ...discoveryBatchFields,
+  promptVersion: z.literal(DISCOVERY_V2_PROMPT_VERSION),
+  candidates: z.array(physicalAiDiscoveryCandidateInputSchema).max(50, {
+    message: "Discovery batch must contain at most 50 candidates.",
+  }),
+});
+
+export const discoveryBatchSchema = z
+  .discriminatedUnion("promptVersion", [
+    discoveryV1BatchSchema,
+    discoveryV2BatchSchema,
+  ])
+  .superRefine((batch, context) => {
     if (serializedByteLength(batch) > MAX_DISCOVERY_BATCH_BYTES) {
       context.addIssue({
         code: "custom",
-        message: "Discovery batch must be at most 524288 bytes.",
+        message: `Discovery batch must be at most ${MAX_DISCOVERY_BATCH_BYTES} bytes.`,
       });
     }
-  },
-);
+
+    if (batch.promptVersion === DISCOVERY_V2_PROMPT_VERSION) {
+      const firstCandidateIndexByIdentifier = new Map<string, number>();
+      batch.candidates.forEach((candidate, candidateIndex) => {
+        let duplicateCandidateIndex: number | undefined;
+        for (const identifier of candidateIdentifiers(candidate)) {
+          const identifierKey = `${candidate.type}:${identifier.kind}:${identifier.value}`;
+          const firstCandidateIndex =
+            firstCandidateIndexByIdentifier.get(identifierKey);
+          if (firstCandidateIndex !== undefined) {
+            duplicateCandidateIndex = Math.min(
+              duplicateCandidateIndex ?? firstCandidateIndex,
+              firstCandidateIndex,
+            );
+            continue;
+          }
+          firstCandidateIndexByIdentifier.set(identifierKey, candidateIndex);
+        }
+
+        if (duplicateCandidateIndex !== undefined) {
+          context.addIssue({
+            code: "custom",
+            path: ["candidates", candidateIndex],
+            message: "Candidate duplicates another candidate in this batch.",
+            params: {
+              duplicateCandidateIndexes: [
+                duplicateCandidateIndex,
+                candidateIndex,
+              ],
+            },
+          });
+        }
+      });
+    }
+  });
 
 export type DiscoveryCandidateInput = z.input<
   typeof discoveryCandidateInputSchema
@@ -296,6 +362,7 @@ export type DiscoveryCandidateInput = z.input<
 
 export type DiscoveryCandidate = z.infer<typeof discoveryCandidateInputSchema>;
 export type DiscoveryBatch = z.infer<typeof discoveryBatchSchema>;
+export type DiscoveryBatchCandidate = DiscoveryBatch["candidates"][number];
 
 export type CandidateIdentifier = {
   kind: "canonical" | "website_host" | "social_url" | "linkedin_url";
@@ -393,6 +460,12 @@ function canonicalIdentifier(
   if (host === websiteHost) return { kind: "website_host", value: host };
   if (url.pathname !== "/") return { kind: "canonical", value };
   return { kind: "website_host", value: host };
+}
+
+export function candidateIdentifierForProfileUrl(
+  profileUrl: string,
+): CandidateIdentifier {
+  return canonicalIdentifier(profileUrl, undefined);
 }
 
 export function candidateIdentifiers(

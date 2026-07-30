@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  physicalAiSeedConfig,
   publicDiscoveryWorkerConfig,
   readDiscoveryConfig,
 } from "../app/server/discovery-config";
@@ -10,35 +14,89 @@ afterEach(() => {
 });
 
 describe("discovery configuration", () => {
+  it("keeps tracked runtime examples and worker operations aligned with Physical AI V2", () => {
+    const envExamples = [".env.example", ".dev.vars.example"].map((path) =>
+      readFileSync(resolve(path), "utf8"),
+    );
+    for (const example of envExamples) {
+      expect(example).toContain("DISCOVERY_GEOGRAPHIES=India");
+      expect(example).toContain("DISCOVERY_TOTAL_CANDIDATES=20");
+      expect(example).toContain("DISCOVERY_COMPANY_PERCENTAGE=75");
+      expect(example).toContain("robot makers and integrators");
+      expect(example).toContain("robotics engineering");
+    }
+
+    const operations = readFileSync(
+      resolve("docs/discovery-agent-operations.md"),
+      "utf8",
+    );
+    for (const requiredText of [
+      "npm run discovery:claim -- --trigger trial --preset robotics-seed",
+      "codex-web-v2",
+      "codex-web-v1",
+      "summary",
+      "findings",
+      "sourceUrls",
+      "analysisVersion",
+      "1. Domain and category",
+      "2. Product or capability",
+      "3. Robot or physical-AI systems context",
+      "4. Relationship to the wider ecosystem",
+      "5. Mutual-help opportunities",
+      "6. India strategic context",
+      "7. Evidence, assessment, and unknowns",
+      "Evidence-backed fact",
+      "Assessment",
+      "Unknown",
+      "exact same batch",
+      "duplicate_candidate_in_batch",
+      "Do not call `discovery:fail` for this recoverable conflict",
+      "reaches `succeeded` or an honestly underfilled `partial`",
+      "claimed` is false",
+      "daily to weekly",
+    ]) {
+      expect(operations).toContain(requiredText);
+    }
+  });
+
   it("uses the approved India and category defaults", () => {
     expect(readDiscoveryConfig({ NODE_ENV: "test" })).toMatchObject({
+      campaignKey: "robotics_hardware_india",
       geographies: ["India"],
       companyCategories: [
-        "startups",
-        "consumer brands",
-        "AI",
-        "technology",
-        "creator economy",
-        "wellness",
-        "fashion",
-        "hardware",
-        "productivity",
-        "fintech",
+        "robot makers and integrators",
+        "components and actuation",
+        "sensing and perception",
+        "electronics and compute",
+        "embedded software and AI",
+        "manufacturing and testing",
+        "distribution and deployment",
+        "research and ecosystem support",
       ],
       creatorCategories: [
-        "technology",
-        "startups/business",
-        "AI",
-        "consumer products",
-        "lifestyle",
-        "wellness",
-        "fashion",
-        "finance",
-        "podcasts/interviews",
+        "robotics engineering",
+        "hardware building",
+        "physical AI research",
+        "manufacturing and industrial technology",
+        "robotics education and ecosystem",
       ],
       totalCandidates: 20,
-      companyPercentage: 50,
+      companyPercentage: 75,
       enabledSources: ["codex_web"],
+    });
+  });
+
+  it("derives the one-time 50-company seed without changing the campaign", () => {
+    const defaultConfig = readDiscoveryConfig({ NODE_ENV: "test" });
+
+    expect(physicalAiSeedConfig(defaultConfig)).toMatchObject({
+      campaignKey: "robotics_hardware_india",
+      totalCandidates: 50,
+      companyPercentage: 100,
+    });
+    expect(defaultConfig).toMatchObject({
+      totalCandidates: 20,
+      companyPercentage: 75,
     });
   });
 
@@ -164,10 +222,11 @@ describe("discovery configuration", () => {
     const publicConfig = publicDiscoveryWorkerConfig(config);
 
     expect(publicConfig).toMatchObject({
+      campaignKey: "robotics_hardware_india",
       geographies: ["India"],
       totalCandidates: 20,
-      companyPercentage: 50,
-      allocation: { companies: 10, creators: 10 },
+      companyPercentage: 75,
+      allocation: { companies: 15, creators: 5 },
       workerApiBaseUrl: "https://mewtuals.com",
     });
     expect("workerSecret" in publicConfig).toBe(false);

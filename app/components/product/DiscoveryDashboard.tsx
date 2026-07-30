@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
+import { DiscoveryResearchContext } from "./DiscoveryResearchContext";
 import styles from "./product.module.css";
 
 export type DiscoveryCandidateStatus =
@@ -754,6 +755,14 @@ export function DiscoveryDashboard({
               <div><dt>Discovered</dt><dd>{formatTimestamp(selectedCandidate.discoveredAt)}</dd></div>
               <div><dt>Last seen</dt><dd>{formatTimestamp(selectedCandidate.lastSeenAt)}</dd></div>
             </dl>
+            <label className={styles.field}>
+              <span className={styles.label}>Candidate UUID</span>
+              <input
+                readOnly
+                value={selectedCandidate.id}
+                onFocus={(event) => event.currentTarget.select()}
+              />
+            </label>
             <div className={styles.discoveryDrawerGroup}>
               <h3>Public profiles</h3>
               <CandidateLinks candidate={selectedCandidate} />
@@ -780,6 +789,11 @@ export function DiscoveryDashboard({
                 <p className={styles.status}>No additional evidence was recorded.</p>
               )}
             </div>
+            <DiscoveryResearchContext
+              key={selectedCandidate.id}
+              candidateId={selectedCandidate.id}
+              candidateName={selectedCandidate.name}
+            />
             <div className={styles.discoveryDrawerGroup}>
               <h3>Review status</h3>
               {selectedCandidateFeedback ? (

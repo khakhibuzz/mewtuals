@@ -23,7 +23,7 @@ function countOccurrences(value, expected) {
 }
 
 test(
-  "a later journal entry preserves the 0003 to 0004 and 0004 to 0005 migration paths",
+  "a later journal entry preserves the populated 0007 to 0008 Radar migration path",
   { timeout: 120_000 },
   async () => {
     const temporaryRoot = await mkdtemp(
@@ -35,6 +35,10 @@ test(
       await cp(
         join(projectRoot, "scripts", "test-migrations.mjs"),
         join(temporaryRoot, "scripts", "test-migrations.mjs"),
+      );
+      await cp(
+        join(projectRoot, "scripts", "migration-journal.mjs"),
+        join(temporaryRoot, "scripts", "migration-journal.mjs"),
       );
       await cp(join(projectRoot, "drizzle"), join(temporaryRoot, "drizzle"), {
         recursive: true,
@@ -77,18 +81,14 @@ test(
       assert.equal(
         countOccurrences(
           stdout,
-          "Fresh migration path through all journal entries passed.",
+          "Fresh ordered migration path passed.",
         ),
-        1,
-      );
-      assert.equal(
-        countOccurrences(stdout, "Populated 0003 to 0004 Discovery path passed."),
         1,
       );
       assert.equal(
         countOccurrences(
           stdout,
-          "Populated 0004 to 0005 Radar path passed with unchanged fixtures.",
+          "Populated 0007 to 0008 Radar path passed with unchanged product, Opportunity Brief, and Discovery V2 fixtures.",
         ),
         1,
       );

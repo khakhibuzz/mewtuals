@@ -147,8 +147,9 @@ export default async function DiscoveryAdminPage({
       title="Discovery operations."
       intro="Review source-supported companies and creators before they enter the profile pipeline."
       headerLinks={[
-        { href: "/admin/verifications", label: "Verification queue" },
+        { href: "/admin/opportunity-briefs", label: "Opportunity Briefs" },
         { href: "/admin/discovery", label: "Discovery" },
+        { href: "/admin/verifications", label: "Verification queue" },
       ]}
       wide
     >

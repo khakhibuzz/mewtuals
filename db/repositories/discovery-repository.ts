@@ -7,6 +7,7 @@ import {
   inArray,
   lt,
   lte,
+  or,
   sql,
   type SQL,
 } from "drizzle-orm";
@@ -14,17 +15,20 @@ import {
 import {
   candidateIdentifiers,
   candidateStatuses,
+  type DiscoveryBatchCandidate,
   type DiscoveryCandidate as DomainDiscoveryCandidate,
 } from "../../app/domain/discovery";
 import type { MewtualsDatabase } from "../client";
 import { getDb } from "../client";
 import {
+  candidateResearchVersions,
   discoveryCandidateIdentifiers,
   discoveryCandidates,
   discoveryCandidateSources,
   discoveryRuns,
 } from "../schema";
 import type {
+  CandidateResearchVersion,
   DiscoveryCandidate as StoredDiscoveryCandidate,
   DiscoveryCandidateSource,
   DiscoveryRun,
@@ -34,6 +38,7 @@ export const MAX_DISCOVERY_ADMIN_PAGE = 100;
 
 export type QueueDiscoveryRunInput = {
   externalRunKey: string;
+  campaignKey?: string;
   trigger: "scheduled" | "manual" | "trial";
   now: Date;
   geography: string;
@@ -66,7 +71,7 @@ export type CompleteDiscoveryRunInput = {
   leaseTokenHash: string;
   submissionHash: string;
   now: Date;
-  candidates: readonly DomainDiscoveryCandidate[];
+  candidates: readonly DiscoveryBatchCandidate[];
   sourceErrors: readonly DiscoverySourceError[];
 };
 
@@ -134,6 +139,7 @@ export type DiscoveryAdminSnapshot = {
 };
 
 export type DiscoveryRunConflictReason =
+  | "duplicate_candidate_in_batch"
   | "invalid_state"
   | "failure_mismatch"
   | "lease_expired"
@@ -144,10 +150,25 @@ export type DiscoveryRunResult =
   | { outcome: "completed" | "replayed" | "failed"; run: DiscoveryRun }
   | {
       outcome: "conflict";
-      reason: DiscoveryRunConflictReason;
+      reason: Exclude<
+        DiscoveryRunConflictReason,
+        "duplicate_candidate_in_batch"
+      >;
+      run: DiscoveryRun;
+    }
+  | {
+      outcome: "conflict";
+      reason: "duplicate_candidate_in_batch";
+      details: { candidateIndexes: [number, number] };
       run: DiscoveryRun;
     }
   | { outcome: "not_found" };
+
+export type CandidateResearchHistory = {
+  candidateId: string;
+  latest: CandidateResearchVersion | null;
+  history: CandidateResearchVersion[];
+};
 
 export type DiscoveryRepository = {
   queueRun(input: QueueDiscoveryRunInput): Promise<DiscoveryRun>;
@@ -159,12 +180,17 @@ export type DiscoveryRepository = {
   updateCandidateStatus(
     input: UpdateCandidateStatusInput,
   ): Promise<UpdateCandidateStatusResult>;
+  getCandidateResearchVersions(
+    candidateId: string,
+    limit: number,
+  ): Promise<CandidateResearchHistory | null>;
   getAdminSummary(filters: DiscoveryFilters): Promise<DiscoveryAdminSnapshot>;
 };
 
 function queuedRunValues(input: QueueDiscoveryRunInput) {
   return {
     externalRunKey: input.externalRunKey,
+    campaignKey: input.campaignKey ?? "general_discovery",
     trigger: input.trigger,
     status: "queued" as const,
     geography: input.geography,
@@ -272,6 +298,7 @@ function boundedAdminInteger(
 const adminRunSelection = {
   id: discoveryRuns.id,
   externalRunKey: discoveryRuns.externalRunKey,
+  campaignKey: discoveryRuns.campaignKey,
   trigger: discoveryRuns.trigger,
   status: discoveryRuns.status,
   startedAt: discoveryRuns.startedAt,
@@ -484,70 +511,335 @@ export function createDiscoveryRepository(
           };
         }
 
-        let newCount = 0;
-        let duplicateCount = 0;
+        const preparedCandidates = input.candidates.map(
+          (candidate, candidateIndex) => {
+            const identifiers = candidateIdentifiers(candidate);
+            const primaryIdentifier = identifiers[0];
+            if (!primaryIdentifier) {
+              throw new Error("Discovery candidate has no stable identifier.");
+            }
+            return {
+              candidate,
+              candidateIndex,
+              identifiers,
+              primaryIdentifier,
+            };
+          },
+        );
+        const identifierValuesByType = new Map<
+          DomainDiscoveryCandidate["type"],
+          Set<string>
+        >();
+        for (const { candidate, identifiers } of preparedCandidates) {
+          const values =
+            identifierValuesByType.get(candidate.type) ?? new Set<string>();
+          for (const { value } of identifiers) values.add(value);
+          identifierValuesByType.set(candidate.type, values);
+        }
+        const identifierSelectors = [...identifierValuesByType.entries()].map(
+          ([candidateType, values]) =>
+            and(
+              eq(discoveryCandidateIdentifiers.candidateType, candidateType),
+              inArray(discoveryCandidateIdentifiers.normalizedValue, [
+                ...values,
+              ]),
+            ),
+        );
+        const matchedIdentifiers =
+          identifierSelectors.length === 0
+            ? []
+            : await transaction
+                .select({
+                  candidateId: discoveryCandidateIdentifiers.candidateId,
+                  candidateType: discoveryCandidateIdentifiers.candidateType,
+                  kind: discoveryCandidateIdentifiers.kind,
+                  normalizedValue:
+                    discoveryCandidateIdentifiers.normalizedValue,
+                })
+                .from(discoveryCandidateIdentifiers)
+                .where(or(...identifierSelectors));
+        const candidateIdByIdentifier = new Map(
+          matchedIdentifiers.map((identifier) => [
+            `${identifier.candidateType}:${identifier.normalizedValue}`,
+            identifier.candidateId,
+          ]),
+        );
+        const matchedCandidateIds = [
+          ...new Set(
+            matchedIdentifiers.map(({ candidateId }) => candidateId),
+          ),
+        ].sort();
+        const lockedCandidates =
+          matchedCandidateIds.length === 0
+            ? []
+            : await transaction
+                .select()
+                .from(discoveryCandidates)
+                .where(inArray(discoveryCandidates.id, matchedCandidateIds))
+                .orderBy(asc(discoveryCandidates.id))
+                .for("update");
+        const lockedCandidateById = new Map(
+          lockedCandidates.map((candidate) => [candidate.id, candidate]),
+        );
+        if (lockedCandidates.length !== matchedCandidateIds.length) {
+          throw new Error("Discovery identifier owner could not be read.");
+        }
+        const storedIdentifierKinds =
+          matchedCandidateIds.length === 0
+            ? []
+            : await transaction
+                .select({
+                  candidateId: discoveryCandidateIdentifiers.candidateId,
+                  kind: discoveryCandidateIdentifiers.kind,
+                })
+                .from(discoveryCandidateIdentifiers)
+                .where(
+                  inArray(
+                    discoveryCandidateIdentifiers.candidateId,
+                    matchedCandidateIds,
+                  ),
+                );
+        const storedKindsByCandidateId = new Map<
+          string,
+          Array<(typeof storedIdentifierKinds)[number]["kind"]>
+        >();
+        for (const identifier of storedIdentifierKinds) {
+          const kinds =
+            storedKindsByCandidateId.get(identifier.candidateId) ?? [];
+          kinds.push(identifier.kind);
+          storedKindsByCandidateId.set(identifier.candidateId, kinds);
+        }
+
         const identityConflicts: Array<{
           candidateType: DomainDiscoveryCandidate["type"];
           identifiers: string[];
           candidateIds: string[];
         }> = [];
-        for (const candidate of input.candidates) {
-          const identifiers = candidateIdentifiers(candidate);
-          const primaryIdentifier = identifiers[0];
-          if (!primaryIdentifier) {
-            throw new Error("Discovery candidate has no stable identifier.");
+        const resolutions: Array<
+          (typeof preparedCandidates)[number] & {
+            candidateId: string | null;
+            existing: StoredDiscoveryCandidate | null;
+            newCandidateGroupIndex: number | null;
           }
-
-          const matchedIdentifiers = await transaction
-            .select({
-              candidateId: discoveryCandidateIdentifiers.candidateId,
-              kind: discoveryCandidateIdentifiers.kind,
-              normalizedValue: discoveryCandidateIdentifiers.normalizedValue,
-            })
-            .from(discoveryCandidateIdentifiers)
-            .where(
-              and(
-                eq(discoveryCandidateIdentifiers.candidateType, candidate.type),
-                inArray(
-                  discoveryCandidateIdentifiers.normalizedValue,
-                  identifiers.map(({ value }) => value),
+        > = [];
+        const strictDuplicateCandidates = input.candidates.some(
+          (candidate) => "research" in candidate,
+        );
+        const firstCandidateIndexByStoredId = new Map<string, number>();
+        const firstNewCandidateGroupByIdentifier = new Map<string, number>();
+        for (const prepared of preparedCandidates) {
+          const identifierKeys = prepared.identifiers.map(
+            ({ value }) => `${prepared.candidate.type}:${value}`,
+          );
+          const resolvedCandidateIds = [
+            ...new Set(
+              identifierKeys
+                .map((identifierKey) =>
+                  candidateIdByIdentifier.get(identifierKey),
+                )
+                .filter((candidateId): candidateId is string =>
+                  Boolean(candidateId),
                 ),
-              ),
-            );
-          const matchedCandidateIds = [
-            ...new Set(matchedIdentifiers.map(({ candidateId }) => candidateId)),
+            ),
           ].sort();
-          if (matchedCandidateIds.length > 1) {
+          const newCandidateGroupIndexes = [
+            ...new Set(
+              identifierKeys
+                .map((identifierKey) =>
+                  firstNewCandidateGroupByIdentifier.get(identifierKey),
+                )
+                .filter((candidateIndex): candidateIndex is number =>
+                  candidateIndex !== undefined,
+                ),
+            ),
+          ].sort((left, right) => left - right);
+          if (
+            resolvedCandidateIds.length > 1 ||
+            (resolvedCandidateIds.length > 0 &&
+              newCandidateGroupIndexes.length > 0)
+          ) {
             if (identityConflicts.length < 20) {
               identityConflicts.push({
-                candidateType: candidate.type,
-                identifiers: identifiers
+                candidateType: prepared.candidate.type,
+                identifiers: prepared.identifiers
                   .map(({ value }) => value.slice(0, 512))
                   .slice(0, 4),
-                candidateIds: matchedCandidateIds.slice(0, 4),
+                candidateIds: resolvedCandidateIds.slice(0, 4),
               });
             }
             continue;
           }
 
-          let candidateId: string;
-          if (matchedCandidateIds.length === 1) {
-            candidateId = matchedCandidateIds[0]!;
-            const [existing] = await transaction
-              .select()
-              .from(discoveryCandidates)
-              .where(eq(discoveryCandidates.id, candidateId))
-              .for("update")
-              .limit(1);
-            if (!existing) {
-              throw new Error("Discovery identifier owner could not be read.");
+          const candidateId = resolvedCandidateIds[0] ?? null;
+          if (candidateId) {
+            const firstCandidateIndex =
+              firstCandidateIndexByStoredId.get(candidateId);
+            if (firstCandidateIndex !== undefined) {
+              if (strictDuplicateCandidates) {
+                return {
+                  outcome: "conflict" as const,
+                  reason: "duplicate_candidate_in_batch" as const,
+                  details: {
+                    candidateIndexes: [
+                      firstCandidateIndex,
+                      prepared.candidateIndex,
+                    ] as [number, number],
+                  },
+                  run,
+                };
+              }
+            } else {
+              firstCandidateIndexByStoredId.set(
+                candidateId,
+                prepared.candidateIndex,
+              );
             }
-            const storedIdentifiers = await transaction
-              .select({ kind: discoveryCandidateIdentifiers.kind })
-              .from(discoveryCandidateIdentifiers)
-              .where(eq(discoveryCandidateIdentifiers.candidateId, candidateId));
+          }
+
+          if (!candidateId && newCandidateGroupIndexes.length > 1) {
+            if (identityConflicts.length < 20) {
+              identityConflicts.push({
+                candidateType: prepared.candidate.type,
+                identifiers: prepared.identifiers
+                  .map(({ value }) => value.slice(0, 512))
+                  .slice(0, 4),
+                candidateIds: [],
+              });
+            }
+            continue;
+          }
+
+          const newCandidateGroupIndex = candidateId
+            ? null
+            : (newCandidateGroupIndexes[0] ?? prepared.candidateIndex);
+          if (
+            !candidateId &&
+            newCandidateGroupIndexes.length === 1 &&
+            strictDuplicateCandidates
+          ) {
+            return {
+              outcome: "conflict" as const,
+              reason: "duplicate_candidate_in_batch" as const,
+              details: {
+                candidateIndexes: [
+                  newCandidateGroupIndexes[0]!,
+                  prepared.candidateIndex,
+                ] as [number, number],
+              },
+              run,
+            };
+          }
+          if (newCandidateGroupIndex !== null) {
+            for (const identifierKey of identifierKeys) {
+              firstNewCandidateGroupByIdentifier.set(
+                identifierKey,
+                newCandidateGroupIndex,
+              );
+            }
+          }
+          resolutions.push({
+            ...prepared,
+            candidateId,
+            existing: candidateId
+              ? (lockedCandidateById.get(candidateId) ?? null)
+              : null,
+            newCandidateGroupIndex,
+          });
+        }
+
+        const newResolutions = resolutions.filter(
+          (resolution) =>
+            resolution.candidateId === null &&
+            resolution.newCandidateGroupIndex === resolution.candidateIndex,
+        );
+        const createdCandidates =
+          newResolutions.length === 0
+            ? []
+            : await transaction
+                .insert(discoveryCandidates)
+                .values(
+                  newResolutions.map(({ candidate, primaryIdentifier }) => ({
+                    type: candidate.type,
+                    name: candidate.name,
+                    normalizedName: normalizedCandidateName(candidate.name),
+                    canonicalIdentityKey:
+                      canonicalIdentityKey(primaryIdentifier),
+                    canonicalUrl: displayCanonicalUrl(
+                      candidate,
+                      primaryIdentifier.kind,
+                    ),
+                    websiteUrl: candidate.websiteUrl ?? null,
+                    primarySocialUrl: candidate.primarySocialUrl ?? null,
+                    linkedinUrl: candidate.linkedinUrl ?? null,
+                    discoveredDescription: candidate.discoveredDescription,
+                    category: candidate.category,
+                    subcategory: candidate.subcategory ?? null,
+                    geography: candidate.geography,
+                    firstSourceName: candidate.sourceName,
+                    firstSourceUrl: candidate.sourceUrl,
+                    discoveredAt: input.now,
+                    lastSeenAt: input.now,
+                    createdAt: input.now,
+                    updatedAt: input.now,
+                    mostRecentRunId: run.id,
+                    discoveryScore: candidate.discoveryScore,
+                    status: "discovered" as const,
+                    rawMetadata: candidate.rawMetadata,
+                  })),
+                )
+                .returning({
+                  id: discoveryCandidates.id,
+                  type: discoveryCandidates.type,
+                  canonicalIdentityKey:
+                    discoveryCandidates.canonicalIdentityKey,
+                });
+        const createdCandidateIdByKey = new Map(
+          createdCandidates.map((candidate) => [
+            `${candidate.type}:${candidate.canonicalIdentityKey}`,
+            candidate.id,
+          ]),
+        );
+        const createdCandidateIdByGroupIndex = new Map<number, string>();
+        for (const resolution of newResolutions) {
+          const createdId = createdCandidateIdByKey.get(
+            `${resolution.candidate.type}:${canonicalIdentityKey(resolution.primaryIdentifier)}`,
+          );
+          if (!createdId) {
+            throw new Error("Discovery candidate was not created.");
+          }
+          createdCandidateIdByGroupIndex.set(
+            resolution.candidateIndex,
+            createdId,
+          );
+        }
+        for (const resolution of resolutions) {
+          if (resolution.candidateId) continue;
+          const createdId = createdCandidateIdByGroupIndex.get(
+            resolution.newCandidateGroupIndex!,
+          );
+          if (!createdId) {
+            throw new Error("Discovery candidate group was not created.");
+          }
+          resolution.candidateId = createdId;
+        }
+
+        const existingResolutions = resolutions.filter(
+          (
+            resolution,
+          ): resolution is typeof resolution & {
+            candidateId: string;
+            existing: StoredDiscoveryCandidate;
+          } => Boolean(resolution.candidateId && resolution.existing),
+        );
+        for (const {
+          candidate,
+          candidateId,
+          existing,
+          primaryIdentifier,
+        } of existingResolutions) {
+            const storedKinds = storedKindsByCandidateId.get(candidateId) ?? [];
             const currentBestRank = Math.min(
-              ...storedIdentifiers.map(({ kind }) =>
+              ...storedKinds.map((kind) =>
                 identifierRank(candidate.type, kind),
               ),
             );
@@ -582,74 +874,51 @@ export function createDiscoveryRepository(
                 rawMetadata: candidate.rawMetadata,
               })
               .where(eq(discoveryCandidates.id, candidateId));
-            duplicateCount += 1;
-          } else {
-            const [created] = await transaction
-              .insert(discoveryCandidates)
-              .values({
-                type: candidate.type,
-                name: candidate.name,
-                normalizedName: normalizedCandidateName(candidate.name),
-                canonicalIdentityKey: canonicalIdentityKey(primaryIdentifier),
-                canonicalUrl: displayCanonicalUrl(
-                  candidate,
-                  primaryIdentifier.kind,
-                ),
-                websiteUrl: candidate.websiteUrl ?? null,
-                primarySocialUrl: candidate.primarySocialUrl ?? null,
-                linkedinUrl: candidate.linkedinUrl ?? null,
-                discoveredDescription: candidate.discoveredDescription,
-                category: candidate.category,
-                subcategory: candidate.subcategory ?? null,
-                geography: candidate.geography,
-                firstSourceName: candidate.sourceName,
-                firstSourceUrl: candidate.sourceUrl,
-                discoveredAt: input.now,
-                lastSeenAt: input.now,
-                createdAt: input.now,
-                updatedAt: input.now,
-                mostRecentRunId: run.id,
-                discoveryScore: candidate.discoveryScore,
-                status: "discovered",
-                rawMetadata: candidate.rawMetadata,
-              })
-              .returning();
-            if (!created) {
-              throw new Error("Discovery candidate was not created.");
-            }
-            candidateId = created.id;
-            newCount += 1;
-          }
+        }
 
+        const persistedResolutions = resolutions.map((resolution) => {
+          if (!resolution.candidateId) {
+            throw new Error("Discovery candidate identity was not resolved.");
+          }
+          return { ...resolution, candidateId: resolution.candidateId };
+        });
+        const identifierRows = persistedResolutions.flatMap(
+          ({ candidate, candidateId, identifiers }) =>
+            identifiers.map((identifier) => ({
+              candidateId,
+              candidateType: candidate.type,
+              kind: identifier.kind,
+              normalizedValue: identifier.value,
+              createdAt: input.now,
+            })),
+        );
+        if (identifierRows.length > 0) {
           await transaction
             .insert(discoveryCandidateIdentifiers)
-            .values(
-              identifiers.map((identifier) => ({
-                candidateId,
-                candidateType: candidate.type,
-                kind: identifier.kind,
-                normalizedValue: identifier.value,
-                createdAt: input.now,
-              })),
-            )
+            .values(identifierRows)
             .onConflictDoNothing({
               target: [
                 discoveryCandidateIdentifiers.candidateType,
                 discoveryCandidateIdentifiers.normalizedValue,
               ],
             });
+        }
+        const sourceRows = persistedResolutions.map(
+          ({ candidate, candidateId }) => ({
+            candidateId,
+            discoveryRunId: run.id,
+            sourceName: candidate.sourceName,
+            sourceUrl: candidate.sourceUrl,
+            firstSeenAt: input.now,
+            lastSeenAt: input.now,
+            rawMetadata: candidate.rawMetadata,
+            createdAt: input.now,
+          }),
+        );
+        if (sourceRows.length > 0) {
           await transaction
             .insert(discoveryCandidateSources)
-            .values({
-              candidateId,
-              discoveryRunId: run.id,
-              sourceName: candidate.sourceName,
-              sourceUrl: candidate.sourceUrl,
-              firstSeenAt: input.now,
-              lastSeenAt: input.now,
-              rawMetadata: candidate.rawMetadata,
-              createdAt: input.now,
-            })
+            .values(sourceRows)
             .onConflictDoUpdate({
               target: [
                 discoveryCandidateSources.candidateId,
@@ -657,17 +926,43 @@ export function createDiscoveryRepository(
                 discoveryCandidateSources.sourceUrl,
               ],
               set: {
-                discoveryRunId: run.id,
-                lastSeenAt: input.now,
-                rawMetadata: candidate.rawMetadata,
+                discoveryRunId: sql`excluded.discovery_run_id`,
+                lastSeenAt: sql`excluded.last_seen_at`,
+                rawMetadata: sql`excluded.raw_metadata`,
               },
             });
         }
+        const researchRows = persistedResolutions.flatMap(
+          ({ candidate, candidateId }) =>
+            "research" in candidate
+              ? [
+                  {
+                    candidateId,
+                    discoveryRunId: run.id,
+                    summary: candidate.research.summary,
+                    findings: candidate.research.findings,
+                    sourceUrls: candidate.research.sourceUrls,
+                    analysisVersion: candidate.research.analysisVersion,
+                    createdAt: input.now,
+                  },
+                ]
+              : [],
+        );
+        if (researchRows.length > 0) {
+          await transaction
+            .insert(candidateResearchVersions)
+            .values(researchRows);
+        }
+
+        const newCount = newResolutions.length;
+        const duplicateCount = persistedResolutions.length - newCount;
 
         const sourceErrors = boundedSourceErrors(input.sourceErrors);
         const status =
           input.candidates.length === 0
-            ? "failed"
+            ? sourceErrors.length === 0
+              ? "succeeded"
+              : "failed"
             : sourceErrors.length > 0 || identityConflicts.length > 0
               ? "partial"
               : "succeeded";
@@ -682,7 +977,7 @@ export function createDiscoveryRepository(
             newCount,
             duplicateCount,
             errorSummary: {
-              ...(input.candidates.length === 0
+              ...(input.candidates.length === 0 && sourceErrors.length > 0
                 ? {
                     failure: {
                       code: "empty_submission",
@@ -830,6 +1125,34 @@ export function createDiscoveryRepository(
       return latest
         ? { outcome: "conflict" as const, candidate: latest }
         : { outcome: "not_found" as const };
+    },
+
+    async getCandidateResearchVersions(candidateId, limit) {
+      const [candidate] = await database
+        .select({ id: discoveryCandidates.id })
+        .from(discoveryCandidates)
+        .where(eq(discoveryCandidates.id, candidateId))
+        .limit(1);
+      if (!candidate) return null;
+
+      const boundedLimit = Math.min(
+        25,
+        Math.max(1, Number.isFinite(limit) && Number.isInteger(limit) ? limit : 25),
+      );
+      const versions = await database
+        .select()
+        .from(candidateResearchVersions)
+        .where(eq(candidateResearchVersions.candidateId, candidateId))
+        .orderBy(
+          desc(candidateResearchVersions.createdAt),
+          desc(candidateResearchVersions.id),
+        )
+        .limit(boundedLimit);
+      return {
+        candidateId,
+        latest: versions[0] ?? null,
+        history: versions.slice(1),
+      };
     },
 
     async getAdminSummary(filters) {

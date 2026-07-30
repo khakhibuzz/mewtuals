@@ -14,21 +14,43 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 
+import { validateMigrationJournal } from "./migration-journal.mjs";
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const migrationsFolder = join(projectRoot, "drizzle");
+const migrationJournalPath = join(
+  migrationsFolder,
+  "meta",
+  "_journal.json",
+);
 const adminUrl = "postgresql://127.0.0.1:55432/postgres";
 const managedDatabaseNames = [
-  "mewtuals_discovery_fresh_test",
-  "mewtuals_discovery_upgrade_test",
-  "mewtuals_radar_upgrade_test",
+  "mewtuals_migrations_fresh_test",
+  "mewtuals_migrations_upgrade_test",
 ];
 const allowedDatabaseNames = new Set(managedDatabaseNames);
-const freshDatabaseName = managedDatabaseNames[0];
-const discoveryUpgradeDatabaseName = managedDatabaseNames[1];
-const radarUpgradeDatabaseName = managedDatabaseNames[2];
-const ownershipMarker = "mewtuals-discovery-migration-harness-v1";
+const [freshDatabaseName, upgradeDatabaseName] = managedDatabaseNames;
+const ownershipMarker = "mewtuals-migration-harness-v1";
 const createdDatabaseNames = new Set();
 const ownedDatabaseNames = new Set();
+
+const migrationJournal = JSON.parse(
+  await readFile(migrationJournalPath, "utf8"),
+);
+const orderedMigrationEntries = validateMigrationJournal(migrationJournal);
+const newestMigration = orderedMigrationEntries.at(-1);
+const radarMigration = orderedMigrationEntries.find(
+  ({ tag }) => tag === "0008_global_demand_radar",
+);
+assert(
+  radarMigration?.idx === 8,
+  "Expected Global Demand Radar to remain migration 0008_global_demand_radar.",
+);
+const radarBaselineMigration = orderedMigrationEntries[radarMigration.idx - 1];
+assert(
+  radarBaselineMigration?.tag === "0007_physical_ai_discovery_v1",
+  "Expected Physical AI Discovery V2 migration 0007 to precede Global Demand Radar migration 0008.",
+);
 
 function assertAllowedDatabaseName(databaseName) {
   if (!allowedDatabaseNames.has(databaseName)) {
@@ -102,59 +124,23 @@ async function prepareDatabase(admin, databaseName) {
   await createDatabase(admin, databaseName);
 }
 
-async function readMigrationJournal() {
-  const journalPath = join(migrationsFolder, "meta", "_journal.json");
-  const journal = JSON.parse(await readFile(journalPath, "utf8"));
-  assert(Array.isArray(journal.entries), "Migration journal entries are required.");
-  const entries = [...journal.entries].sort((left, right) => left.idx - right.idx);
-  assert(
-    entries.every((entry, index) => entry.idx === index),
-    `Migration journal must be contiguous, found ${JSON.stringify(entries)}.`,
-  );
-  return { ...journal, entries };
-}
-
-function findMigrationEntry(journal, tagPrefix) {
-  const matches = journal.entries.filter(({ tag }) =>
-    tag.startsWith(`${tagPrefix}_`),
-  );
-  assert(
-    matches.length === 1,
-    `Expected one ${tagPrefix} migration, found ${JSON.stringify(matches)}.`,
-  );
-  return matches[0];
-}
-
-function findHarnessMigrationEntries(journal) {
-  const through3Entry = findMigrationEntry(journal, "0003");
-  const through4Entry = findMigrationEntry(journal, "0004");
-  const through5Entry = findMigrationEntry(journal, "0005");
-  assert(
-    through3Entry.idx < through4Entry.idx && through4Entry.idx < through5Entry.idx,
-    `Expected ordered 0003, 0004, and 0005 migrations, found ${JSON.stringify([
-      through3Entry,
-      through4Entry,
-      through5Entry,
-    ])}.`,
-  );
-  return { through3Entry, through4Entry, through5Entry };
-}
-
-async function createMigrationFolderThrough(journal, targetEntry) {
+async function createUpgradeMigrationFolderThrough(targetMigration) {
   const temporaryFolder = await mkdtemp(
-    join(tmpdir(), `mewtuals-migrations-through-${targetEntry.tag}-`),
+    join(tmpdir(), "mewtuals-migrations-"),
   );
   try {
     const metaFolder = join(temporaryFolder, "meta");
     await mkdir(metaFolder);
 
     const filteredJournal = {
-      ...journal,
-      entries: journal.entries.filter(({ idx }) => idx <= targetEntry.idx),
+      ...migrationJournal,
+      entries: orderedMigrationEntries.filter(
+        ({ idx }) => idx <= targetMigration.idx,
+      ),
     };
     assert(
-      filteredJournal.entries.at(-1)?.tag === targetEntry.tag,
-      `Migration journal does not contain target ${targetEntry.tag}.`,
+      filteredJournal.entries.at(-1)?.tag === targetMigration.tag,
+      `Migration journal does not contain target ${targetMigration.tag}.`,
     );
     await writeFile(
       join(metaFolder, "_journal.json"),
@@ -245,40 +231,14 @@ async function insertUpgradeFixtures(sql) {
       notes,
       reviewed_at as "reviewedAt"
   `;
-  return { user, profile, review };
-}
-
-async function insertRadarUpgradeFixtures(sql) {
-  const legacy = await insertUpgradeFixtures(sql);
-  const [session] = await sql`
-    insert into sessions (
-      user_id,
-      token_hash,
-      expires_at,
-      last_seen_at
-    ) values (
-      ${legacy.user.id},
-      'radar-upgrade-session-token-hash',
-      '2026-08-21T09:00:00.000Z',
-      '2026-07-21T09:30:00.000Z'
-    )
-    returning
-      id,
-      user_id as "userId",
-      token_hash as "tokenHash",
-      expires_at as "expiresAt",
-      last_seen_at as "lastSeenAt"
-  `;
-  const [run] = await sql`
+  const [discoveryRun] = await sql`
     insert into discovery_runs (
       external_run_key,
+      campaign_key,
       trigger,
       status,
       started_at,
       completed_at,
-      lease_token_hash,
-      lease_expires_at,
-      submission_hash,
       geography,
       candidate_type,
       sources_used,
@@ -287,31 +247,28 @@ async function insertRadarUpgradeFixtures(sql) {
       found_count,
       new_count,
       duplicate_count,
-      error_summary,
       requested_by_email
     ) values (
       'discovery:manual:radar-upgrade-fixture',
+      'robotics_hardware_india',
       'manual',
       'succeeded',
+      '2026-07-21T09:45:00.000Z',
       '2026-07-21T10:00:00.000Z',
-      '2026-07-21T10:10:00.000Z',
-      'radar-upgrade-lease-hash',
-      '2026-07-21T12:00:00.000Z',
-      'radar-upgrade-submission-hash',
       'India',
       'company',
       ARRAY['Official fixture source']::text[],
-      1,
-      100,
+      20,
+      75,
       1,
       1,
       0,
-      '{}'::jsonb,
       'admin@mewtuals.com'
     )
     returning
       id,
       external_run_key as "externalRunKey",
+      campaign_key as "campaignKey",
       trigger,
       status,
       started_at as "startedAt",
@@ -324,8 +281,22 @@ async function insertRadarUpgradeFixtures(sql) {
       found_count as "foundCount",
       new_count as "newCount",
       duplicate_count as "duplicateCount",
-      error_summary as "errorSummary",
       requested_by_email as "requestedByEmail"
+  `;
+  const [session] = await sql`
+    insert into sessions (user_id, token_hash, expires_at, last_seen_at)
+    values (
+      ${user.id},
+      'radar-upgrade-session-token-hash',
+      '2026-08-21T09:00:00.000Z',
+      '2026-07-21T09:30:00.000Z'
+    )
+    returning
+      id,
+      user_id as "userId",
+      token_hash as "tokenHash",
+      expires_at as "expiresAt",
+      last_seen_at as "lastSeenAt"
   `;
   const [candidate] = await sql`
     insert into discovery_candidates (
@@ -351,25 +322,25 @@ async function insertRadarUpgradeFixtures(sql) {
       raw_metadata
     ) values (
       'company',
-      'Radar Upgrade Robotics',
-      'radar upgrade robotics',
-      'website:radar-upgrade.example.test',
-      'https://radar-upgrade.example.test/',
-      'https://radar-upgrade.example.test/',
-      'https://www.linkedin.com/company/radar-upgrade-robotics/',
-      'https://www.linkedin.com/company/radar-upgrade-robotics/',
-      'Public robotics migration fixture.',
-      'robotics_hardware',
-      'sensors',
+      'Physical AI Upgrade Robotics',
+      'physical ai upgrade robotics',
+      'website:physical-ai-upgrade.example.test',
+      'https://physical-ai-upgrade.example.test/',
+      'https://physical-ai-upgrade.example.test/',
+      'https://www.linkedin.com/company/physical-ai-upgrade-robotics/',
+      'https://www.linkedin.com/company/physical-ai-upgrade-robotics/',
+      'Public robotics migration fixture for the deployed Physical AI Discovery V2 contract.',
+      'robot makers and integrators',
+      'industrial robotics',
       'India',
       'Official fixture source',
-      'https://radar-upgrade.example.test/news',
-      '2026-07-21T10:05:00.000Z',
-      '2026-07-21T10:05:00.000Z',
-      ${run.id},
+      'https://physical-ai-upgrade.example.test/news',
+      '2026-07-21T09:50:00.000Z',
+      '2026-07-21T09:50:00.000Z',
+      ${discoveryRun.id},
       88,
       'shortlisted',
-      '{"fixture":"radar-upgrade"}'::jsonb
+      '{"fixture":"physical-ai-upgrade"}'::jsonb
     )
     returning
       id,
@@ -404,7 +375,7 @@ async function insertRadarUpgradeFixtures(sql) {
       ${candidate.id},
       'company',
       'website_host',
-      'radar-upgrade.example.test'
+      'physical-ai-upgrade.example.test'
     )
     returning
       id,
@@ -424,12 +395,12 @@ async function insertRadarUpgradeFixtures(sql) {
       raw_metadata
     ) values (
       ${candidate.id},
-      ${run.id},
+      ${discoveryRun.id},
       'Official fixture source',
-      'https://radar-upgrade.example.test/news',
-      '2026-07-21T10:05:00.000Z',
-      '2026-07-21T10:05:00.000Z',
-      '{"fixture":"radar-upgrade"}'::jsonb
+      'https://physical-ai-upgrade.example.test/news',
+      '2026-07-21T09:50:00.000Z',
+      '2026-07-21T09:50:00.000Z',
+      '{"fixture":"physical-ai-upgrade"}'::jsonb
     )
     returning
       id,
@@ -441,7 +412,116 @@ async function insertRadarUpgradeFixtures(sql) {
       last_seen_at as "lastSeenAt",
       raw_metadata as "rawMetadata"
   `;
-  return { ...legacy, session, run, candidate, identifier, source };
+  const [research] = await sql`
+    insert into candidate_research_versions (
+      candidate_id,
+      discovery_run_id,
+      summary,
+      findings,
+      source_urls,
+      analysis_version
+    ) values (
+      ${candidate.id},
+      ${discoveryRun.id},
+      repeat('Evidence-backed Physical AI Discovery V2 migration summary. ', 2),
+      repeat('Evidence-backed fact. Assessment. Unknown. Physical AI systems context and India strategic context. ', 7),
+      '["https://physical-ai-upgrade.example.test/news"]'::jsonb,
+      'physical-ai-v1'
+    )
+    returning
+      id,
+      candidate_id as "candidateId",
+      discovery_run_id as "discoveryRunId",
+      summary,
+      findings,
+      source_urls as "sourceUrls",
+      analysis_version as "analysisVersion"
+  `;
+  const [opportunityBrief] = await sql`
+    insert into opportunity_brief_requests (
+      participant_type,
+      profile_url,
+      normalized_profile_url,
+      email,
+      normalized_email,
+      phone_number,
+      normalized_phone_number,
+      open_to_text,
+      source,
+      utm,
+      source_history,
+      linked_candidate_id,
+      status,
+      admin_notes,
+      acknowledgement_status,
+      acknowledgement_email,
+      submission_count,
+      last_submitted_at
+    ) values (
+      'company',
+      'https://physical-ai-upgrade.example.test/',
+      'https://physical-ai-upgrade.example.test/',
+      'founder@physical-ai-upgrade.example.test',
+      'founder@physical-ai-upgrade.example.test',
+      '+919999999999',
+      '+919999999999',
+      'Open to manufacturing and deployment partnerships.',
+      'bengaluru-meetup',
+      '{"source":"bengaluru-meetup"}'::jsonb,
+      '[{"source":"bengaluru-meetup","seenAt":"2026-07-21T09:55:00.000Z"}]'::jsonb,
+      ${candidate.id},
+      'researching',
+      'Migration fixture',
+      'sent',
+      'founder@physical-ai-upgrade.example.test',
+      2,
+      '2026-07-21T09:55:00.000Z'
+    )
+    returning
+      id,
+      participant_type as "participantType",
+      profile_url as "profileUrl",
+      normalized_profile_url as "normalizedProfileUrl",
+      normalized_email as "normalizedEmail",
+      normalized_phone_number as "normalizedPhoneNumber",
+      open_to_text as "openToText",
+      source,
+      utm,
+      source_history as "sourceHistory",
+      linked_candidate_id as "linkedCandidateId",
+      status,
+      admin_notes as "adminNotes",
+      acknowledgement_status as "acknowledgementStatus",
+      acknowledgement_email as "acknowledgementEmail",
+      submission_count as "submissionCount",
+      last_submitted_at as "lastSubmittedAt"
+  `;
+  const [opportunityAttempt] = await sql`
+    insert into opportunity_brief_submission_attempts (
+      requester_hash,
+      request_id
+    ) values (
+      'physical-ai-upgrade-requester-hash',
+      ${opportunityBrief.id}
+    )
+    returning
+      id,
+      requester_hash as "requesterHash",
+      request_id as "requestId"
+  `;
+  return {
+    user,
+    profile,
+    review,
+    discoveryRun,
+    session,
+    candidate,
+    identifier,
+    source,
+    research,
+    opportunityBrief,
+    opportunityAttempt,
+  };
 }
 
 function assert(condition, message) {
@@ -465,41 +545,10 @@ function assertExactDefinitions(actualRows, expectedDefinitions, label) {
   );
 }
 
-async function assertAppliedMigrations(sql, expectedJournalEntries) {
-  const [total] = await sql`
-    select count(*)::integer as count
-    from drizzle.__drizzle_migrations
-  `;
-  assert(
-    total.count === expectedJournalEntries.length,
-    `Expected ${expectedJournalEntries.length} applied migrations, found ${total.count}.`,
-  );
-  for (const entry of expectedJournalEntries) {
-    const [applied] = await sql`
-      select count(*)::integer as count
-      from drizzle.__drizzle_migrations
-      where created_at = ${entry.when}
-    `;
-    assert(
-      applied.count === 1,
-      `Expected migration ${entry.tag} exactly once, found ${applied.count}.`,
-    );
-  }
-}
-
-async function assertDiscoveryMigration(
-  sql,
-  {
-    expectedFixtures = null,
-    expectedTriggerValues,
-    expectedJournalEntries,
-  },
-) {
+async function assertOpportunityBriefMigration(sql, expectedFixtures = null) {
   const expectedTables = [
-    "discovery_candidate_identifiers",
-    "discovery_candidate_sources",
-    "discovery_candidates",
-    "discovery_runs",
+    "opportunity_brief_requests",
+    "opportunity_brief_submission_attempts",
   ];
   const tables = await sql`
     select table_name as "tableName"
@@ -509,17 +558,14 @@ async function assertDiscoveryMigration(
     order by table_name
   `;
   assert(
-    tables.length === expectedTables.length,
-    `Expected discovery tables, found ${JSON.stringify(tables)}.`,
+    JSON.stringify(tables.map(({ tableName }) => tableName)) ===
+      JSON.stringify(expectedTables),
+    `Expected opportunity brief tables, found ${JSON.stringify(tables)}.`,
   );
 
   const enumNames = [
-    "discovery_candidate_status",
-    "discovery_candidate_type",
-    "discovery_identifier_kind",
-    "discovery_run_candidate_type",
-    "discovery_run_status",
-    "discovery_run_trigger",
+    "opportunity_brief_acknowledgement_status",
+    "opportunity_brief_status",
   ];
   const enums = await sql`
     select
@@ -534,36 +580,31 @@ async function assertDiscoveryMigration(
   assert(
     JSON.stringify(Object.fromEntries(enums.map(({ name, values }) => [name, values]))) ===
       JSON.stringify({
-        discovery_candidate_status: [
-          "discovered",
-          "shortlisted",
-          "rejected",
-          "queued_for_profile",
-        ],
-        discovery_candidate_type: ["company", "creator"],
-        discovery_identifier_kind: [
-          "canonical",
-          "website_host",
-          "social_url",
-          "linkedin_url",
-        ],
-        discovery_run_candidate_type: ["company", "creator", "both"],
-        discovery_run_status: [
-          "queued",
-          "running",
-          "succeeded",
-          "partial",
+        opportunity_brief_acknowledgement_status: [
+          "not_requested",
+          "pending",
+          "sent",
           "failed",
         ],
-        discovery_run_trigger: expectedTriggerValues,
+        opportunity_brief_status: [
+          "submitted",
+          "researching",
+          "brief_ready",
+          "contacted",
+          "invited_to_join",
+          "converted",
+          "rejected",
+        ],
       }),
-    `Expected exact discovery enums, found ${JSON.stringify(enums)}.`,
+    `Expected exact opportunity brief enums, found ${JSON.stringify(enums)}.`,
   );
 
   const columns = await sql`
     select
       table_name as "tableName",
       column_name as "columnName",
+      data_type as "dataType",
+      udt_name as "udtName",
       is_nullable as "isNullable",
       column_default as "columnDefault"
     from information_schema.columns
@@ -574,185 +615,199 @@ async function assertDiscoveryMigration(
   const columnsByTable = Object.fromEntries(
     expectedTables.map((tableName) => [
       tableName,
-      columns
-        .filter((column) => column.tableName === tableName)
-        .map((column) => column.columnName),
+      Object.fromEntries(
+        columns
+          .filter((column) => column.tableName === tableName)
+          .map(
+            ({ columnName, dataType, udtName, isNullable, columnDefault }) => [
+              columnName,
+              { dataType, udtName, isNullable, columnDefault },
+            ],
+          ),
+      ),
     ]),
   );
   assert(
     JSON.stringify(columnsByTable) ===
       JSON.stringify({
-        discovery_candidate_identifiers: [
-          "id",
-          "candidate_id",
-          "candidate_type",
-          "kind",
-          "normalized_value",
-          "created_at",
-        ],
-        discovery_candidate_sources: [
-          "id",
-          "candidate_id",
-          "discovery_run_id",
-          "source_name",
-          "source_url",
-          "first_seen_at",
-          "last_seen_at",
-          "raw_metadata",
-          "created_at",
-        ],
-        discovery_candidates: [
-          "id",
-          "type",
-          "name",
-          "normalized_name",
-          "canonical_identity_key",
-          "canonical_url",
-          "website_url",
-          "primary_social_url",
-          "linkedin_url",
-          "discovered_description",
-          "category",
-          "subcategory",
-          "geography",
-          "first_source_name",
-          "first_source_url",
-          "discovered_at",
-          "last_seen_at",
-          "created_at",
-          "updated_at",
-          "most_recent_run_id",
-          "discovery_score",
-          "status",
-          "raw_metadata",
-        ],
-        discovery_runs: [
-          "id",
-          "external_run_key",
-          "trigger",
-          "status",
-          "started_at",
-          "completed_at",
-          "created_at",
-          "updated_at",
-          "lease_token_hash",
-          "lease_expires_at",
-          "submission_hash",
-          "geography",
-          "candidate_type",
-          "sources_used",
-          "requested_count",
-          "company_percentage",
-          "found_count",
-          "new_count",
-          "duplicate_count",
-          "error_summary",
-          "requested_by_email",
-        ],
+        opportunity_brief_requests: {
+          id: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "NO",
+            columnDefault: "gen_random_uuid()",
+          },
+          participant_type: {
+            dataType: "USER-DEFINED",
+            udtName: "discovery_candidate_type",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          profile_url: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          normalized_profile_url: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          email: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          normalized_email: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          phone_number: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          normalized_phone_number: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          open_to_text: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          source: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          utm: {
+            dataType: "jsonb",
+            udtName: "jsonb",
+            isNullable: "NO",
+            columnDefault: "'{}'::jsonb",
+          },
+          source_history: {
+            dataType: "jsonb",
+            udtName: "jsonb",
+            isNullable: "NO",
+            columnDefault: "'[]'::jsonb",
+          },
+          linked_candidate_id: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          status: {
+            dataType: "USER-DEFINED",
+            udtName: "opportunity_brief_status",
+            isNullable: "NO",
+            columnDefault: "'submitted'::opportunity_brief_status",
+          },
+          admin_notes: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          acknowledgement_status: {
+            dataType: "USER-DEFINED",
+            udtName: "opportunity_brief_acknowledgement_status",
+            isNullable: "NO",
+            columnDefault:
+              "'not_requested'::opportunity_brief_acknowledgement_status",
+          },
+          acknowledgement_email: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          acknowledgement_delivery_token: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          acknowledgement_error: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          acknowledgement_sent_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "YES",
+            columnDefault: null,
+          },
+          submission_count: {
+            dataType: "integer",
+            udtName: "int4",
+            isNullable: "NO",
+            columnDefault: "1",
+          },
+          last_submitted_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "NO",
+            columnDefault: "now()",
+          },
+          created_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "NO",
+            columnDefault: "now()",
+          },
+          updated_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "NO",
+            columnDefault: "now()",
+          },
+        },
+        opportunity_brief_submission_attempts: {
+          id: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "NO",
+            columnDefault: "gen_random_uuid()",
+          },
+          requester_hash: {
+            dataType: "text",
+            udtName: "text",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          request_id: {
+            dataType: "uuid",
+            udtName: "uuid",
+            isNullable: "NO",
+            columnDefault: null,
+          },
+          created_at: {
+            dataType: "timestamp with time zone",
+            udtName: "timestamptz",
+            isNullable: "NO",
+            columnDefault: "now()",
+          },
+        },
       }),
-    `Expected exact discovery columns, found ${JSON.stringify(columnsByTable)}.`,
-  );
-  const nullableColumns = Object.fromEntries(
-    expectedTables.map((tableName) => [
-      tableName,
-      columns
-        .filter(
-          (column) =>
-            column.tableName === tableName && column.isNullable === "YES",
-        )
-        .map((column) => column.columnName),
-    ]),
-  );
-  assert(
-    JSON.stringify(nullableColumns) ===
-      JSON.stringify({
-        discovery_candidate_identifiers: [],
-        discovery_candidate_sources: [],
-        discovery_candidates: [
-          "website_url",
-          "primary_social_url",
-          "linkedin_url",
-          "subcategory",
-        ],
-        discovery_runs: [
-          "started_at",
-          "completed_at",
-          "lease_token_hash",
-          "lease_expires_at",
-          "submission_hash",
-          "requested_by_email",
-        ],
-      }),
-    `Expected exact discovery nullability, found ${JSON.stringify(nullableColumns)}.`,
-  );
-  const columnDefaults = Object.fromEntries(
-    columns
-      .filter(({ columnDefault }) => columnDefault !== null)
-      .map(({ tableName, columnName, columnDefault }) => [
-        `${tableName}.${columnName}`,
-        columnDefault,
-      ]),
-  );
-  assert(
-    JSON.stringify(columnDefaults) ===
-      JSON.stringify({
-        "discovery_candidate_identifiers.id": "gen_random_uuid()",
-        "discovery_candidate_identifiers.created_at": "now()",
-        "discovery_candidate_sources.id": "gen_random_uuid()",
-        "discovery_candidate_sources.first_seen_at": "now()",
-        "discovery_candidate_sources.last_seen_at": "now()",
-        "discovery_candidate_sources.raw_metadata": "'{}'::jsonb",
-        "discovery_candidate_sources.created_at": "now()",
-        "discovery_candidates.id": "gen_random_uuid()",
-        "discovery_candidates.discovered_at": "now()",
-        "discovery_candidates.last_seen_at": "now()",
-        "discovery_candidates.created_at": "now()",
-        "discovery_candidates.updated_at": "now()",
-        "discovery_candidates.status":
-          "'discovered'::discovery_candidate_status",
-        "discovery_candidates.raw_metadata": "'{}'::jsonb",
-        "discovery_runs.id": "gen_random_uuid()",
-        "discovery_runs.status": "'queued'::discovery_run_status",
-        "discovery_runs.created_at": "now()",
-        "discovery_runs.updated_at": "now()",
-        "discovery_runs.sources_used": "ARRAY[]::text[]",
-        "discovery_runs.found_count": "0",
-        "discovery_runs.new_count": "0",
-        "discovery_runs.duplicate_count": "0",
-        "discovery_runs.error_summary": "'{}'::jsonb",
-      }),
-    `Expected exact discovery defaults, found ${JSON.stringify(columnDefaults)}.`,
+    `Expected exact opportunity brief column contracts, found ${JSON.stringify(columnsByTable)}.`,
   );
 
-  const requiredConstraints = [
-    "discovery_candidate_identifiers_type_value_unique",
-    "discovery_candidate_sources_evidence_unique",
-    "discovery_candidates_id_type_unique",
-    "discovery_candidates_score_check",
-    "discovery_candidates_type_canonical_identity_unique",
-    "discovery_runs_company_percentage_check",
-    "discovery_runs_external_run_key_unique",
-    "discovery_runs_requested_count_check",
-  ];
-  const constraints = await sql`
-    select constraint_name as "constraintName"
-    from information_schema.table_constraints
-    where table_schema = 'public'
-      and constraint_name in ${sql(requiredConstraints)}
-  `;
-  assert(
-    constraints.length === requiredConstraints.length,
-    `Expected discovery constraints, found ${JSON.stringify(constraints)}.`,
-  );
-  const checkNames = [
-    "discovery_candidate_identifiers_value_check",
-    "discovery_candidates_name_check",
-    "discovery_candidates_score_check",
-    "discovery_runs_company_percentage_check",
-    "discovery_runs_counts_check",
-    "discovery_runs_requested_count_check",
-    "discovery_runs_running_lease_check",
-  ];
+  const checkNames = ["opportunity_brief_requests_submission_count_check"];
   const checkDefinitions = await sql`
     select conname as name, pg_get_constraintdef(oid, true) as definition
     from pg_constraint
@@ -764,29 +819,15 @@ async function assertDiscoveryMigration(
   assertExactDefinitions(
     checkDefinitions,
     {
-      discovery_candidate_identifiers_value_check:
-        "CHECK (length(btrim(normalized_value)) > 0)",
-      discovery_candidates_name_check:
-        "CHECK (length(btrim(name)) > 0 AND length(btrim(normalized_name)) > 0)",
-      discovery_candidates_score_check:
-        "CHECK (discovery_score >= 0 AND discovery_score <= 100)",
-      discovery_runs_company_percentage_check:
-        "CHECK (company_percentage >= 0 AND company_percentage <= 100)",
-      discovery_runs_counts_check:
-        "CHECK (found_count >= 0 AND new_count >= 0 AND duplicate_count >= 0)",
-      discovery_runs_requested_count_check:
-        "CHECK (requested_count > 0 AND requested_count <= 50)",
-      discovery_runs_running_lease_check:
-        "CHECK (status <> 'running'::discovery_run_status OR started_at IS NOT NULL AND lease_token_hash IS NOT NULL AND lease_expires_at IS NOT NULL AND completed_at IS NULL)",
+      opportunity_brief_requests_submission_count_check:
+        "CHECK (submission_count > 0)",
     },
-    "check constraint",
+    "opportunity brief check constraint",
   );
 
   const foreignKeyNames = [
-    "discovery_candidates_recent_run_fk",
-    "discovery_identifiers_candidate_type_fk",
-    "discovery_sources_candidate_fk",
-    "discovery_sources_run_fk",
+    "opportunity_brief_requests_linked_candidate_fk",
+    "opportunity_brief_submission_attempts_request_fk",
   ];
   const foreignKeyDefinitions = await sql`
     select conname as name, pg_get_constraintdef(oid, true) as definition
@@ -799,94 +840,41 @@ async function assertDiscoveryMigration(
   assertExactDefinitions(
     foreignKeyDefinitions,
     {
-      discovery_candidates_recent_run_fk:
-        "FOREIGN KEY (most_recent_run_id) REFERENCES discovery_runs(id)",
-      discovery_identifiers_candidate_type_fk:
-        "FOREIGN KEY (candidate_id, candidate_type) REFERENCES discovery_candidates(id, type) ON DELETE CASCADE",
-      discovery_sources_candidate_fk:
-        "FOREIGN KEY (candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
-      discovery_sources_run_fk:
-        "FOREIGN KEY (discovery_run_id) REFERENCES discovery_runs(id)",
+      opportunity_brief_requests_linked_candidate_fk:
+        "FOREIGN KEY (linked_candidate_id) REFERENCES discovery_candidates(id) ON DELETE SET NULL",
+      opportunity_brief_submission_attempts_request_fk:
+        "FOREIGN KEY (request_id) REFERENCES opportunity_brief_requests(id) ON DELETE CASCADE",
     },
-    "foreign key",
+    "opportunity brief foreign key",
   );
 
-  const uniqueNames = [
-    "discovery_candidate_identifiers_type_value_unique",
-    "discovery_candidate_sources_evidence_unique",
-    "discovery_candidates_id_type_unique",
-    "discovery_candidates_type_canonical_identity_unique",
-    "discovery_runs_external_run_key_unique",
-  ];
   const uniqueDefinitions = await sql`
     select conname as name, pg_get_constraintdef(oid, true) as definition
     from pg_constraint
     where connamespace = 'public'::regnamespace
       and contype = 'u'
-      and conname in ${sql(uniqueNames)}
+      and conname = 'opportunity_brief_requests_participant_profile_unique'
     order by conname
   `;
   assertExactDefinitions(
     uniqueDefinitions,
     {
-      discovery_candidate_identifiers_type_value_unique:
-        "UNIQUE (candidate_type, normalized_value)",
-      discovery_candidate_sources_evidence_unique:
-        "UNIQUE (candidate_id, source_name, source_url)",
-      discovery_candidates_id_type_unique: "UNIQUE (id, type)",
-      discovery_candidates_type_canonical_identity_unique:
-        "UNIQUE (type, canonical_identity_key)",
-      discovery_runs_external_run_key_unique: "UNIQUE (external_run_key)",
+      opportunity_brief_requests_participant_profile_unique:
+        "UNIQUE (participant_type, normalized_profile_url)",
     },
-    "unique constraint",
+    "opportunity brief unique constraint",
   );
 
-  const [activeRunIndex] = await sql`
-    select
-      index_definition.indexdef as "indexDefinition",
-      pg_get_expr(index_catalog.indexprs, index_catalog.indrelid) as expression,
-      pg_get_expr(index_catalog.indpred, index_catalog.indrelid) as predicate,
-      index_catalog.indisunique as "isUnique"
-    from pg_index index_catalog
-    join pg_class index_class on index_class.oid = index_catalog.indexrelid
-    join pg_indexes index_definition on index_definition.indexname = index_class.relname
-    where index_class.relname = 'discovery_runs_one_running_idx'
-      and index_definition.schemaname = 'public'
-  `;
-  assert(
-    activeRunIndex?.isUnique === true &&
-      activeRunIndex.expression === "true" &&
-      activeRunIndex.predicate ===
-        "(status = 'running'::discovery_run_status)" &&
-      activeRunIndex.indexDefinition ===
-        "CREATE UNIQUE INDEX discovery_runs_one_running_idx ON public.discovery_runs USING btree ((true)) WHERE (status = 'running'::discovery_run_status)",
-    `Expected exact partial active-run index, found ${JSON.stringify(activeRunIndex ?? null)}.`,
-  );
-  const [sourceFirstIndex] = await sql`
-    select indexdef as "indexDefinition"
-    from pg_indexes
-    where schemaname = 'public'
-      and indexname = 'discovery_candidate_sources_source_candidate_idx'
-  `;
-  assert(
-    sourceFirstIndex?.indexDefinition ===
-      "CREATE INDEX discovery_candidate_sources_source_candidate_idx ON public.discovery_candidate_sources USING btree (source_name, candidate_id)",
-    `Expected exact source-first index, found ${sourceFirstIndex?.indexDefinition ?? "none"}.`,
-  );
   const filterIndexNames = [
-    "discovery_candidate_identifiers_candidate_idx",
-    "discovery_candidate_sources_candidate_idx",
-    "discovery_candidate_sources_run_idx",
-    "discovery_candidate_sources_source_candidate_idx",
-    "discovery_candidates_category_idx",
-    "discovery_candidates_discovered_at_idx",
-    "discovery_candidates_geography_idx",
-    "discovery_candidates_recent_run_idx",
-    "discovery_candidates_source_idx",
-    "discovery_candidates_status_idx",
-    "discovery_candidates_type_idx",
-    "discovery_runs_claim_idx",
-    "discovery_runs_lease_expiry_idx",
+    "opportunity_brief_requests_created_at_idx",
+    "opportunity_brief_requests_linked_candidate_idx",
+    "opportunity_brief_requests_normalized_email_idx",
+    "opportunity_brief_requests_normalized_phone_number_idx",
+    "opportunity_brief_requests_participant_type_idx",
+    "opportunity_brief_requests_source_idx",
+    "opportunity_brief_requests_status_last_submitted_at_idx",
+    "opportunity_brief_submission_attempts_request_id_idx",
+    "opportunity_brief_submission_attempts_requester_created_at_idx",
   ];
   const filterIndexes = await sql`
     select indexname as name, indexdef as definition
@@ -898,79 +886,72 @@ async function assertDiscoveryMigration(
   assertExactDefinitions(
     filterIndexes,
     {
-      discovery_candidate_identifiers_candidate_idx:
-        "CREATE INDEX discovery_candidate_identifiers_candidate_idx ON public.discovery_candidate_identifiers USING btree (candidate_id)",
-      discovery_candidate_sources_candidate_idx:
-        "CREATE INDEX discovery_candidate_sources_candidate_idx ON public.discovery_candidate_sources USING btree (candidate_id)",
-      discovery_candidate_sources_run_idx:
-        "CREATE INDEX discovery_candidate_sources_run_idx ON public.discovery_candidate_sources USING btree (discovery_run_id)",
-      discovery_candidate_sources_source_candidate_idx:
-        "CREATE INDEX discovery_candidate_sources_source_candidate_idx ON public.discovery_candidate_sources USING btree (source_name, candidate_id)",
-      discovery_candidates_category_idx:
-        "CREATE INDEX discovery_candidates_category_idx ON public.discovery_candidates USING btree (category)",
-      discovery_candidates_discovered_at_idx:
-        "CREATE INDEX discovery_candidates_discovered_at_idx ON public.discovery_candidates USING btree (discovered_at)",
-      discovery_candidates_geography_idx:
-        "CREATE INDEX discovery_candidates_geography_idx ON public.discovery_candidates USING btree (geography)",
-      discovery_candidates_recent_run_idx:
-        "CREATE INDEX discovery_candidates_recent_run_idx ON public.discovery_candidates USING btree (most_recent_run_id)",
-      discovery_candidates_source_idx:
-        "CREATE INDEX discovery_candidates_source_idx ON public.discovery_candidates USING btree (first_source_name)",
-      discovery_candidates_status_idx:
-        "CREATE INDEX discovery_candidates_status_idx ON public.discovery_candidates USING btree (status)",
-      discovery_candidates_type_idx:
-        "CREATE INDEX discovery_candidates_type_idx ON public.discovery_candidates USING btree (type)",
-      discovery_runs_claim_idx:
-        "CREATE INDEX discovery_runs_claim_idx ON public.discovery_runs USING btree (status, trigger, created_at)",
-      discovery_runs_lease_expiry_idx:
-        "CREATE INDEX discovery_runs_lease_expiry_idx ON public.discovery_runs USING btree (status, lease_expires_at)",
+      opportunity_brief_requests_created_at_idx:
+        "CREATE INDEX opportunity_brief_requests_created_at_idx ON public.opportunity_brief_requests USING btree (created_at)",
+      opportunity_brief_requests_linked_candidate_idx:
+        "CREATE INDEX opportunity_brief_requests_linked_candidate_idx ON public.opportunity_brief_requests USING btree (linked_candidate_id)",
+      opportunity_brief_requests_normalized_email_idx:
+        "CREATE INDEX opportunity_brief_requests_normalized_email_idx ON public.opportunity_brief_requests USING btree (normalized_email)",
+      opportunity_brief_requests_normalized_phone_number_idx:
+        "CREATE INDEX opportunity_brief_requests_normalized_phone_number_idx ON public.opportunity_brief_requests USING btree (normalized_phone_number)",
+      opportunity_brief_requests_participant_type_idx:
+        "CREATE INDEX opportunity_brief_requests_participant_type_idx ON public.opportunity_brief_requests USING btree (participant_type)",
+      opportunity_brief_requests_source_idx:
+        "CREATE INDEX opportunity_brief_requests_source_idx ON public.opportunity_brief_requests USING btree (source)",
+      opportunity_brief_requests_status_last_submitted_at_idx:
+        "CREATE INDEX opportunity_brief_requests_status_last_submitted_at_idx ON public.opportunity_brief_requests USING btree (status, last_submitted_at)",
+      opportunity_brief_submission_attempts_request_id_idx:
+        "CREATE INDEX opportunity_brief_submission_attempts_request_id_idx ON public.opportunity_brief_submission_attempts USING btree (request_id)",
+      opportunity_brief_submission_attempts_requester_created_at_idx:
+        "CREATE INDEX opportunity_brief_submission_attempts_requester_created_at_idx ON public.opportunity_brief_submission_attempts USING btree (requester_hash, created_at)",
     },
-    "filter index",
+    "opportunity brief filter index",
   );
 
-  await assertAppliedMigrations(sql, expectedJournalEntries);
-
   if (expectedFixtures) {
-    const [user] = await sql`
-      select id, email, name
-      from users
-      where id = ${expectedFixtures.user.id}
-    `;
-    const [profile] = await sql`
+    const [request] = await sql`
       select
         id,
-        user_id as "userId",
-        name,
-        organisation_name as "organisationName",
-        organisation_subtype as "organisationSubtype",
-        primary_url as "primaryUrl",
-        website_url as "websiteUrl",
+        participant_type as "participantType",
+        profile_url as "profileUrl",
+        normalized_profile_url as "normalizedProfileUrl",
+        normalized_email as "normalizedEmail",
+        normalized_phone_number as "normalizedPhoneNumber",
+        open_to_text as "openToText",
+        source,
+        utm,
+        source_history as "sourceHistory",
+        linked_candidate_id as "linkedCandidateId",
         status,
-        submitted_at as "submittedAt",
-        verified_at as "verifiedAt"
-      from profiles
-      where id = ${expectedFixtures.profile.id}
+        admin_notes as "adminNotes",
+        acknowledgement_status as "acknowledgementStatus",
+        acknowledgement_email as "acknowledgementEmail",
+        submission_count as "submissionCount",
+        last_submitted_at as "lastSubmittedAt"
+      from opportunity_brief_requests
+      where id = ${expectedFixtures.opportunityBrief.id}
     `;
-    const [review] = await sql`
+    const [attempt] = await sql`
       select
         id,
-        profile_id as "profileId",
-        reviewer_email as "reviewerEmail",
-        decision,
-        notes,
-        reviewed_at as "reviewedAt"
-      from verification_reviews
-      where id = ${expectedFixtures.review.id}
+        requester_hash as "requesterHash",
+        request_id as "requestId"
+      from opportunity_brief_submission_attempts
+      where id = ${expectedFixtures.opportunityAttempt.id}
     `;
-    assert(JSON.stringify(user) === JSON.stringify(expectedFixtures.user), "User fixture changed.");
-    assert(
-      JSON.stringify(profile) === JSON.stringify(expectedFixtures.profile),
-      "Profile fixture changed.",
-    );
-    assert(
-      JSON.stringify(review) === JSON.stringify(expectedFixtures.review),
-      "Verification fixture changed.",
-    );
+    for (const [label, actual, expected] of [
+      ["Opportunity Brief request", request, expectedFixtures.opportunityBrief],
+      [
+        "Opportunity Brief submission attempt",
+        attempt,
+        expectedFixtures.opportunityAttempt,
+      ],
+    ]) {
+      assert(
+        JSON.stringify(actual) === JSON.stringify(expected),
+        `${label} fixture changed: expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}.`,
+      );
+    }
   }
 }
 
@@ -1110,8 +1091,9 @@ async function assertRadarMigration(sql) {
     order by enum_type.typname
   `;
   assert(
-    JSON.stringify(Object.fromEntries(enums.map(({ name, values }) => [name, values]))) ===
-      JSON.stringify(expectedEnums),
+    JSON.stringify(
+      Object.fromEntries(enums.map(({ name, values }) => [name, values])),
+    ) === JSON.stringify(expectedEnums),
     `Expected exact Radar enums, found ${JSON.stringify(enums)}.`,
   );
 
@@ -1222,181 +1204,707 @@ async function assertRadarMigration(sql) {
   );
 }
 
-async function assertRadarUpgradeFixtures(sql, expected) {
-  const [session] = await sql`
+async function assertAppliedMigrations(sql) {
+  const [applied] = await sql`
     select
-      id,
-      user_id as "userId",
-      token_hash as "tokenHash",
-      expires_at as "expiresAt",
-      last_seen_at as "lastSeenAt"
-    from sessions
-    where id = ${expected.session.id}
+      count(*)::integer as "totalCount",
+      count(*) filter (where created_at = ${newestMigration.when})::integer as "newestCount",
+      count(*) filter (where created_at = ${radarMigration.when})::integer as "radarCount"
+    from drizzle.__drizzle_migrations
   `;
-  const [run] = await sql`
+  assert(
+    applied.totalCount === orderedMigrationEntries.length &&
+      applied.newestCount === 1 &&
+      applied.radarCount === 1,
+    `Expected ${orderedMigrationEntries.length} ordered migrations with ${radarMigration.tag} and ${newestMigration.tag} applied once, found ${JSON.stringify(applied)}.`,
+  );
+}
+
+async function assertBaselineMigrations(sql) {
+  const [applied] = await sql`
     select
-      id,
-      external_run_key as "externalRunKey",
-      trigger,
-      status,
-      started_at as "startedAt",
-      completed_at as "completedAt",
-      geography,
-      candidate_type as "candidateType",
-      sources_used as "sourcesUsed",
-      requested_count as "requestedCount",
-      company_percentage as "companyPercentage",
-      found_count as "foundCount",
-      new_count as "newCount",
-      duplicate_count as "duplicateCount",
-      error_summary as "errorSummary",
-      requested_by_email as "requestedByEmail"
-    from discovery_runs
-    where id = ${expected.run.id}
+      count(*)::integer as "totalCount",
+      count(*) filter (where created_at = ${radarMigration.when})::integer as "radarCount"
+    from drizzle.__drizzle_migrations
   `;
-  const [candidate] = await sql`
+  assert(
+    applied.totalCount === radarMigration.idx && applied.radarCount === 0,
+    `Expected the populated ${radarBaselineMigration.tag} baseline without ${radarMigration.tag}, found ${JSON.stringify(applied)}.`,
+  );
+}
+
+async function assertDiscoveryMigration(sql, expectedFixtures = null) {
+  const expectedTables = [
+    "candidate_research_versions",
+    "discovery_candidate_identifiers",
+    "discovery_candidate_sources",
+    "discovery_candidates",
+    "discovery_runs",
+  ];
+  const tables = await sql`
+    select table_name as "tableName"
+    from information_schema.tables
+    where table_schema = 'public'
+      and table_name in ${sql(expectedTables)}
+    order by table_name
+  `;
+  assert(
+    tables.length === expectedTables.length,
+    `Expected discovery tables, found ${JSON.stringify(tables)}.`,
+  );
+
+  const enumNames = [
+    "discovery_candidate_status",
+    "discovery_candidate_type",
+    "discovery_identifier_kind",
+    "discovery_run_candidate_type",
+    "discovery_run_status",
+    "discovery_run_trigger",
+  ];
+  const enums = await sql`
     select
-      id,
-      type,
-      name,
-      normalized_name as "normalizedName",
-      canonical_identity_key as "canonicalIdentityKey",
-      canonical_url as "canonicalUrl",
-      website_url as "websiteUrl",
-      primary_social_url as "primarySocialUrl",
-      linkedin_url as "linkedinUrl",
-      discovered_description as "discoveredDescription",
-      category,
-      subcategory,
-      geography,
-      first_source_name as "firstSourceName",
-      first_source_url as "firstSourceUrl",
-      discovered_at as "discoveredAt",
-      last_seen_at as "lastSeenAt",
-      most_recent_run_id as "mostRecentRunId",
-      discovery_score as "discoveryScore",
-      status,
-      raw_metadata as "rawMetadata"
-    from discovery_candidates
-    where id = ${expected.candidate.id}
+      enum_type.typname as name,
+      array_agg(enum_value.enumlabel order by enum_value.enumsortorder) as values
+    from pg_type enum_type
+    join pg_enum enum_value on enum_value.enumtypid = enum_type.oid
+    where enum_type.typname in ${sql(enumNames)}
+    group by enum_type.typname
+    order by enum_type.typname
   `;
-  const [identifier] = await sql`
+  assert(
+    JSON.stringify(Object.fromEntries(enums.map(({ name, values }) => [name, values]))) ===
+      JSON.stringify({
+        discovery_candidate_status: [
+          "discovered",
+          "shortlisted",
+          "rejected",
+          "queued_for_profile",
+        ],
+        discovery_candidate_type: ["company", "creator"],
+        discovery_identifier_kind: [
+          "canonical",
+          "website_host",
+          "social_url",
+          "linkedin_url",
+        ],
+        discovery_run_candidate_type: ["company", "creator", "both"],
+        discovery_run_status: [
+          "queued",
+          "running",
+          "succeeded",
+          "partial",
+          "failed",
+        ],
+        discovery_run_trigger: [
+          "scheduled",
+          "manual",
+          "trial",
+          "radar_promotion",
+        ],
+      }),
+    `Expected exact discovery enums, found ${JSON.stringify(enums)}.`,
+  );
+
+  const columns = await sql`
     select
-      id,
-      candidate_id as "candidateId",
-      candidate_type as "candidateType",
-      kind,
-      normalized_value as "normalizedValue"
-    from discovery_candidate_identifiers
-    where id = ${expected.identifier.id}
+      table_name as "tableName",
+      column_name as "columnName",
+      is_nullable as "isNullable",
+      column_default as "columnDefault"
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name in ${sql(expectedTables)}
+    order by table_name, ordinal_position
   `;
-  const [source] = await sql`
+  const columnsByTable = Object.fromEntries(
+    expectedTables.map((tableName) => [
+      tableName,
+      columns
+        .filter((column) => column.tableName === tableName)
+        .map((column) => column.columnName),
+    ]),
+  );
+  assert(
+    JSON.stringify(columnsByTable) ===
+      JSON.stringify({
+        candidate_research_versions: [
+          "id",
+          "candidate_id",
+          "discovery_run_id",
+          "summary",
+          "findings",
+          "source_urls",
+          "analysis_version",
+          "created_at",
+        ],
+        discovery_candidate_identifiers: [
+          "id",
+          "candidate_id",
+          "candidate_type",
+          "kind",
+          "normalized_value",
+          "created_at",
+        ],
+        discovery_candidate_sources: [
+          "id",
+          "candidate_id",
+          "discovery_run_id",
+          "source_name",
+          "source_url",
+          "first_seen_at",
+          "last_seen_at",
+          "raw_metadata",
+          "created_at",
+        ],
+        discovery_candidates: [
+          "id",
+          "type",
+          "name",
+          "normalized_name",
+          "canonical_identity_key",
+          "canonical_url",
+          "website_url",
+          "primary_social_url",
+          "linkedin_url",
+          "discovered_description",
+          "category",
+          "subcategory",
+          "geography",
+          "first_source_name",
+          "first_source_url",
+          "discovered_at",
+          "last_seen_at",
+          "created_at",
+          "updated_at",
+          "most_recent_run_id",
+          "discovery_score",
+          "status",
+          "raw_metadata",
+        ],
+        discovery_runs: [
+          "id",
+          "external_run_key",
+          "trigger",
+          "status",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at",
+          "lease_token_hash",
+          "lease_expires_at",
+          "submission_hash",
+          "geography",
+          "candidate_type",
+          "sources_used",
+          "requested_count",
+          "company_percentage",
+          "found_count",
+          "new_count",
+          "duplicate_count",
+          "error_summary",
+          "requested_by_email",
+          "campaign_key",
+        ],
+      }),
+    `Expected exact discovery columns, found ${JSON.stringify(columnsByTable)}.`,
+  );
+  const nullableColumns = Object.fromEntries(
+    expectedTables.map((tableName) => [
+      tableName,
+      columns
+        .filter(
+          (column) =>
+            column.tableName === tableName && column.isNullable === "YES",
+        )
+        .map((column) => column.columnName),
+    ]),
+  );
+  assert(
+    JSON.stringify(nullableColumns) ===
+      JSON.stringify({
+        candidate_research_versions: [],
+        discovery_candidate_identifiers: [],
+        discovery_candidate_sources: [],
+        discovery_candidates: [
+          "website_url",
+          "primary_social_url",
+          "linkedin_url",
+          "subcategory",
+        ],
+        discovery_runs: [
+          "started_at",
+          "completed_at",
+          "lease_token_hash",
+          "lease_expires_at",
+          "submission_hash",
+          "requested_by_email",
+        ],
+      }),
+    `Expected exact discovery nullability, found ${JSON.stringify(nullableColumns)}.`,
+  );
+  const columnDefaults = Object.fromEntries(
+    columns
+      .filter(({ columnDefault }) => columnDefault !== null)
+      .map(({ tableName, columnName, columnDefault }) => [
+        `${tableName}.${columnName}`,
+        columnDefault,
+      ]),
+  );
+  assert(
+    JSON.stringify(columnDefaults) ===
+      JSON.stringify({
+        "candidate_research_versions.id": "gen_random_uuid()",
+        "candidate_research_versions.created_at": "now()",
+        "discovery_candidate_identifiers.id": "gen_random_uuid()",
+        "discovery_candidate_identifiers.created_at": "now()",
+        "discovery_candidate_sources.id": "gen_random_uuid()",
+        "discovery_candidate_sources.first_seen_at": "now()",
+        "discovery_candidate_sources.last_seen_at": "now()",
+        "discovery_candidate_sources.raw_metadata": "'{}'::jsonb",
+        "discovery_candidate_sources.created_at": "now()",
+        "discovery_candidates.id": "gen_random_uuid()",
+        "discovery_candidates.discovered_at": "now()",
+        "discovery_candidates.last_seen_at": "now()",
+        "discovery_candidates.created_at": "now()",
+        "discovery_candidates.updated_at": "now()",
+        "discovery_candidates.status":
+          "'discovered'::discovery_candidate_status",
+        "discovery_candidates.raw_metadata": "'{}'::jsonb",
+        "discovery_runs.id": "gen_random_uuid()",
+        "discovery_runs.status": "'queued'::discovery_run_status",
+        "discovery_runs.created_at": "now()",
+        "discovery_runs.updated_at": "now()",
+        "discovery_runs.sources_used": "ARRAY[]::text[]",
+        "discovery_runs.found_count": "0",
+        "discovery_runs.new_count": "0",
+        "discovery_runs.duplicate_count": "0",
+        "discovery_runs.error_summary": "'{}'::jsonb",
+        "discovery_runs.campaign_key": "'general_discovery'::text",
+      }),
+    `Expected exact discovery defaults, found ${JSON.stringify(columnDefaults)}.`,
+  );
+
+  const requiredConstraints = [
+    "candidate_research_versions_analysis_check",
+    "candidate_research_versions_candidate_run_unique",
+    "candidate_research_versions_findings_check",
+    "candidate_research_versions_sources_check",
+    "candidate_research_versions_summary_check",
+    "discovery_candidate_identifiers_type_value_unique",
+    "discovery_candidate_sources_evidence_unique",
+    "discovery_candidates_id_type_unique",
+    "discovery_candidates_score_check",
+    "discovery_candidates_type_canonical_identity_unique",
+    "discovery_runs_company_percentage_check",
+    "discovery_runs_external_run_key_unique",
+    "discovery_runs_requested_count_check",
+  ];
+  const constraints = await sql`
+    select constraint_name as "constraintName"
+    from information_schema.table_constraints
+    where table_schema = 'public'
+      and constraint_name in ${sql(requiredConstraints)}
+  `;
+  assert(
+    constraints.length === requiredConstraints.length,
+    `Expected discovery constraints, found ${JSON.stringify(constraints)}.`,
+  );
+  const checkNames = [
+    "candidate_research_versions_analysis_check",
+    "candidate_research_versions_findings_check",
+    "candidate_research_versions_sources_check",
+    "candidate_research_versions_summary_check",
+    "discovery_candidate_identifiers_value_check",
+    "discovery_candidates_name_check",
+    "discovery_candidates_score_check",
+    "discovery_runs_company_percentage_check",
+    "discovery_runs_counts_check",
+    "discovery_runs_requested_count_check",
+    "discovery_runs_running_lease_check",
+  ];
+  const checkDefinitions = await sql`
+    select conname as name, pg_get_constraintdef(oid, true) as definition
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and contype = 'c'
+      and conname in ${sql(checkNames)}
+    order by conname
+  `;
+  assertExactDefinitions(
+    checkDefinitions,
+    {
+      candidate_research_versions_analysis_check:
+        "CHECK (analysis_version = 'physical-ai-v1'::text)",
+      candidate_research_versions_findings_check:
+        "CHECK (length(findings) >= 600 AND length(findings) <= 12000)",
+      candidate_research_versions_sources_check:
+        "CHECK (jsonb_typeof(source_urls) = 'array'::text AND jsonb_array_length(source_urls) >= 1 AND jsonb_array_length(source_urls) <= 12)",
+      candidate_research_versions_summary_check:
+        "CHECK (length(summary) >= 80 AND length(summary) <= 1200)",
+      discovery_candidate_identifiers_value_check:
+        "CHECK (length(btrim(normalized_value)) > 0)",
+      discovery_candidates_name_check:
+        "CHECK (length(btrim(name)) > 0 AND length(btrim(normalized_name)) > 0)",
+      discovery_candidates_score_check:
+        "CHECK (discovery_score >= 0 AND discovery_score <= 100)",
+      discovery_runs_company_percentage_check:
+        "CHECK (company_percentage >= 0 AND company_percentage <= 100)",
+      discovery_runs_counts_check:
+        "CHECK (found_count >= 0 AND new_count >= 0 AND duplicate_count >= 0)",
+      discovery_runs_requested_count_check:
+        "CHECK (requested_count > 0 AND requested_count <= 50)",
+      discovery_runs_running_lease_check:
+        "CHECK (status <> 'running'::discovery_run_status OR started_at IS NOT NULL AND lease_token_hash IS NOT NULL AND lease_expires_at IS NOT NULL AND completed_at IS NULL)",
+    },
+    "check constraint",
+  );
+
+  const foreignKeyNames = [
+    "candidate_research_versions_candidate_fk",
+    "candidate_research_versions_run_fk",
+    "discovery_candidates_recent_run_fk",
+    "discovery_identifiers_candidate_type_fk",
+    "discovery_sources_candidate_fk",
+    "discovery_sources_run_fk",
+  ];
+  const foreignKeyDefinitions = await sql`
+    select conname as name, pg_get_constraintdef(oid, true) as definition
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and contype = 'f'
+      and conname in ${sql(foreignKeyNames)}
+    order by conname
+  `;
+  assertExactDefinitions(
+    foreignKeyDefinitions,
+    {
+      candidate_research_versions_candidate_fk:
+        "FOREIGN KEY (candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
+      candidate_research_versions_run_fk:
+        "FOREIGN KEY (discovery_run_id) REFERENCES discovery_runs(id)",
+      discovery_candidates_recent_run_fk:
+        "FOREIGN KEY (most_recent_run_id) REFERENCES discovery_runs(id)",
+      discovery_identifiers_candidate_type_fk:
+        "FOREIGN KEY (candidate_id, candidate_type) REFERENCES discovery_candidates(id, type) ON DELETE CASCADE",
+      discovery_sources_candidate_fk:
+        "FOREIGN KEY (candidate_id) REFERENCES discovery_candidates(id) ON DELETE CASCADE",
+      discovery_sources_run_fk:
+        "FOREIGN KEY (discovery_run_id) REFERENCES discovery_runs(id)",
+    },
+    "foreign key",
+  );
+
+  const uniqueNames = [
+    "candidate_research_versions_candidate_run_unique",
+    "discovery_candidate_identifiers_type_value_unique",
+    "discovery_candidate_sources_evidence_unique",
+    "discovery_candidates_id_type_unique",
+    "discovery_candidates_type_canonical_identity_unique",
+    "discovery_runs_external_run_key_unique",
+  ];
+  const uniqueDefinitions = await sql`
+    select conname as name, pg_get_constraintdef(oid, true) as definition
+    from pg_constraint
+    where connamespace = 'public'::regnamespace
+      and contype = 'u'
+      and conname in ${sql(uniqueNames)}
+    order by conname
+  `;
+  assertExactDefinitions(
+    uniqueDefinitions,
+    {
+      candidate_research_versions_candidate_run_unique:
+        "UNIQUE (candidate_id, discovery_run_id)",
+      discovery_candidate_identifiers_type_value_unique:
+        "UNIQUE (candidate_type, normalized_value)",
+      discovery_candidate_sources_evidence_unique:
+        "UNIQUE (candidate_id, source_name, source_url)",
+      discovery_candidates_id_type_unique: "UNIQUE (id, type)",
+      discovery_candidates_type_canonical_identity_unique:
+        "UNIQUE (type, canonical_identity_key)",
+      discovery_runs_external_run_key_unique: "UNIQUE (external_run_key)",
+    },
+    "unique constraint",
+  );
+
+  const [activeRunIndex] = await sql`
     select
-      id,
-      candidate_id as "candidateId",
-      discovery_run_id as "discoveryRunId",
-      source_name as "sourceName",
-      source_url as "sourceUrl",
-      first_seen_at as "firstSeenAt",
-      last_seen_at as "lastSeenAt",
-      raw_metadata as "rawMetadata"
-    from discovery_candidate_sources
-    where id = ${expected.source.id}
+      index_definition.indexdef as "indexDefinition",
+      pg_get_expr(index_catalog.indexprs, index_catalog.indrelid) as expression,
+      pg_get_expr(index_catalog.indpred, index_catalog.indrelid) as predicate,
+      index_catalog.indisunique as "isUnique"
+    from pg_index index_catalog
+    join pg_class index_class on index_class.oid = index_catalog.indexrelid
+    join pg_indexes index_definition on index_definition.indexname = index_class.relname
+    where index_class.relname = 'discovery_runs_one_running_idx'
+      and index_definition.schemaname = 'public'
   `;
-  for (const [label, actual, fixture] of [
-    ["session", session, expected.session],
-    ["Discovery run", run, expected.run],
-    ["Discovery candidate", candidate, expected.candidate],
-    ["Discovery identifier", identifier, expected.identifier],
-    ["Discovery source", source, expected.source],
-  ]) {
+  assert(
+    activeRunIndex?.isUnique === true &&
+      activeRunIndex.expression === "true" &&
+      activeRunIndex.predicate ===
+        "(status = 'running'::discovery_run_status)" &&
+      activeRunIndex.indexDefinition ===
+        "CREATE UNIQUE INDEX discovery_runs_one_running_idx ON public.discovery_runs USING btree ((true)) WHERE (status = 'running'::discovery_run_status)",
+    `Expected exact partial active-run index, found ${JSON.stringify(activeRunIndex ?? null)}.`,
+  );
+  const [sourceFirstIndex] = await sql`
+    select indexdef as "indexDefinition"
+    from pg_indexes
+    where schemaname = 'public'
+      and indexname = 'discovery_candidate_sources_source_candidate_idx'
+  `;
+  assert(
+    sourceFirstIndex?.indexDefinition ===
+      "CREATE INDEX discovery_candidate_sources_source_candidate_idx ON public.discovery_candidate_sources USING btree (source_name, candidate_id)",
+    `Expected exact source-first index, found ${sourceFirstIndex?.indexDefinition ?? "none"}.`,
+  );
+  const filterIndexNames = [
+    "candidate_research_versions_candidate_created_idx",
+    "candidate_research_versions_run_idx",
+    "discovery_candidate_identifiers_candidate_idx",
+    "discovery_candidate_sources_candidate_idx",
+    "discovery_candidate_sources_run_idx",
+    "discovery_candidate_sources_source_candidate_idx",
+    "discovery_candidates_category_idx",
+    "discovery_candidates_discovered_at_idx",
+    "discovery_candidates_geography_idx",
+    "discovery_candidates_recent_run_idx",
+    "discovery_candidates_source_idx",
+    "discovery_candidates_status_idx",
+    "discovery_candidates_type_idx",
+    "discovery_runs_claim_idx",
+    "discovery_runs_lease_expiry_idx",
+  ];
+  const filterIndexes = await sql`
+    select indexname as name, indexdef as definition
+    from pg_indexes
+    where schemaname = 'public'
+      and indexname in ${sql(filterIndexNames)}
+    order by indexname
+  `;
+  assertExactDefinitions(
+    filterIndexes,
+    {
+      candidate_research_versions_candidate_created_idx:
+        "CREATE INDEX candidate_research_versions_candidate_created_idx ON public.candidate_research_versions USING btree (candidate_id, created_at)",
+      candidate_research_versions_run_idx:
+        "CREATE INDEX candidate_research_versions_run_idx ON public.candidate_research_versions USING btree (discovery_run_id)",
+      discovery_candidate_identifiers_candidate_idx:
+        "CREATE INDEX discovery_candidate_identifiers_candidate_idx ON public.discovery_candidate_identifiers USING btree (candidate_id)",
+      discovery_candidate_sources_candidate_idx:
+        "CREATE INDEX discovery_candidate_sources_candidate_idx ON public.discovery_candidate_sources USING btree (candidate_id)",
+      discovery_candidate_sources_run_idx:
+        "CREATE INDEX discovery_candidate_sources_run_idx ON public.discovery_candidate_sources USING btree (discovery_run_id)",
+      discovery_candidate_sources_source_candidate_idx:
+        "CREATE INDEX discovery_candidate_sources_source_candidate_idx ON public.discovery_candidate_sources USING btree (source_name, candidate_id)",
+      discovery_candidates_category_idx:
+        "CREATE INDEX discovery_candidates_category_idx ON public.discovery_candidates USING btree (category)",
+      discovery_candidates_discovered_at_idx:
+        "CREATE INDEX discovery_candidates_discovered_at_idx ON public.discovery_candidates USING btree (discovered_at)",
+      discovery_candidates_geography_idx:
+        "CREATE INDEX discovery_candidates_geography_idx ON public.discovery_candidates USING btree (geography)",
+      discovery_candidates_recent_run_idx:
+        "CREATE INDEX discovery_candidates_recent_run_idx ON public.discovery_candidates USING btree (most_recent_run_id)",
+      discovery_candidates_source_idx:
+        "CREATE INDEX discovery_candidates_source_idx ON public.discovery_candidates USING btree (first_source_name)",
+      discovery_candidates_status_idx:
+        "CREATE INDEX discovery_candidates_status_idx ON public.discovery_candidates USING btree (status)",
+      discovery_candidates_type_idx:
+        "CREATE INDEX discovery_candidates_type_idx ON public.discovery_candidates USING btree (type)",
+      discovery_runs_claim_idx:
+        "CREATE INDEX discovery_runs_claim_idx ON public.discovery_runs USING btree (status, trigger, created_at)",
+      discovery_runs_lease_expiry_idx:
+        "CREATE INDEX discovery_runs_lease_expiry_idx ON public.discovery_runs USING btree (status, lease_expires_at)",
+    },
+    "filter index",
+  );
+
+  if (expectedFixtures) {
+    const [user] = await sql`
+      select id, email, name
+      from users
+      where id = ${expectedFixtures.user.id}
+    `;
+    const [profile] = await sql`
+      select
+        id,
+        user_id as "userId",
+        name,
+        organisation_name as "organisationName",
+        organisation_subtype as "organisationSubtype",
+        primary_url as "primaryUrl",
+        website_url as "websiteUrl",
+        status,
+        submitted_at as "submittedAt",
+        verified_at as "verifiedAt"
+      from profiles
+      where id = ${expectedFixtures.profile.id}
+    `;
+    const [review] = await sql`
+      select
+        id,
+        profile_id as "profileId",
+        reviewer_email as "reviewerEmail",
+        decision,
+        notes,
+        reviewed_at as "reviewedAt"
+      from verification_reviews
+      where id = ${expectedFixtures.review.id}
+    `;
+    const [discoveryRun] = await sql`
+      select
+        id,
+        external_run_key as "externalRunKey",
+        campaign_key as "campaignKey",
+        trigger,
+        status,
+        started_at as "startedAt",
+        completed_at as "completedAt",
+        geography,
+        candidate_type as "candidateType",
+        sources_used as "sourcesUsed",
+        requested_count as "requestedCount",
+        company_percentage as "companyPercentage",
+        found_count as "foundCount",
+        new_count as "newCount",
+        duplicate_count as "duplicateCount",
+        requested_by_email as "requestedByEmail"
+      from discovery_runs
+      where id = ${expectedFixtures.discoveryRun.id}
+    `;
+    const [session] = await sql`
+      select
+        id,
+        user_id as "userId",
+        token_hash as "tokenHash",
+        expires_at as "expiresAt",
+        last_seen_at as "lastSeenAt"
+      from sessions
+      where id = ${expectedFixtures.session.id}
+    `;
+    const [candidate] = await sql`
+      select
+        id,
+        type,
+        name,
+        normalized_name as "normalizedName",
+        canonical_identity_key as "canonicalIdentityKey",
+        canonical_url as "canonicalUrl",
+        website_url as "websiteUrl",
+        primary_social_url as "primarySocialUrl",
+        linkedin_url as "linkedinUrl",
+        discovered_description as "discoveredDescription",
+        category,
+        subcategory,
+        geography,
+        first_source_name as "firstSourceName",
+        first_source_url as "firstSourceUrl",
+        discovered_at as "discoveredAt",
+        last_seen_at as "lastSeenAt",
+        most_recent_run_id as "mostRecentRunId",
+        discovery_score as "discoveryScore",
+        status,
+        raw_metadata as "rawMetadata"
+      from discovery_candidates
+      where id = ${expectedFixtures.candidate.id}
+    `;
+    const [identifier] = await sql`
+      select
+        id,
+        candidate_id as "candidateId",
+        candidate_type as "candidateType",
+        kind,
+        normalized_value as "normalizedValue"
+      from discovery_candidate_identifiers
+      where id = ${expectedFixtures.identifier.id}
+    `;
+    const [source] = await sql`
+      select
+        id,
+        candidate_id as "candidateId",
+        discovery_run_id as "discoveryRunId",
+        source_name as "sourceName",
+        source_url as "sourceUrl",
+        first_seen_at as "firstSeenAt",
+        last_seen_at as "lastSeenAt",
+        raw_metadata as "rawMetadata"
+      from discovery_candidate_sources
+      where id = ${expectedFixtures.source.id}
+    `;
+    const [research] = await sql`
+      select
+        id,
+        candidate_id as "candidateId",
+        discovery_run_id as "discoveryRunId",
+        summary,
+        findings,
+        source_urls as "sourceUrls",
+        analysis_version as "analysisVersion"
+      from candidate_research_versions
+      where id = ${expectedFixtures.research.id}
+    `;
+    assert(JSON.stringify(user) === JSON.stringify(expectedFixtures.user), "User fixture changed.");
     assert(
-      JSON.stringify(actual) === JSON.stringify(fixture),
-      `${label} fixture changed: expected ${JSON.stringify(fixture)}, found ${JSON.stringify(actual)}.`,
+      JSON.stringify(profile) === JSON.stringify(expectedFixtures.profile),
+      "Profile fixture changed.",
     );
+    assert(
+      JSON.stringify(review) === JSON.stringify(expectedFixtures.review),
+      "Verification fixture changed.",
+    );
+    for (const [label, actual, expected] of [
+      ["Discovery V2 run", discoveryRun, expectedFixtures.discoveryRun],
+      ["session", session, expectedFixtures.session],
+      ["Discovery candidate", candidate, expectedFixtures.candidate],
+      ["Discovery identifier", identifier, expectedFixtures.identifier],
+      ["Discovery source", source, expectedFixtures.source],
+      ["Discovery research", research, expectedFixtures.research],
+    ]) {
+      assert(
+        JSON.stringify(actual) === JSON.stringify(expected),
+        `${label} fixture changed: expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}.`,
+      );
+    }
   }
+}
+
+async function assertMigrationState(sql, expectedFixtures = null) {
+  await assertDiscoveryMigration(sql, expectedFixtures);
+  await assertOpportunityBriefMigration(sql, expectedFixtures);
+  await assertRadarMigration(sql);
+  await assertAppliedMigrations(sql);
 }
 
 const admin = postgres(adminUrl, { max: 1, prepare: false });
 let freshClient;
-let discoveryUpgradeClient;
-let radarUpgradeClient;
-const temporaryFolders = [];
+let upgradeClient;
+let temporaryFolder;
 let executionError;
 
 try {
-  const journal = await readMigrationJournal();
-  const { through3Entry, through4Entry, through5Entry } =
-    findHarnessMigrationEntries(journal);
-  const entriesThrough4 = journal.entries.filter(
-    ({ idx }) => idx <= through4Entry.idx,
-  );
-  const entriesThrough5 = journal.entries.filter(
-    ({ idx }) => idx <= through5Entry.idx,
-  );
-  const through3Folder = await createMigrationFolderThrough(
-    journal,
-    through3Entry,
-  );
-  const through4Folder = await createMigrationFolderThrough(
-    journal,
-    through4Entry,
-  );
-  const through5Folder = await createMigrationFolderThrough(
-    journal,
-    through5Entry,
-  );
-  temporaryFolders.push(through3Folder, through4Folder, through5Folder);
-
   await prepareDatabase(admin, freshDatabaseName);
   freshClient = postgres(databaseUrl(freshDatabaseName), { max: 1, prepare: false });
   await migrate(drizzle(freshClient), { migrationsFolder });
-  await assertDiscoveryMigration(freshClient, {
-    expectedTriggerValues: ["scheduled", "manual", "trial", "radar_promotion"],
-    expectedJournalEntries: journal.entries,
-  });
-  await assertRadarMigration(freshClient);
-  console.log("Fresh migration path through all journal entries passed.");
+  await assertMigrationState(freshClient);
+  console.log("Fresh ordered migration path passed.");
 
-  await prepareDatabase(admin, discoveryUpgradeDatabaseName);
-  discoveryUpgradeClient = postgres(databaseUrl(discoveryUpgradeDatabaseName), {
+  await prepareDatabase(admin, upgradeDatabaseName);
+  temporaryFolder = await createUpgradeMigrationFolderThrough(
+    radarBaselineMigration,
+  );
+  upgradeClient = postgres(databaseUrl(upgradeDatabaseName), {
     max: 1,
     prepare: false,
   });
-  await migrate(drizzle(discoveryUpgradeClient), {
-    migrationsFolder: through3Folder,
-  });
-  const discoveryFixtures = await insertUpgradeFixtures(discoveryUpgradeClient);
-  await migrate(drizzle(discoveryUpgradeClient), {
-    migrationsFolder: through4Folder,
-  });
-  await assertDiscoveryMigration(discoveryUpgradeClient, {
-    expectedFixtures: discoveryFixtures,
-    expectedTriggerValues: ["scheduled", "manual", "trial"],
-    expectedJournalEntries: entriesThrough4,
-  });
-  console.log("Populated 0003 to 0004 Discovery path passed.");
-
-  await prepareDatabase(admin, radarUpgradeDatabaseName);
-  radarUpgradeClient = postgres(databaseUrl(radarUpgradeDatabaseName), {
-    max: 1,
-    prepare: false,
-  });
-  await migrate(drizzle(radarUpgradeClient), {
-    migrationsFolder: through4Folder,
-  });
-  const radarFixtures = await insertRadarUpgradeFixtures(radarUpgradeClient);
-  await migrate(drizzle(radarUpgradeClient), {
-    migrationsFolder: through5Folder,
-  });
-  await assertDiscoveryMigration(radarUpgradeClient, {
-    expectedFixtures: radarFixtures,
-    expectedTriggerValues: ["scheduled", "manual", "trial", "radar_promotion"],
-    expectedJournalEntries: entriesThrough5,
-  });
-  await assertRadarMigration(radarUpgradeClient);
-  await assertRadarUpgradeFixtures(radarUpgradeClient, radarFixtures);
-  console.log("Populated 0004 to 0005 Radar path passed with unchanged fixtures.");
+  await migrate(drizzle(upgradeClient), { migrationsFolder: temporaryFolder });
+  await assertBaselineMigrations(upgradeClient);
+  const fixtures = await insertUpgradeFixtures(upgradeClient);
+  await migrate(drizzle(upgradeClient), { migrationsFolder });
+  await assertMigrationState(upgradeClient, fixtures);
+  console.log(
+    "Populated 0007 to 0008 Radar path passed with unchanged product, Opportunity Brief, and Discovery V2 fixtures.",
+  );
 } catch (error) {
   executionError = error;
 }
@@ -1404,8 +1912,7 @@ try {
 const cleanupErrors = [];
 for (const [name, client] of [
   ["fresh client", freshClient],
-  ["Discovery upgrade client", discoveryUpgradeClient],
-  ["Radar upgrade client", radarUpgradeClient],
+  ["upgrade client", upgradeClient],
 ]) {
   if (!client) continue;
   try {
@@ -1436,7 +1943,7 @@ try {
 } catch (error) {
   cleanupErrors.push(new Error("Failed to close the admin client.", { cause: error }));
 }
-for (const temporaryFolder of temporaryFolders) {
+if (temporaryFolder) {
   try {
     await rm(temporaryFolder, { recursive: true });
   } catch (error) {

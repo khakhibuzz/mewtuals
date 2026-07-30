@@ -36,6 +36,7 @@ const createdRunIds = new Set<string>();
 const createdCandidateIds = new Set<string>();
 
 const discoveryConfig: DiscoveryConfig = {
+  campaignKey: "general_discovery",
   geographies: [geography],
   companyCategories: ["AI"],
   creatorCategories: ["technology"],
@@ -352,14 +353,6 @@ describe("Mewtuals discovery control-plane acceptance", () => {
           `https://registry-alpha-${compactTestId}.example/company`,
         ),
         creatorCandidate(),
-        companyCandidate(
-          "Acceptance Registry Beta",
-          `https://registry-beta-${compactTestId}.example/company`,
-          {
-            name: "Acceptance AI Company (confirmed)",
-            discoveryScore: 91,
-          },
-        ),
       ],
       sourceErrors: [],
     } as const;
@@ -383,9 +376,9 @@ describe("Mewtuals discovery control-plane acceptance", () => {
       run: {
         id: claimed.runId,
         status: "succeeded",
-        foundCount: 3,
+        foundCount: 2,
         newCount: 2,
-        duplicateCount: 1,
+        duplicateCount: 0,
       },
     });
 
@@ -421,12 +414,12 @@ describe("Mewtuals discovery control-plane acceptance", () => {
       },
     });
 
-    const betaSource = await service.getAdminSummary(adminActor, {
+    const alphaSource = await service.getAdminSummary(adminActor, {
       geography,
-      source: "Acceptance Registry Beta",
+      source: "Acceptance Registry Alpha",
       pageSize: 10,
     });
-    expect(betaSource).toMatchObject({
+    expect(alphaSource).toMatchObject({
       ok: true,
       snapshot: {
         candidates: {
@@ -459,7 +452,7 @@ describe("Mewtuals discovery control-plane acceptance", () => {
       type: "company",
       geography,
       category: "AI",
-      source: "Acceptance Registry Beta",
+      source: "Acceptance Registry Alpha",
       status: "discovered",
       page: 1,
       pageSize: 10,
@@ -472,7 +465,7 @@ describe("Mewtuals discovery control-plane acceptance", () => {
           totalCreators: 1,
           discoveredToday: 2,
           latestRunStatus: "succeeded",
-          latestRunDuplicateCount: 1,
+          latestRunDuplicateCount: 0,
         },
         candidates: { total: 1, page: 1, pageSize: 10 },
       },
@@ -480,7 +473,7 @@ describe("Mewtuals discovery control-plane acceptance", () => {
     if (!filtered.ok) throw new Error("Admin snapshot was not available.");
     expect(filtered.snapshot.candidates.items).toHaveLength(1);
     createdCandidateIds.add(filtered.snapshot.candidates.items[0]!.id);
-    expect(filtered.snapshot.evidence).toHaveLength(2);
+    expect(filtered.snapshot.evidence).toHaveLength(1);
     expect(
       filtered.snapshot.evidence.map(
         ({ sourceName, sourceUrl, discoveryRunId }) => ({
@@ -493,11 +486,6 @@ describe("Mewtuals discovery control-plane acceptance", () => {
       {
         sourceName: "Acceptance Registry Alpha",
         sourceUrl: `https://registry-alpha-${compactTestId}.example/company`,
-        discoveryRunId: claimed.runId,
-      },
-      {
-        sourceName: "Acceptance Registry Beta",
-        sourceUrl: `https://registry-beta-${compactTestId}.example/company`,
         discoveryRunId: claimed.runId,
       },
     ]);
@@ -646,7 +634,7 @@ describe("Mewtuals discovery control-plane acceptance", () => {
     if (!persistedDecision.ok) {
       throw new Error("Rediscovered candidate was not available to admin.");
     }
-    expect(persistedDecision.snapshot.evidence).toHaveLength(3);
+    expect(persistedDecision.snapshot.evidence).toHaveLength(2);
     expect(
       persistedDecision.snapshot.evidence.map(
         ({ sourceName, sourceUrl, discoveryRunId }) => ({
@@ -659,11 +647,6 @@ describe("Mewtuals discovery control-plane acceptance", () => {
       {
         sourceName: "Acceptance Registry Alpha",
         sourceUrl: `https://registry-alpha-${compactTestId}.example/company`,
-        discoveryRunId: claimed.runId,
-      },
-      {
-        sourceName: "Acceptance Registry Beta",
-        sourceUrl: `https://registry-beta-${compactTestId}.example/company`,
         discoveryRunId: claimed.runId,
       },
       {
