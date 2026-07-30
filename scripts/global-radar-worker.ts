@@ -1,4 +1,5 @@
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { chmod, mkdtemp, open, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -163,20 +164,66 @@ function requiredOption(
   return value;
 }
 
-async function readJsonDocument(file: string): Promise<JsonDocument> {
-  let bytes: Uint8Array;
+export async function readBoundedRegularFile(
+  file: string,
+  maximumBytes: number = MAX_GLOBAL_RADAR_WORKER_FILE_BYTES,
+  openFile: typeof open = open,
+): Promise<Uint8Array> {
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    bytes = await readFile(file);
+    handle = await openFile(
+      file,
+      fsConstants.O_RDONLY | fsConstants.O_NONBLOCK,
+    );
   } catch {
     throw new GlobalRadarCliError(
       "The Global Radar JSON file could not be read.",
     );
   }
-  if (bytes.byteLength > MAX_GLOBAL_RADAR_WORKER_FILE_BYTES) {
+
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new GlobalRadarCliError(
+        "The Global Radar JSON path must be a regular file.",
+      );
+    }
+    if (stats.size > maximumBytes) {
+      throw new GlobalRadarCliError(
+        `The Global Radar file must be at most ${maximumBytes} bytes.`,
+      );
+    }
+
+    const buffer = Buffer.allocUnsafe(maximumBytes + 1);
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        buffer.byteLength - offset,
+        offset,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > maximumBytes) {
+      throw new GlobalRadarCliError(
+        `The Global Radar file must be at most ${maximumBytes} bytes.`,
+      );
+    }
+    return buffer.subarray(0, offset);
+  } catch (error) {
+    if (error instanceof GlobalRadarCliError) throw error;
     throw new GlobalRadarCliError(
-      `The Global Radar file must be at most ${MAX_GLOBAL_RADAR_WORKER_FILE_BYTES} bytes.`,
+      "The Global Radar JSON file could not be read.",
     );
+  } finally {
+    await handle.close().catch(() => undefined);
   }
+}
+
+async function readJsonDocument(file: string): Promise<JsonDocument> {
+  const bytes = await readBoundedRegularFile(file);
 
   let contents: string;
   try {
@@ -295,6 +342,18 @@ function networkEnvironment(
       "GLOBAL_RADAR_WORKER_SECRET is required for network commands.",
     );
   }
+  if (workerSecret.length < 32) {
+    throw new GlobalRadarCliError(
+      "GLOBAL_RADAR_WORKER_SECRET must contain at least 32 characters.",
+    );
+  }
+  const discoveryWorkerSecret =
+    runtime.environment.DISCOVERY_WORKER_SECRET?.trim();
+  if (discoveryWorkerSecret && discoveryWorkerSecret === workerSecret) {
+    throw new GlobalRadarCliError(
+      "Radar and Discovery worker secrets must be distinct.",
+    );
+  }
 
   let baseUrl: URL;
   try {
@@ -348,6 +407,62 @@ async function readBoundedJson(
   }
 }
 
+function safeErrorName(error: unknown): string {
+  return error !== null &&
+    typeof error === "object" &&
+    typeof (error as { name?: unknown }).name === "string"
+    ? (error as { name: string }).name
+    : "";
+}
+
+function requestFailureReason(error: unknown): string {
+  const name = safeErrorName(error);
+  return name === "TimeoutError"
+    ? "request_timeout"
+    : name === "AbortError"
+      ? "request_aborted"
+      : "network_error";
+}
+
+function responseBodyFailureReason(error: unknown): string {
+  const name = safeErrorName(error);
+  return name === "TimeoutError"
+    ? "response_body_timeout"
+    : name === "AbortError"
+      ? "response_body_aborted"
+      : "response_body_error";
+}
+
+function invalidResponseDetails(
+  command: GlobalRadarWorkerNetworkCommand,
+): Readonly<Record<string, unknown>> {
+  return command === "submit"
+    ? { outcome: "unknown_success", reason: "invalid_response" }
+    : {};
+}
+
+async function readWorkerResponseJson(
+  response: Response,
+  command: GlobalRadarWorkerNetworkCommand,
+  maximumBytes: number,
+): Promise<unknown | null> {
+  try {
+    return await readBoundedJson(response, maximumBytes);
+  } catch (error) {
+    throw new GlobalRadarCliError(
+      `The Global Radar API response body could not be read for ${command}.`,
+      {
+        outcome:
+          response.ok && command === "submit"
+            ? "unknown_success"
+            : "transport_failure",
+        reason: responseBodyFailureReason(error),
+        ...(!response.ok ? { httpStatus: response.status } : {}),
+      },
+    );
+  }
+}
+
 async function postWorkerJson(
   command: GlobalRadarWorkerNetworkCommand,
   path: string,
@@ -371,26 +486,22 @@ async function postWorkerJson(
       signal: runtime.timeoutSignal(globalRadarRequestTimeoutMs(command)),
     });
   } catch (error) {
-    const errorName =
-      error !== null &&
-      typeof error === "object" &&
-      typeof (error as { name?: unknown }).name === "string"
-        ? (error as { name: string }).name
-        : "";
-    const reason =
-      errorName === "TimeoutError"
-        ? "request_timeout"
-        : errorName === "AbortError"
-          ? "request_aborted"
-          : "network_error";
     throw new GlobalRadarCliError(
       `The Global Radar API could not be reached for ${command}.`,
-      { reason },
+      {
+        outcome:
+          command === "submit" ? "unknown_success" : "transport_failure",
+        reason: requestFailureReason(error),
+      },
     );
   }
 
   if (!response.ok) {
-    const error = await readBoundedJson(response, MAX_API_ERROR_BYTES);
+    const error = await readWorkerResponseJson(
+      response,
+      command,
+      MAX_API_ERROR_BYTES,
+    );
     const safe = safeApiFailure(error);
     throw new GlobalRadarCliError(
       `The Global Radar API rejected ${command} with HTTP ${response.status}.`,
@@ -398,28 +509,36 @@ async function postWorkerJson(
     );
   }
 
-  const value = await readBoundedJson(response, MAX_API_SUCCESS_BYTES);
+  const value = await readWorkerResponseJson(
+    response,
+    command,
+    MAX_API_SUCCESS_BYTES,
+  );
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new GlobalRadarCliError(
       `The Global Radar API returned invalid JSON for ${command}.`,
+      invalidResponseDetails(command),
     );
   }
   return value as Record<string, unknown>;
 }
 
-const recognizedConflictReasons = new Set([
-  "active_race",
-  "active_run",
-  "empty_queue",
-  "failure_mismatch",
+export const globalRadarWorkerConflictReasons = [
   "invalid_input",
-  "invalid_plan",
   "invalid_state",
-  "lease_expired",
+  "request_mismatch",
   "lease_mismatch",
+  "lease_expired",
+  "failure_mismatch",
+  "completion_identity_mismatch",
+  "entity_identity_conflict",
+  "invalid_plan",
   "not_found",
-  "submission_mismatch",
-]);
+] as const;
+
+const recognizedConflictReasons = new Set<string>(
+  globalRadarWorkerConflictReasons,
+);
 
 function safeApiFailure(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -636,11 +755,11 @@ const safeRunCountKeys = [
   "sourceErrors",
 ] as const;
 
-const safeNoticeMessages = {
-  lease_expired: "The worker lease expired before completion.",
-  run_failed: "The run ended without a completed batch.",
-  source_errors: "One or more public sources could not be processed.",
-} as const;
+const safeNoticeCodes = new Set([
+  "lease_expired",
+  "run_failed",
+  "source_errors",
+]);
 
 function parseSafeRun(
   value: unknown,
@@ -670,12 +789,15 @@ function parseSafeRun(
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       value.id,
     ) ||
-    !["scheduled", "manual", "trial"].includes(String(value.trigger)) ||
+    typeof value.trigger !== "string" ||
+    !["scheduled", "manual", "trial"].includes(value.trigger) ||
+    typeof value.scanMode !== "string" ||
     !["daily", "thematic", "watchlist_refresh", "manual"].includes(
-      String(value.scanMode),
+      value.scanMode,
     ) ||
+    typeof value.status !== "string" ||
     !["queued", "running", "succeeded", "partial", "failed"].includes(
-      String(value.status),
+      value.status,
     ) ||
     !validIsoTimestamp(value.startedAt, true) ||
     !validIsoTimestamp(value.completedAt, true) ||
@@ -709,11 +831,10 @@ function parseSafeRun(
         hasCount ? ["code", "message", "count"] : ["code", "message"],
       ) ||
       typeof noticeValue.code !== "string" ||
-      !Object.hasOwn(safeNoticeMessages, noticeValue.code) ||
-      noticeValue.message !==
-        safeNoticeMessages[
-          noticeValue.code as keyof typeof safeNoticeMessages
-        ] ||
+      !safeNoticeCodes.has(noticeValue.code) ||
+      typeof noticeValue.message !== "string" ||
+      noticeValue.message.trim().length === 0 ||
+      noticeValue.message.length > 500 ||
       (hasCount && !safeInteger(noticeValue.count))
     ) {
       return null;
@@ -734,12 +855,14 @@ function safeMutationResult(
   ) {
     throw new GlobalRadarCliError(
       `The Global Radar API returned an invalid response for ${command}.`,
+      invalidResponseDetails(command),
     );
   }
   const run = parseSafeRun(response.run, requestedRunId);
   if (!run) {
     throw new GlobalRadarCliError(
       `The Global Radar API returned an invalid response for ${command}.`,
+      invalidResponseDetails(command),
     );
   }
   const status = run.status;
@@ -752,6 +875,7 @@ function safeMutationResult(
   ) {
     throw new GlobalRadarCliError(
       `The Global Radar API returned an invalid response for ${command}.`,
+      invalidResponseDetails(command),
     );
   }
   return {

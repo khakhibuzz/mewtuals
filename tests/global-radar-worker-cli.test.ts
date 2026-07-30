@@ -1,4 +1,5 @@
 import {
+  constants as fsConstants,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -8,11 +9,14 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { dirname } from "node:path";
+import { open as openFile } from "node:fs/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   MAX_GLOBAL_RADAR_WORKER_FILE_BYTES,
+  globalRadarWorkerConflictReasons,
+  readBoundedRegularFile,
   runGlobalRadarWorkerCli,
   type GlobalRadarWorkerRuntime,
 } from "../scripts/global-radar-worker";
@@ -24,6 +28,8 @@ import {
 const validBatchFile = resolve(
   "tests/fixtures/global-radar-valid-batch.json",
 );
+const RADAR_WORKER_SECRET =
+  "radar-worker-secret-that-is-at-least-thirty-two-characters";
 const temporaryDirectories: string[] = [];
 
 type CapturedCommand = Readonly<{
@@ -38,7 +44,7 @@ function defaultRuntime(
   return {
     environment: {
       GLOBAL_RADAR_API_BASE_URL: "https://mewtuals.example",
-      GLOBAL_RADAR_WORKER_SECRET: "radar-worker-secret",
+      GLOBAL_RADAR_WORKER_SECRET: RADAR_WORKER_SECRET,
     },
     fetch: vi.fn(async () => {
       throw new Error("Unexpected network request.");
@@ -227,7 +233,7 @@ describe("Global Radar worker CLI submission", () => {
     );
     expect(requests[0]!.init.headers).toEqual(
       expect.objectContaining({
-        Authorization: "Bearer radar-worker-secret",
+        Authorization: `Bearer ${RADAR_WORKER_SECRET}`,
         "Content-Type": "application/json",
         "X-Global-Radar-Lease-Token": "private-radar-lease-token",
       }),
@@ -326,6 +332,7 @@ describe("Global Radar worker CLI submission", () => {
     expect(JSON.parse(result.stderr)).toEqual({
       ok: false,
       error: "The Global Radar API could not be reached for submit.",
+      outcome: "unknown_success",
       reason: "request_aborted",
     });
     expect(result.stderr).not.toContain("private upstream detail");
@@ -416,7 +423,7 @@ describe("Global Radar worker CLI failure and orphan recovery", () => {
       reason: "Claim artifact was irrecoverably lost.",
     });
     const headers = requests[0]!.init.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer radar-worker-secret");
+    expect(headers.Authorization).toBe(`Bearer ${RADAR_WORKER_SECRET}`);
     expect(headers["X-Global-Radar-Lease-Token"]).toBeUndefined();
   });
 
@@ -446,6 +453,218 @@ describe("Global Radar worker CLI failure and orphan recovery", () => {
 });
 
 describe("Global Radar worker CLI response safety", () => {
+  it("accepts bounded notice presentation copy while preserving code and count", async () => {
+    const notice = {
+      code: "source_errors",
+      message: "Some public sources were unavailable during this run.",
+      count: 1,
+    };
+    const run = {
+      ...terminalRun("partial"),
+      counts: { ...terminalRun("partial").counts, sourceErrors: 1 },
+      notices: [notice],
+    };
+    const result = await runCommand(
+      [
+        "submit",
+        "--claim-file",
+        privateClaimFile(),
+        "--file",
+        submissionBatchFile(),
+      ],
+      defaultRuntime({
+        fetch: vi.fn(async () =>
+          Response.json({ ok: true, outcome: "completed", run }),
+        ),
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      run: { notices: [notice] },
+    });
+  });
+
+  it("uses the settled terminal conflict reason contract exactly", async () => {
+    expect(globalRadarWorkerConflictReasons).toEqual([
+      "invalid_input",
+      "invalid_state",
+      "request_mismatch",
+      "lease_mismatch",
+      "lease_expired",
+      "failure_mismatch",
+      "completion_identity_mismatch",
+      "entity_identity_conflict",
+      "invalid_plan",
+      "not_found",
+    ]);
+
+    for (const reason of [
+      "request_mismatch",
+      "completion_identity_mismatch",
+      "entity_identity_conflict",
+      "invalid_plan",
+      "not_found",
+    ]) {
+      const result = await runCommand(
+        [
+          "submit",
+          "--claim-file",
+          privateClaimFile(),
+          "--file",
+          submissionBatchFile(),
+        ],
+        defaultRuntime({
+          fetch: vi.fn(async () =>
+            Response.json(
+              { ok: false, outcome: "conflict", reason },
+              { status: 409 },
+            ),
+          ),
+        }),
+      );
+      expect(JSON.parse(result.stderr)).toMatchObject({ reason });
+    }
+
+    for (const obsoleteReason of [
+      "active_race",
+      "active_run",
+      "empty_queue",
+      "submission_mismatch",
+    ]) {
+      const result = await runCommand(
+        [
+          "submit",
+          "--claim-file",
+          privateClaimFile(),
+          "--file",
+          submissionBatchFile(),
+        ],
+        defaultRuntime({
+          fetch: vi.fn(async () =>
+            Response.json(
+              { ok: false, outcome: "conflict", reason: obsoleteReason },
+              { status: 409 },
+            ),
+          ),
+        }),
+      );
+      expect(JSON.parse(result.stderr)).not.toHaveProperty("reason");
+    }
+  });
+
+  it.each([
+    ["AbortError", "response_body_aborted"],
+    ["TimeoutError", "response_body_timeout"],
+    ["Error", "response_body_error"],
+  ] as const)(
+    "classifies a post-header %s without losing submit unknown-success state",
+    async (errorName, reason) => {
+      const privateDetail = "private response stream detail";
+      const streamError = Object.assign(new Error(privateDetail), {
+        name: errorName,
+      });
+      const response = new Response(
+        new ReadableStream({
+          pull(controller) {
+            controller.error(streamError);
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+
+      const result = await runCommand(
+        [
+          "submit",
+          "--claim-file",
+          privateClaimFile(),
+          "--file",
+          submissionBatchFile(),
+        ],
+        defaultRuntime({ fetch: vi.fn(async () => response) }),
+      );
+
+      expect(JSON.parse(result.stderr)).toEqual({
+        ok: false,
+        error:
+          "The Global Radar API response body could not be read for submit.",
+        outcome: "unknown_success",
+        reason,
+      });
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain(privateDetail);
+    },
+  );
+
+  it("classifies non-submit response-stream failures as transport failures", async () => {
+    const privateDetail = "private claim body detail";
+    const response = new Response(
+      new ReadableStream({
+        pull(controller) {
+          controller.error(new Error(privateDetail));
+        },
+      }),
+      { status: 200 },
+    );
+
+    const result = await runCommand(
+      ["claim"],
+      defaultRuntime({ fetch: vi.fn(async () => response) }),
+    );
+
+    expect(JSON.parse(result.stderr)).toEqual({
+      ok: false,
+      error: "The Global Radar API response body could not be read for claim.",
+      outcome: "transport_failure",
+      reason: "response_body_error",
+    });
+    expect(result.stderr).not.toContain(privateDetail);
+  });
+
+  it("keeps every invalid successful submit response in unknown-success state", async () => {
+    const privateDetail = "private-success-response-marker";
+    const responses = [
+      () => new Response(null, { status: 200 }),
+      () => new Response(`{${privateDetail}`, { status: 200 }),
+      () =>
+        new Response(
+          `${privateDetail}${"x".repeat(
+            MAX_GLOBAL_RADAR_WORKER_FILE_BYTES,
+          )}`,
+          { status: 200 },
+        ),
+      () =>
+        Response.json({
+          ok: true,
+          outcome: "completed",
+          run: { ...terminalRun(), rawPayload: privateDetail },
+        }),
+    ];
+
+    for (const response of responses) {
+      const result = await runCommand(
+        [
+          "submit",
+          "--claim-file",
+          privateClaimFile(),
+          "--file",
+          submissionBatchFile(),
+        ],
+        defaultRuntime({ fetch: vi.fn(async () => response()) }),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(JSON.parse(result.stderr)).toMatchObject({
+        ok: false,
+        error: expect.any(String),
+        outcome: "unknown_success",
+        reason: "invalid_response",
+      });
+      expect(result.stderr).not.toContain(privateDetail);
+    }
+  });
+
   it("reports only allowlisted conflict metadata and never echoes response bodies", async () => {
     const privateValue = "private-response-body-and-token";
     const result = await runCommand(
@@ -541,6 +760,48 @@ describe("Global Radar worker CLI response safety", () => {
     expect(credentials.stderr).not.toContain("password");
     expect(credentials.stderr).not.toContain("private-secret");
   });
+
+  it("requires a strong Radar secret distinct from the Discovery secret", async () => {
+    const fetch = vi.fn();
+    const shortSecret = "short-private-radar-secret";
+    const sharedSecret =
+      "shared-private-worker-secret-that-is-at-least-thirty-two-characters";
+
+    const short = await runCommand(
+      ["claim"],
+      defaultRuntime({
+        environment: {
+          GLOBAL_RADAR_API_BASE_URL: "https://mewtuals.example",
+          GLOBAL_RADAR_WORKER_SECRET: shortSecret,
+        },
+        fetch,
+      }),
+    );
+    const shared = await runCommand(
+      ["claim"],
+      defaultRuntime({
+        environment: {
+          GLOBAL_RADAR_API_BASE_URL: "https://mewtuals.example",
+          GLOBAL_RADAR_WORKER_SECRET: sharedSecret,
+          DISCOVERY_WORKER_SECRET: sharedSecret,
+        },
+        fetch,
+      }),
+    );
+
+    expect(JSON.parse(short.stderr)).toEqual({
+      ok: false,
+      error:
+        "GLOBAL_RADAR_WORKER_SECRET must contain at least 32 characters.",
+    });
+    expect(JSON.parse(shared.stderr)).toEqual({
+      ok: false,
+      error: "Radar and Discovery worker secrets must be distinct.",
+    });
+    expect(short.stderr).not.toContain(shortSecret);
+    expect(shared.stderr).not.toContain(sharedSecret);
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("Global Radar package commands", () => {
@@ -577,6 +838,87 @@ describe("Global Radar package commands", () => {
 });
 
 describe("Global Radar worker CLI validation and arguments", () => {
+  it("rejects oversized regular files before reading any of their contents", async () => {
+    const read = vi.fn();
+    const close = vi.fn(async () => undefined);
+    const fileHandle = {
+      stat: vi.fn(async () => ({
+        isFile: () => true,
+        size: MAX_GLOBAL_RADAR_WORKER_FILE_BYTES + 1_000_000,
+      })),
+      read,
+      close,
+    };
+    const boundedOpen = vi.fn(
+      async () => fileHandle,
+    ) as unknown as typeof openFile;
+
+    await expect(
+      readBoundedRegularFile(
+        "private-oversized-input.json",
+        MAX_GLOBAL_RADAR_WORKER_FILE_BYTES,
+        boundedOpen,
+      ),
+    ).rejects.toThrow(
+      `The Global Radar file must be at most ${MAX_GLOBAL_RADAR_WORKER_FILE_BYTES} bytes.`,
+    );
+    expect(read).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("reads at most limit plus one byte and rejects non-regular inputs", async () => {
+    const maximumBytes = 64;
+    const read = vi.fn(
+      async (
+        buffer: Uint8Array,
+        offset: number,
+        length: number,
+      ) => ({
+        bytesRead: length,
+        buffer: buffer.fill(120, offset, offset + length),
+      }),
+    );
+    const racedHandle = {
+      stat: vi.fn(async () => ({ isFile: () => true, size: 1 })),
+      read,
+      close: vi.fn(async () => undefined),
+    };
+    const racedOpen = vi.fn(
+      async () => racedHandle,
+    ) as unknown as typeof openFile;
+    const specialRead = vi.fn();
+    const specialHandle = {
+      stat: vi.fn(async () => ({ isFile: () => false, size: 0 })),
+      read: specialRead,
+      close: vi.fn(async () => undefined),
+    };
+    const specialOpenSpy = vi.fn(
+      async (file: string, flags: string | number) => {
+        void file;
+        void flags;
+        return specialHandle;
+      },
+    );
+    const specialOpen = specialOpenSpy as unknown as typeof openFile;
+
+    await expect(
+      readBoundedRegularFile("growing.json", maximumBytes, racedOpen),
+    ).rejects.toThrow(
+      `The Global Radar file must be at most ${maximumBytes} bytes.`,
+    );
+    expect(read).toHaveBeenCalledOnce();
+    expect(read.mock.calls[0]?.[2]).toBe(maximumBytes + 1);
+    await expect(
+      readBoundedRegularFile("special-input", maximumBytes, specialOpen),
+    ).rejects.toThrow("The Global Radar JSON path must be a regular file.");
+    const specialFlags = specialOpenSpy.mock.calls[0]?.[1];
+    expect(typeof specialFlags).toBe("number");
+    expect(Number(specialFlags) & fsConstants.O_NONBLOCK).toBe(
+      fsConstants.O_NONBLOCK,
+    );
+    expect(specialRead).not.toHaveBeenCalled();
+  });
+
   it("validates a minimal reserved-domain rich worker proposal", async () => {
     const result = await runCommand(["validate", "--file", validBatchFile]);
 
@@ -668,7 +1010,7 @@ describe("Global Radar worker CLI validation and arguments", () => {
         ok: false,
         error: expect.any(String),
       });
-      expect(result.stderr).not.toContain("radar-worker-secret");
+      expect(result.stderr).not.toContain(RADAR_WORKER_SECRET);
     }
   });
 
@@ -754,6 +1096,36 @@ describe("Global Radar worker CLI validation and arguments", () => {
     expect(unsafe.stderr).not.toContain("must-not-print");
   });
 
+  it("requires run trigger, scan mode, and status to be JSON strings", async () => {
+    const activeRun = {
+      ...terminalRun(),
+      status: "running",
+      completedAt: null,
+    };
+    for (const run of [
+      { ...activeRun, trigger: ["scheduled"] },
+      { ...activeRun, scanMode: ["daily"] },
+      { ...activeRun, status: ["running"] },
+    ]) {
+      const result = await runCommand(
+        ["claim"],
+        defaultRuntime({
+          fetch: vi.fn(async () =>
+            Response.json({
+              ok: true,
+              outcome: "no_work",
+              reason: "active_run",
+              run,
+            }),
+          ),
+        }),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe("");
+    }
+  });
+
   it("stores only the validated claim in a private artifact and prints a bounded summary", async () => {
     const response = claimedResponse();
     const requests: Array<{ url: string; init: RequestInit }> = [];
@@ -812,7 +1184,7 @@ describe("Global Radar worker CLI validation and arguments", () => {
       init: {
         method: "POST",
         headers: expect.objectContaining({
-          Authorization: "Bearer radar-worker-secret",
+          Authorization: `Bearer ${RADAR_WORKER_SECRET}`,
           "Content-Type": "application/json",
         }),
       },
