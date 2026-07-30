@@ -137,6 +137,22 @@ export const signalTransitionResultSchema = z.discriminatedUnion("valid", [
   }),
 ]);
 
+const directDemandExpiryStatusInputSchema = z.strictObject({
+  currentStatus: z.enum(signalStatuses),
+  currentIndiaRelevanceType: z.enum(indiaRelevanceTypes),
+  evergreen: z.boolean(),
+  expiresAt: isoTimestampSchema.nullable(),
+  reobserveBy: isoTimestampSchema.nullable(),
+  announcedAt: isoTimestampSchema.nullable(),
+  effectiveFrom: isoTimestampSchema.nullable(),
+  now: isoTimestampSchema,
+});
+
+export type DirectDemandExpiryStatusResult = Readonly<
+  | { valid: true; status: SignalStatus }
+  | { valid: false; reason: "invalid_expiry_edit" }
+>;
+
 export type InitialSignalStatusInput = Readonly<
   z.input<typeof initialSignalStatusInputSchema>
 >;
@@ -203,7 +219,7 @@ const allowedActions: Readonly<
   ],
   dismissed: ["reopen"],
   expired: ["reopen"],
-  promoted: ["reverse_promotion"],
+  promoted: ["reverse_promotion", "mark_no_india_fit"],
 };
 
 const nextStatusByAction: Readonly<
@@ -318,7 +334,10 @@ export function transitionSignal(
 
   const result = signalTransitionResultSchema.parse({
     valid: true,
-    status: nextStatusByAction[action.type],
+    status:
+      action.type === "mark_no_india_fit" && currentStatus === "promoted"
+        ? "promoted"
+        : nextStatusByAction[action.type],
     indiaRelevanceType:
       action.type === "mark_no_india_fit"
         ? "no_current_India_fit"
@@ -328,4 +347,40 @@ export function transitionSignal(
     throw new Error("Signal transition output failed validation.");
   }
   return Object.freeze(result);
+}
+
+export function resolveDirectDemandExpiryStatus(
+  input: unknown,
+): DirectDemandExpiryStatusResult {
+  const parsed = directDemandExpiryStatusInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return Object.freeze({ valid: false, reason: "invalid_expiry_edit" });
+  }
+  const value = parsed.data;
+  if (
+    (value.evergreen &&
+      (value.expiresAt !== null || value.reobserveBy === null)) ||
+    (!value.evergreen && value.reobserveBy !== null) ||
+    (value.expiresAt !== null &&
+      ((value.announcedAt !== null &&
+        Date.parse(value.expiresAt) < Date.parse(value.announcedAt)) ||
+        (value.effectiveFrom !== null &&
+          Date.parse(value.expiresAt) < Date.parse(value.effectiveFrom))))
+  ) {
+    return Object.freeze({ valid: false, reason: "invalid_expiry_edit" });
+  }
+  const due = value.evergreen
+    ? Date.parse(value.reobserveBy!) <= Date.parse(value.now)
+    : value.expiresAt !== null &&
+      Date.parse(value.expiresAt) <= Date.parse(value.now);
+  if (!due) return Object.freeze({ valid: true, status: value.currentStatus });
+  const transition = transitionSignal({
+    currentStatus: value.currentStatus,
+    currentIndiaRelevanceType: value.currentIndiaRelevanceType,
+    action: { type: "expire" },
+  });
+  return Object.freeze({
+    valid: true,
+    status: transition.valid ? transition.status : value.currentStatus,
+  });
 }

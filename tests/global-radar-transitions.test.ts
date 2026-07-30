@@ -4,6 +4,7 @@ import {
   GLOBAL_RADAR_SCORE_VERSION,
   determineInitialSignalStatus,
   preserveRediscoveredSignalStatus,
+  resolveDirectDemandExpiryStatus,
   resolveRediscoveredReobserveBy,
   transitionSignal,
 } from "../app/domain/global-radar";
@@ -343,7 +344,7 @@ describe("Global Radar signal transitions", () => {
     });
   });
 
-  it.each(["dismissed", "expired", "promoted"] as const)(
+  it.each(["dismissed", "expired"] as const)(
     "does not let mark-no-India-fit bypass the protected %s state",
     (currentStatus) => {
       expect(
@@ -355,6 +356,53 @@ describe("Global Radar signal transitions", () => {
       ).toEqual({ valid: false, reason: "transition_not_allowed" });
     },
   );
+
+  it("marks a promoted signal no-India-fit through the pure lifecycle without demotion", () => {
+    expect(
+      transitionSignal({
+        currentStatus: "promoted",
+        currentIndiaRelevanceType: "explicit_India",
+        action: { type: "mark_no_india_fit" },
+      }),
+    ).toEqual({
+      valid: true,
+      status: "promoted",
+      indiaRelevanceType: "no_current_India_fit",
+    });
+  });
+
+  it("resolves expiry edits through lifecycle protection and validates source dates", () => {
+    const activity = {
+      evergreen: false,
+      expiresAt: "2026-07-29T00:00:00.000Z",
+      reobserveBy: null,
+      now: "2026-07-30T00:00:00.000Z",
+      announcedAt: "2026-07-01T00:00:00.000Z",
+      effectiveFrom: "2026-07-15T00:00:00.000Z",
+    } as const;
+    expect(
+      resolveDirectDemandExpiryStatus({
+        ...activity,
+        currentStatus: "monitoring",
+        currentIndiaRelevanceType: "globally_open",
+      }),
+    ).toEqual({ valid: true, status: "expired" });
+    expect(
+      resolveDirectDemandExpiryStatus({
+        ...activity,
+        currentStatus: "dismissed",
+        currentIndiaRelevanceType: "globally_open",
+      }),
+    ).toEqual({ valid: true, status: "dismissed" });
+    expect(
+      resolveDirectDemandExpiryStatus({
+        ...activity,
+        currentStatus: "monitoring",
+        currentIndiaRelevanceType: "globally_open",
+        expiresAt: "2026-06-30T00:00:00.000Z",
+      }),
+    ).toEqual({ valid: false, reason: "invalid_expiry_edit" });
+  });
 
   it("fails closed for unknown actions, stale scoring versions, and extra fields", () => {
     expect([

@@ -324,6 +324,27 @@ describe("Global Radar planner", () => {
     );
   });
 
+  it("rejects watchlist cadence beyond the database maximum", () => {
+    expect(() =>
+      planGlobalRadarRun(
+        plannerInput({
+          scanMode: "watchlist_refresh",
+          watchlist: [
+            {
+              category: "motors",
+              categorySearchTerms: { en: "motors" },
+              theme: "robotics_manufacturing",
+              countries: ["US"],
+              languages: ["en"],
+              cadenceDays: 366,
+              priority: 100,
+            },
+          ],
+        }),
+      ),
+    ).toThrow(/watchlist cadence.*365/i);
+  });
+
   it.each([
     {
       missingLanguage: "en",

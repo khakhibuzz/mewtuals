@@ -48,6 +48,7 @@ import {
   type GlobalRadarRepository,
   type QueueGlobalRadarRunInput,
 } from "../db/repositories/global-radar-repository";
+import { createGlobalRadarAdminRepository } from "../db/repositories/global-radar-admin-repository";
 import { persistGlobalRadarBatch } from "../db/repositories/global-radar-persistence";
 import * as coreDatabaseSchema from "../db/schema";
 import { discoveryRuns, users } from "../db/schema";
@@ -703,6 +704,53 @@ function validMomentumPersistenceBatch(
       ],
     },
   ];
+  return rehashPersistenceBatch(batch);
+}
+
+function validPrecursorPersistenceBatch(
+  runId: string,
+): PersistableGlobalRadarBatch {
+  const batch = structuredClone(validPersistenceBatch(runId));
+  const direct = batch.signals[0]!;
+  direct.externalSignalId = "signal-acme-precursor";
+  direct.signalClass = "demand_precursor";
+  direct.signalType = "funding";
+  direct.title = "Acme funds a new robot-learning programme";
+  direct.factualSummary =
+    "Acme announced funding for a dated robot-learning programme.";
+  direct.interpretationSummary =
+    "Mewtuals interprets the programme as a precursor, not a public request.";
+  direct.score = {
+    valid: true,
+    signalClass: "demand_precursor",
+    scoreVersion: "global-radar-score-v1",
+    score: 72,
+    scoreCoverage: 100,
+    qualificationGatesPassed: true,
+    components: {
+      evidenceConfidence: 80,
+      proximityToExternalDemand: 70,
+      fundingDeploymentMomentum: 80,
+      likelyDataHardwareIntensity: 70,
+      indiaFit: 70,
+      estimatedTimeHorizon: 80,
+      strategicRelevance: 70,
+    },
+  };
+  direct.expiresAt = null;
+  direct.evergreen = null;
+  direct.reobserveBy = null;
+  direct.responsePath = null;
+  direct.partnerApplicationUrl = null;
+  direct.evidence = direct.evidence.map((evidence) => ({
+    ...evidence,
+    sourceType: "official_funding_announcement",
+    claim: "Acme announced funding for a dated robot-learning programme.",
+    sourceExcerpt: "New funding supports the robot-learning programme.",
+    englishSummary:
+      "Acme announced a funded robot-learning programme without an external request.",
+    supportsDirectDemand: false,
+  }));
   return rehashPersistenceBatch(batch);
 }
 
@@ -4080,5 +4128,1574 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
           ]),
         ),
     ).toHaveLength(2);
+  });
+});
+
+describe("PostgreSQL Global Radar administrator safe reads", () => {
+  const adminRepository = createGlobalRadarAdminRepository(db, {
+    scoreVersion: "global-radar-score-v1",
+    thresholds: {
+      direct_demand: 70,
+      demand_precursor: 65,
+      ecosystem_momentum: 70,
+    },
+  });
+
+  async function persistClassFixture(
+    suffix: string,
+    kind: "direct" | "precursor" | "momentum",
+  ) {
+    const now = new Date(`2026-07-30T${kind === "direct" ? "10" : kind === "precursor" ? "11" : "12"}:00:00.000Z`);
+    await repository.queueRun(queueInput(`admin-read-${suffix}`, { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Admin read fixture was not claimed.");
+    const batch =
+      kind === "direct"
+        ? validPersistenceBatch(claim.run.id, {
+            externalSignalId: `admin-direct-${suffix}`,
+            sourceUrl: `https://admin-${suffix}.example/direct`,
+            stableIdentifierValue: `admin-direct-${suffix}`,
+            websiteUrl: `https://admin-${suffix}.example`,
+            linkedinOrganizationUrl: null,
+          })
+        : kind === "precursor"
+          ? validPrecursorPersistenceBatch(claim.run.id)
+          : validMomentumPersistenceBatch(claim.run.id);
+    const result = await repository.completeRun({
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(now.getTime() + 1_000),
+      ),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    if (result.outcome !== "completed") {
+      throw new Error(`Admin class fixture failed: ${JSON.stringify(result)}`);
+    }
+  }
+
+  it("rejects unknown, class-inapplicable, and out-of-range list filters before SQL", async () => {
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "direct_demand",
+        filters: { page: 1, horizon: "within_30_days" },
+      } as never),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "demand_precursor",
+        filters: { page: 1, expiresBefore: "2026-08-01T00:00:00.000Z" },
+      } as never),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "ecosystem_momentum",
+        filters: { page: 101 },
+      }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "direct_demand",
+        filters: { page: 1, unexpected: "private" },
+      } as never),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+  });
+
+  it("applies exact class filters, stable ordering, fixed pagination, and excludes merged rows", async () => {
+    await persistClassFixture("filters", "direct");
+    const [owner] = await db.select().from(globalRadarSignals);
+    if (!owner) throw new Error("Admin direct fixture was not persisted.");
+    const duplicateId = randomUUID();
+    await db.insert(globalRadarSignals).values({
+      ...owner,
+      id: duplicateId,
+      title: "Earlier tie",
+      dedupeKey: "d".repeat(64),
+      observedAt: new Date(owner.observedAt.getTime() - 1_000),
+      firstSeenAt: new Date(owner.firstSeenAt.getTime() - 1_000),
+      lastSeenAt: new Date(owner.lastSeenAt.getTime() - 1_000),
+      createdAt: new Date(owner.createdAt.getTime() - 1_000),
+      updatedAt: new Date(owner.updatedAt.getTime() - 1_000),
+    });
+    const [requirementTemplate] = await db
+      .select()
+      .from(globalSignalRequirements)
+      .where(eq(globalSignalRequirements.signalId, owner.id));
+    if (!requirementTemplate) throw new Error("Admin requirement fixture was not persisted.");
+    const { id: _requirementId, ...requirementValues } = requirementTemplate;
+    void _requirementId;
+    await db.insert(globalSignalRequirements).values({
+      ...requirementValues,
+      signalId: duplicateId,
+    });
+    const mergedId = randomUUID();
+    await db.insert(globalRadarSignals).values({
+      ...owner,
+      id: mergedId,
+      title: "Merged hidden row",
+      dedupeKey: "e".repeat(64),
+      mergedIntoSignalId: owner.id,
+    });
+
+    const listed = await adminRepository.listSignals({
+      signalClass: "direct_demand",
+      filters: {
+        status: "newly_discovered",
+        country: "United States",
+        indiaRelevance: "explicit_India",
+        demandDomain: "robot_learning_and_manipulation",
+        capability: "teleoperated_trajectories",
+        observedFrom: "2026-07-01T00:00:00.000Z",
+        observedTo: "2026-08-01T00:00:00.000Z",
+        expiresBefore: "2026-09-01T00:00:00.000Z",
+        page: 1,
+      },
+    });
+    expect(listed).toMatchObject({
+      outcome: "listed",
+      page: 1,
+      pageSize: 25,
+      total: 2,
+      items: [{ id: owner.id }, { id: duplicateId }],
+    });
+    expect(JSON.stringify(listed)).not.toContain("rawMetadata");
+    expect(JSON.stringify(listed)).not.toContain("note_appended");
+
+    const precursorId = randomUUID();
+    await db.insert(globalRadarSignals).values({
+      ...owner,
+      id: precursorId,
+      signalClass: "demand_precursor",
+      title: "Acme funds a robot-learning programme",
+      signalType: "funding",
+      dedupeKey: "f".repeat(64),
+      demandExplicitness: null,
+      freshness: null,
+      actionability: null,
+      commercialPotential: null,
+      repeatability: null,
+      responseAccessibility: null,
+      strategicLearning: null,
+      complianceComplexity: null,
+      directDemandScore: null,
+      proximityToExternalDemand: 70,
+      fundingDeploymentMomentum: 80,
+      likelyDataHardwareIntensity: 70,
+      estimatedTimeHorizon: 80,
+      strategicRelevance: 70,
+      precursorScore: 72,
+      expiresAt: null,
+      evergreen: null,
+      reobserveBy: null,
+      responsePathType: null,
+      responsePathUrl: null,
+      responseBusinessEmail: null,
+      partnerApplicationUrl: null,
+    });
+    const precursor = await adminRepository.listSignals({
+      signalClass: "demand_precursor",
+      filters: { horizon: "days_31_to_90", page: 1 },
+    });
+    expect(precursor).toMatchObject({
+      outcome: "listed",
+      total: 1,
+      items: [{ id: precursorId }],
+    });
+
+    await persistClassFixture("theme", "momentum");
+    const momentum = await adminRepository.listSignals({
+      signalClass: "ecosystem_momentum",
+      filters: { theme: "robot_teleoperation_demonstrations", page: 1 },
+    });
+    expect(momentum).toMatchObject({ outcome: "listed", total: 1 });
+  });
+
+  it("returns bounded class metrics, safe detail children, watchlist rows, and generic run notices", async () => {
+    await persistClassFixture("metrics", "direct");
+    const [signal] = await db.select().from(globalRadarSignals);
+    if (!signal) throw new Error("Admin metrics fixture was not persisted.");
+    const metrics = await adminRepository.getClassMetrics({
+      signalClass: "direct_demand",
+      now: new Date("2026-07-30T12:00:00.000Z"),
+      filters: {},
+    });
+    expect(metrics).toMatchObject({
+      outcome: "listed",
+      metrics: {
+        total: 1,
+        highQuality: 1,
+        byStatus: { newly_discovered: 1 },
+        india: { explicit: 1, inferred: 0, other: 0 },
+        countries: { unitedStates: 1, china: 0, other: 0 },
+        requirementMix: { physicalData: 1, hardware: 0 },
+        active: 1,
+        expiring: 1,
+      },
+    });
+    expect(metrics.outcome === "listed" ? metrics.metrics.demandFamilies : {}).toEqual({
+      robot_learning_and_manipulation: 1,
+    });
+    await db.insert(globalRadarSignals).values({
+      ...signal,
+      id: randomUUID(),
+      dedupeKey: "6".repeat(64),
+      demandDomain: "unbounded_private_family",
+    });
+    const boundedMetrics = await adminRepository.getClassMetrics({
+      signalClass: "direct_demand",
+      now: new Date("2026-07-30T12:00:00.000Z"),
+      filters: {},
+    });
+    expect(
+      boundedMetrics.outcome === "listed"
+        ? boundedMetrics.metrics.demandFamilies
+        : {},
+    ).not.toHaveProperty("unbounded_private_family");
+
+    const overview = await adminRepository.getOverviewMetrics({
+      now: new Date("2026-07-30T12:00:00.000Z"),
+    });
+    expect(overview).toMatchObject({
+      outcome: "listed",
+      metrics: {
+        newSignals: 2,
+        activeDirectDemand: 2,
+        highQualityPrecursors: 0,
+        india: { explicit: 2, inferred: 0 },
+        countries: { unitedStates: 2, china: 0, other: 0 },
+        requirementMix: { physicalData: 1, hardware: 0 },
+        capabilityFamilies: [
+          { capability: expect.any(String), signals: 1 },
+        ],
+        expiringDirectDemand: 2,
+        promotedEntities: 0,
+        latestRun: { id: expect.any(String), status: "succeeded" },
+        sourceErrors: 0,
+        mergedDuplicates: 0,
+      },
+    });
+
+    const detail = await adminRepository.getSignalDetail(signal.id);
+    expect(detail).toMatchObject({
+      outcome: "found",
+      detail: {
+        organisation: {
+          id: signal.globalEntityId,
+          canonicalName: expect.any(String),
+          stablePublicIdentifiers: expect.any(Array),
+        },
+        associatedOrganisations: { total: 0, truncated: false, items: [] },
+        signal: {
+          id: signal.id,
+          signalType: expect.any(String),
+          sourceLanguage: "en",
+          firstRunId: expect.any(String),
+        },
+        scoreRationale: {
+          directDemand: { score: expect.any(Number) },
+          precursor: { score: null },
+          momentum: { score: null },
+          coverage: 100,
+        },
+        timeline: { observedAt: expect.any(Date) },
+        systemsContext: { summary: expect.any(String) },
+        compliance: {
+          sensitiveDataFlags: { faces: null },
+          facts: { consent: null },
+        },
+        requirements: {
+          total: 1,
+          truncated: false,
+          items: [
+            {
+              kind: "physical_data",
+              collectionMethods: expect.any(Array),
+              scaleSpecification: null,
+            },
+          ],
+        },
+        evidence: {
+          total: 1,
+          truncated: false,
+          items: [
+            {
+              canonicalSourceUrl: expect.any(String),
+              isSyndicated: false,
+              supportedFieldPaths: expect.any(Array),
+            },
+          ],
+        },
+        history: { total: 1, truncated: false },
+        notes: { total: 0, truncated: false, items: [] },
+        watchlist: null,
+        promotion: null,
+        allowedActions: expect.arrayContaining([
+          "append_evidence",
+          "append_note",
+          "edit_expiry",
+          "edit_watchlist",
+        ]),
+      },
+    });
+    expect(JSON.stringify(detail)).not.toContain("rawMetadata");
+    expect(JSON.stringify(detail)).not.toContain("requirementFingerprint");
+    expect(JSON.stringify(detail)).not.toContain("evidenceFingerprint");
+    await expect(
+      adminRepository.getSignalDetail("------------------------------------"),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    const [detailRequirement] = await db
+      .select()
+      .from(globalSignalRequirements)
+      .where(eq(globalSignalRequirements.signalId, signal.id));
+    if (!detailRequirement) throw new Error("Detail requirement fixture was not persisted.");
+    const { id: _detailRequirementId, ...detailRequirementValues } = detailRequirement;
+    void _detailRequirementId;
+    await db.insert(globalSignalRequirements).values(
+      Array.from({ length: 101 }, (_, index) => ({
+        ...detailRequirementValues,
+        requirementFingerprint: plainSha256(`detail-requirement-${index}`),
+      })),
+    );
+    const cappedDetail = await adminRepository.getSignalDetail(signal.id);
+    expect(cappedDetail).toMatchObject({
+      outcome: "found",
+      detail: {
+        requirements: { total: 102, truncated: true },
+      },
+    });
+    if (cappedDetail.outcome !== "found") throw new Error("Detail was not found.");
+    expect(cappedDetail.detail.requirements.items).toHaveLength(100);
+    await db
+      .update(globalRadarSignals)
+      .set({ mergedIntoSignalId: randomUUID() })
+      .where(eq(globalRadarSignals.id, signal.id))
+      .catch(() => undefined);
+
+    const [run] = await db.select().from(globalRadarRuns).limit(1);
+    if (!run) throw new Error("Admin run fixture was not persisted.");
+    await db
+      .update(globalRadarRuns)
+      .set({
+        errorSummary: {
+          failure: { code: "private_provider_error", message: "secret provider stack" },
+          sourceErrors: [{ sourceName: "private source", message: "private failure body" }],
+          leaseTokenHash: "secret",
+        },
+      })
+      .where(eq(globalRadarRuns.id, run.id));
+    const runs = await adminRepository.listRuns({ page: 1 });
+    expect(runs).toMatchObject({
+      outcome: "listed",
+      page: 1,
+      pageSize: 25,
+      total: 1,
+      runs: [{ notices: expect.any(Array) }],
+    });
+    const runJson = JSON.stringify(runs);
+    expect(runJson).not.toContain("secret provider stack");
+    expect(runJson).not.toContain("private failure body");
+    expect(runJson).not.toContain("leaseTokenHash");
+    expect(runJson).not.toContain("externalRunKey");
+
+    const watchlist = await adminRepository.listWatchlist({ page: 1 });
+    expect(watchlist).toEqual({
+      outcome: "listed",
+      page: 1,
+      pageSize: 25,
+      total: 0,
+      entries: [],
+    });
+    if (!signal.globalEntityId) throw new Error("Detail entity was not persisted.");
+    await expect(
+      adminRepository.getWatchlistByEntityId(signal.globalEntityId),
+    ).resolves.toEqual({ outcome: "not_found" });
+  });
+});
+
+describe("PostgreSQL Global Radar optimistic administrator review", () => {
+  const adminRepository = createGlobalRadarAdminRepository(db, {
+    scoreVersion: "global-radar-score-v1",
+    thresholds: {
+      direct_demand: 70,
+      demand_precursor: 65,
+      ecosystem_momentum: 70,
+    },
+  });
+  const actor = { userId: "00000000-0000-4000-8000-000000000099", email: userEmail };
+
+  async function persistedDirect(suffix: string) {
+    const now = new Date("2026-07-30T13:00:00.000Z");
+    await repository.queueRun(queueInput(`admin-review-${suffix}`, { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Admin review fixture was not claimed.");
+    const batch = validPersistenceBatch(claim.run.id, {
+      externalSignalId: `admin-review-${suffix}`,
+      sourceUrl: `https://review-${suffix}.example/request`,
+      stableIdentifierValue: `admin-review-${suffix}`,
+      websiteUrl: `https://review-${suffix}.example`,
+      linkedinOrganizationUrl: null,
+    });
+    const completed = await repository.completeRun({
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(now.getTime() + 1_000),
+      ),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    if (completed.outcome !== "completed") throw new Error("Admin review fixture failed.");
+    const [signal] = await db.select().from(globalRadarSignals);
+    if (!signal) throw new Error("Admin review signal was not persisted.");
+    return signal;
+  }
+
+  function envelope(
+    expectedRevision: number,
+    suffix: string,
+    now = "2026-07-30T14:00:00.000Z",
+  ) {
+    return {
+      expectedRevision,
+      idempotencyKey: `00000000-0000-4000-8000-${suffix.padStart(12, "0")}`,
+      reason: `Administrator review ${suffix}`,
+      now: new Date(now),
+    };
+  }
+
+  it("enforces allowed transitions, derives qualification, and preserves promoted no-India-fit status", async () => {
+    const signal = await persistedDirect("transitions");
+    const review = await adminRepository.reviewSignal({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(0, "1"),
+      command: { type: "request_review" },
+    });
+    expect(review).toMatchObject({ outcome: "updated", detail: { signal: { status: "needs_review", revision: 1 } } });
+    const qualify = await adminRepository.reviewSignal({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(1, "2"),
+      command: { type: "qualify" },
+    });
+    expect(qualify).toMatchObject({ outcome: "updated", detail: { signal: { status: "qualified", revision: 2 } } });
+    const monitor = await adminRepository.reviewSignal({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(2, "3"),
+      command: { type: "monitor" },
+    });
+    expect(monitor).toMatchObject({ outcome: "updated", detail: { signal: { status: "monitoring", revision: 3 } } });
+    const dismiss = await adminRepository.reviewSignal({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(3, "4"),
+      command: { type: "dismiss" },
+    });
+    expect(dismiss).toMatchObject({ outcome: "updated", detail: { signal: { status: "dismissed", revision: 4 } } });
+    const reopen = await adminRepository.reviewSignal({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(4, "5"),
+      command: { type: "reopen" },
+    });
+    expect(reopen).toMatchObject({ outcome: "updated", detail: { signal: { status: "needs_review", revision: 5 } } });
+
+    await db.update(globalRadarSignals).set({ status: "promoted", revision: 10 }).where(eq(globalRadarSignals.id, signal.id));
+    const noFit = await adminRepository.reviewSignal({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(10, "6"),
+      command: { type: "mark_no_india_fit" },
+    });
+    expect(noFit).toMatchObject({
+      outcome: "updated",
+      detail: { signal: { status: "promoted", indiaRelevanceType: "no_current_India_fit", revision: 11 } },
+    });
+    const forbidden = await adminRepository.reviewSignal({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(11, "7"),
+      command: { type: "dismiss" },
+    });
+    expect(forbidden).toMatchObject({ outcome: "conflict", reason: "transition_not_allowed" });
+  });
+
+  it("checks idempotency before revision, rejects changed reuse, returns latest safe detail, and allows one concurrent winner", async () => {
+    const signal = await persistedDirect("idempotency");
+    const firstInput = {
+      signalId: signal.id,
+      actor,
+      envelope: envelope(0, "11"),
+      command: { type: "monitor" as const },
+    };
+    await expect(adminRepository.reviewSignal(firstInput)).resolves.toMatchObject({ outcome: "updated" });
+    await expect(
+      adminRepository.reviewSignal({
+        ...firstInput,
+        envelope: {
+          ...firstInput.envelope,
+          now: new Date("2026-07-30T15:00:00.000Z"),
+        },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "replayed",
+      detail: { signal: { revision: 1 } },
+    });
+    await expect(
+      adminRepository.reviewSignal({ ...firstInput, command: { type: "dismiss" } }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "idempotency_mismatch" });
+    await expect(
+      adminRepository.reviewSignal({
+        ...firstInput,
+        envelope: envelope(0, "12"),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "revision_mismatch",
+      detail: { signal: { revision: 1, status: "monitoring" } },
+    });
+
+    const concurrent = await Promise.all([
+      adminRepository.reviewSignal({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(1, "13"),
+        command: { type: "dismiss" },
+      }),
+      adminRepository.reviewSignal({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(1, "14"),
+        command: { type: "request_review" },
+      }),
+    ]);
+    expect(concurrent.filter(({ outcome }) => outcome === "updated")).toHaveLength(1);
+    expect(concurrent.filter(({ outcome }) => outcome === "conflict")).toHaveLength(1);
+    expect(await db.select().from(globalRadarAdminEvents)).toHaveLength(2);
+  });
+
+  it("enforces server-derived qualification boundaries for all three classes", async () => {
+    const direct = await persistedDirect("qualification");
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "needs_review", demandExplicitness: 74 })
+      .where(eq(globalRadarSignals.id, direct.id));
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: direct.id,
+        actor,
+        envelope: envelope(0, "21"),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toMatchObject({ outcome: "conflict", reason: "qualification_requirements_not_met" });
+    await db.update(globalRadarSignals).set({ demandExplicitness: 75 }).where(eq(globalRadarSignals.id, direct.id));
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: direct.id,
+        actor,
+        envelope: envelope(0, "22"),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toMatchObject({ outcome: "updated" });
+
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "needs_review", revision: 2, scorePolicyVersion: "global-radar-score-v0" })
+      .where(eq(globalRadarSignals.id, direct.id));
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: direct.id,
+        actor,
+        envelope: envelope(2, "23"),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toMatchObject({ outcome: "conflict", reason: "qualification_requirements_not_met" });
+
+    const [directTemplate] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, direct.id));
+    if (!directTemplate) throw new Error("Qualification template missing.");
+    const precursorId = randomUUID();
+    await db.insert(globalRadarSignals).values({
+      ...directTemplate,
+      id: precursorId,
+      signalClass: "demand_precursor",
+      signalType: "funding",
+      title: "Qualification precursor boundary",
+      status: "needs_review",
+      revision: 0,
+      dedupeKey: "7".repeat(64),
+      scorePolicyVersion: "global-radar-score-v1",
+      demandExplicitness: null,
+      freshness: null,
+      actionability: null,
+      commercialPotential: null,
+      repeatability: null,
+      responseAccessibility: null,
+      strategicLearning: null,
+      complianceComplexity: null,
+      directDemandScore: null,
+      evidenceConfidence: 59,
+      proximityToExternalDemand: 50,
+      fundingDeploymentMomentum: 80,
+      likelyDataHardwareIntensity: 80,
+      estimatedTimeHorizon: 80,
+      strategicRelevance: 80,
+      precursorScore: 72,
+      expiresAt: null,
+      evergreen: null,
+      reobserveBy: null,
+      responsePathType: null,
+      responsePathUrl: null,
+      responseBusinessEmail: null,
+      partnerApplicationUrl: null,
+    });
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: precursorId,
+        actor,
+        envelope: envelope(0, "24"),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toMatchObject({ outcome: "conflict", reason: "qualification_requirements_not_met" });
+    await db.update(globalRadarSignals).set({ evidenceConfidence: 60 }).where(eq(globalRadarSignals.id, precursorId));
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: precursorId,
+        actor,
+        envelope: envelope(0, "25"),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toMatchObject({ outcome: "updated" });
+
+    const momentumNow = new Date("2026-07-30T15:00:00.000Z");
+    await repository.queueRun(queueInput("admin-momentum-qualification", { now: momentumNow }));
+    const momentumClaim = await repository.claimRun({ now: momentumNow });
+    if (momentumClaim.outcome !== "claimed") throw new Error("Momentum qualification fixture was not claimed.");
+    const momentumBatch = validMomentumPersistenceBatch(momentumClaim.run.id);
+    const momentumComplete = await repository.completeRun({
+      ...completionInput(
+        momentumClaim.run.id,
+        momentumClaim.privateClaim.leaseToken,
+        new Date(momentumNow.getTime() + 1_000),
+      ),
+      submissionHash: momentumBatch.canonicalSubmissionHash,
+      batch: momentumBatch,
+    });
+    if (momentumComplete.outcome !== "completed") throw new Error("Momentum qualification fixture failed.");
+    const [momentum] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.signalClass, "ecosystem_momentum"));
+    if (!momentum) throw new Error("Momentum qualification signal missing.");
+    await db
+      .update(globalRadarSignals)
+      .set({
+        status: "needs_review",
+        momentumScore: 70,
+        momentumEvidenceQuality: 59,
+      })
+      .where(eq(globalRadarSignals.id, momentum.id));
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: momentum.id,
+        actor,
+        envelope: envelope(0, "26"),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toMatchObject({ outcome: "conflict", reason: "qualification_requirements_not_met" });
+    await db.update(globalRadarSignals).set({ momentumEvidenceQuality: 60 }).where(eq(globalRadarSignals.id, momentum.id));
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: momentum.id,
+        actor,
+        envelope: envelope(0, "27"),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toMatchObject({ outcome: "updated" });
+  });
+
+  it("edits direct expiry and cross-class classification without stale class fields", async () => {
+    const signal = await persistedDirect("edits");
+    const expiry = await adminRepository.editDirectDemandExpiry({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(0, "31"),
+      expiry: {
+        evergreen: true,
+        expiresAt: null,
+        reobserveBy: "2026-08-30T00:00:00.000Z",
+      },
+    });
+    expect(expiry).toMatchObject({
+      outcome: "updated",
+      detail: { signal: { revision: 1, reobserveBy: new Date("2026-08-30T00:00:00.000Z") } },
+    });
+    await db.update(globalRadarSignals).set({ status: "monitoring" }).where(eq(globalRadarSignals.id, signal.id));
+    const classification = await adminRepository.editSignalClassification({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(1, "32"),
+      classification: {
+        signalClass: "demand_precursor",
+        signalType: "funding",
+        demandDomain: "robot_learning_and_manipulation",
+        components: {
+          evidenceConfidence: 80,
+          proximityToExternalDemand: 70,
+          fundingDeploymentMomentum: 80,
+          likelyDataHardwareIntensity: 70,
+          indiaFit: 80,
+          estimatedTimeHorizon: 80,
+          strategicRelevance: 75,
+        },
+      },
+    });
+    expect(classification).toMatchObject({
+      outcome: "updated",
+      detail: { signal: { signalClass: "demand_precursor", status: "monitoring", revision: 2 } },
+    });
+    const [stored] = await db.select().from(globalRadarSignals).where(eq(globalRadarSignals.id, signal.id));
+    expect(stored).toMatchObject({
+      signalClass: "demand_precursor",
+      directDemandScore: null,
+      demandExplicitness: null,
+      evergreen: null,
+      reobserveBy: null,
+      precursorScore: expect.any(Number),
+    });
+
+    const restoredDirect = await adminRepository.editSignalClassification({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(2, "33"),
+      classification: {
+        signalClass: "direct_demand",
+        signalType: "public_request",
+        demandDomain: "robot_learning_and_manipulation",
+        components: {
+          explicitness: 90,
+          evidenceConfidence: 85,
+          freshness: 80,
+          actionability: 80,
+          indiaFit: 75,
+          commercialPotential: 75,
+          repeatability: 70,
+          responseAccessibility: 70,
+          strategicLearning: 70,
+          complianceComplexity: 20,
+        },
+        activity: {
+          evergreen: false,
+          expiresAt: "2026-09-30T00:00:00.000Z",
+          reobserveBy: null,
+        },
+      },
+    });
+    expect(restoredDirect).toMatchObject({
+      outcome: "updated",
+      detail: { signal: { signalClass: "direct_demand", revision: 3 } },
+    });
+    const [restored] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    expect(restored).toMatchObject({
+      signalClass: "direct_demand",
+      globalEntityId: signal.globalEntityId,
+      directDemandScore: expect.any(Number),
+      precursorScore: null,
+      proximityToExternalDemand: null,
+      expiresAt: new Date("2026-09-30T00:00:00.000Z"),
+      evergreen: false,
+      momentumScore: null,
+    });
+
+    const classificationEvents = await db
+      .select({
+        beforeSafeState: globalRadarAdminEvents.beforeSafeState,
+        afterSafeState: globalRadarAdminEvents.afterSafeState,
+      })
+      .from(globalRadarAdminEvents)
+      .where(eq(globalRadarAdminEvents.action, "classification_changed"));
+    expect(classificationEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          beforeSafeState: expect.objectContaining({
+            classification: expect.objectContaining({
+              signalClass: "direct_demand",
+              primaryEntityId: signal.globalEntityId,
+              associations: expect.any(Array),
+            }),
+            score: expect.objectContaining({ directDemand: expect.any(Number) }),
+          }),
+          afterSafeState: expect.objectContaining({
+            classification: expect.objectContaining({
+              signalClass: "demand_precursor",
+              primaryEntityId: signal.globalEntityId,
+              associations: expect.any(Array),
+            }),
+            score: expect.objectContaining({ precursor: expect.any(Number) }),
+          }),
+        }),
+      ]),
+    );
+
+    await db
+      .update(globalRadarSignals)
+      .set({ announcedAt: new Date("2026-09-01T00:00:00.000Z") })
+      .where(eq(globalRadarSignals.id, signal.id));
+    await expect(
+      adminRepository.editSignalClassification({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(3, "331"),
+        classification: {
+          signalClass: "direct_demand",
+          signalType: "public_request",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            explicitness: 90,
+            evidenceConfidence: 85,
+            freshness: 80,
+            actionability: 80,
+            indiaFit: 75,
+            commercialPotential: 75,
+            repeatability: 70,
+            responseAccessibility: 70,
+            strategicLearning: 70,
+            complianceComplexity: 20,
+          },
+          activity: {
+            evergreen: false,
+            expiresAt: "2026-08-31T00:00:00.000Z",
+            reobserveBy: null,
+          },
+        },
+      }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "qualified" })
+      .where(eq(globalRadarSignals.id, signal.id));
+    await expect(
+      adminRepository.editSignalClassification({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(3, "34"),
+        classification: {
+          signalClass: "demand_precursor",
+          signalType: "funding",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            evidenceConfidence: 80,
+            proximityToExternalDemand: 70,
+            fundingDeploymentMomentum: 80,
+            likelyDataHardwareIntensity: 70,
+            indiaFit: 80,
+            estimatedTimeHorizon: 80,
+            strategicRelevance: 75,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "classification_requirements_not_met",
+    });
+  });
+
+  it("reclassifies momentum through precursor and back from preserved target graph facts", async () => {
+    const now = new Date("2026-07-30T15:00:00.000Z");
+    await repository.queueRun(queueInput("admin-momentum-classification", { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Momentum classification fixture was not claimed.");
+    const batch = validMomentumPersistenceBatch(claim.run.id);
+    const completed = await repository.completeRun({
+      ...completionInput(claim.run.id, claim.privateClaim.leaseToken, new Date(now.getTime() + 1_000)),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    if (completed.outcome !== "completed") throw new Error("Momentum classification fixture failed.");
+    const [momentum] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.signalClass, "ecosystem_momentum"));
+    if (!momentum) throw new Error("Momentum classification signal missing.");
+    const [contributor] = await db
+      .select({ globalEntityId: globalRadarSignalEntities.globalEntityId })
+      .from(globalRadarSignalEntities)
+      .where(eq(globalRadarSignalEntities.signalId, momentum.id));
+    if (!contributor) throw new Error("Momentum contributor missing.");
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "monitoring" })
+      .where(eq(globalRadarSignals.id, momentum.id));
+
+    await expect(
+      adminRepository.editSignalClassification({
+        signalId: momentum.id,
+        actor,
+        envelope: envelope(0, "35", "2026-07-31T16:00:00.000Z"),
+        classification: {
+          signalClass: "demand_precursor",
+          primaryEntityId: contributor.globalEntityId,
+          signalType: "funding",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            evidenceConfidence: 80,
+            proximityToExternalDemand: 70,
+            fundingDeploymentMomentum: 80,
+            likelyDataHardwareIntensity: 70,
+            indiaFit: 80,
+            estimatedTimeHorizon: 80,
+            strategicRelevance: 75,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "updated",
+      detail: { signal: { signalClass: "demand_precursor", revision: 1 } },
+    });
+    const precursorGraph = await db
+      .select({
+        globalEntityId: globalRadarSignalEntities.globalEntityId,
+        role: globalRadarSignalEntities.role,
+      })
+      .from(globalRadarSignalEntities)
+      .where(eq(globalRadarSignalEntities.signalId, momentum.id));
+    expect(precursorGraph).toHaveLength(2);
+    expect(precursorGraph.every(({ role }) => role === "supporting")).toBe(true);
+    expect(
+      precursorGraph.some(
+        ({ globalEntityId }) => globalEntityId === contributor.globalEntityId,
+      ),
+    ).toBe(false);
+
+    await expect(
+      adminRepository.editSignalClassification({
+        signalId: momentum.id,
+        actor,
+        envelope: envelope(1, "36", "2026-07-31T16:00:00.000Z"),
+        classification: {
+          signalClass: "ecosystem_momentum",
+          signalType: "ecosystem_direction",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            taxonomyConsistency: 85,
+            evidenceQuality: 80,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "updated",
+      detail: { signal: { signalClass: "ecosystem_momentum", revision: 2 } },
+    });
+    const [restoredMomentum] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, momentum.id));
+    expect(restoredMomentum).toMatchObject({
+      signalClass: "ecosystem_momentum",
+      globalEntityId: null,
+      precursorScore: null,
+      evidenceConfidence: null,
+      momentumIndependentEntityCount: 2,
+      momentumPrimarySourceCount: 1,
+      momentumSourceFamilyCount: 2,
+      momentumScore: expect.any(Number),
+      momentumQualificationGatesPassed: true,
+    });
+    const momentumGraph = await db
+      .select({
+        globalEntityId: globalRadarSignalEntities.globalEntityId,
+        role: globalRadarSignalEntities.role,
+      })
+      .from(globalRadarSignalEntities)
+      .where(eq(globalRadarSignalEntities.signalId, momentum.id));
+    expect(momentumGraph).toHaveLength(3);
+    expect(momentumGraph.every(({ role }) => role === "contributor")).toBe(true);
+    expect(
+      momentumGraph.some(
+        ({ globalEntityId }) => globalEntityId === contributor.globalEntityId,
+      ),
+    ).toBe(true);
+
+    for (const [status, suffix] of [["qualified", "37"], ["promoted", "38"]] as const) {
+      await db
+        .update(globalRadarSignals)
+        .set({ status })
+        .where(eq(globalRadarSignals.id, momentum.id));
+      await expect(
+        adminRepository.editSignalClassification({
+          signalId: momentum.id,
+          actor,
+          envelope: envelope(2, suffix, "2026-07-31T16:00:00.000Z"),
+          classification: {
+            signalClass: "demand_precursor",
+            primaryEntityId: contributor.globalEntityId,
+            signalType: "funding",
+            demandDomain: "robot_learning_and_manipulation",
+            components: {
+              evidenceConfidence: 80,
+              proximityToExternalDemand: 70,
+              fundingDeploymentMomentum: 80,
+              likelyDataHardwareIntensity: 70,
+              indiaFit: 80,
+              estimatedTimeHorizon: 80,
+              strategicRelevance: 75,
+            },
+          },
+        }),
+      ).resolves.toEqual({
+        outcome: "conflict",
+        reason: "classification_requirements_not_met",
+      });
+    }
+  });
+});
+
+describe("PostgreSQL Global Radar administrator evidence and notes", () => {
+  const adminRepository = createGlobalRadarAdminRepository(db, {
+    scoreVersion: "global-radar-score-v1",
+    thresholds: { direct_demand: 70, demand_precursor: 65, ecosystem_momentum: 70 },
+  });
+  const actor = { userId: "00000000-0000-4000-8000-000000000099", email: userEmail };
+
+  async function fixture() {
+    const now = new Date("2026-07-30T15:00:00.000Z");
+    await repository.queueRun(queueInput("admin-evidence", { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Evidence fixture was not claimed.");
+    const batch = validPersistenceBatch(claim.run.id);
+    const completed = await repository.completeRun({
+      ...completionInput(claim.run.id, claim.privateClaim.leaseToken, new Date(now.getTime() + 1_000)),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    if (completed.outcome !== "completed") throw new Error("Evidence fixture failed.");
+    const [signal] = await db.select().from(globalRadarSignals);
+    if (!signal) throw new Error("Evidence signal missing.");
+    return signal;
+  }
+
+  function envelope(expectedRevision: number, id: string, now = "2026-07-30T16:00:00.000Z") {
+    return {
+      expectedRevision,
+      idempotencyKey: `00000000-0000-4000-8000-${id.padStart(12, "0")}`,
+      reason: "Evidence review",
+      now: new Date(now),
+    };
+  }
+
+  function evidence(sourceUrl = "https://admin-evidence.example/public-update") {
+    return {
+      globalEntityId: null,
+      sourceUrl,
+      canonicalSourceUrl: sourceUrl,
+      sourceName: "Public update",
+      sourceType: "official_update",
+      sourceLanguage: "en",
+      sourceCountry: "United States",
+      sourceFamily: "official_company_material" as const,
+      claim: "The organisation published a concise dated update.",
+      sourceExcerpt: "A concise public update.",
+      englishSummary: "The organisation published a concise dated update.",
+      publishedAt: "2026-07-30T12:00:00.000Z",
+      observedAt: "2026-07-30T15:30:00.000Z",
+      evidenceConfidence: 85,
+      translationConfidence: null,
+      isPrimarySource: true,
+      isSyndicated: false,
+      supportsDirectDemand: false,
+      supportsIndiaRelevance: false,
+      supportedFieldPaths: ["signal.factualSummary"],
+      rawMetadata: {},
+    };
+  }
+
+  it("rejects private, search-only, full-page, future, and invalid translation evidence atomically", async () => {
+    const signal = await fixture();
+    const invalid = [
+      evidence("http://127.0.0.1/private"),
+      evidence("https://www.google.com/search?q=robotics"),
+      { ...evidence(), claim: "<html><body>full page</body></html>" },
+      { ...evidence(), observedAt: "2026-07-31T00:00:00.000Z" },
+      { ...evidence(), publishedAt: "2026-07-31T00:00:00.000Z" },
+      {
+        ...evidence(),
+        sourceLanguage: "zh-CN",
+        claim: "机器人公司发布了公开更新。",
+        translationConfidence: null,
+      },
+    ];
+    for (const [index, item] of invalid.entries()) {
+      await expect(
+        adminRepository.appendEvidence({
+          signalId: signal.id,
+          actor,
+          envelope: envelope(0, String(100 + index)),
+          evidence: item,
+        }),
+      ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    }
+    const [primaryEntity] = await db.select().from(globalEntities).limit(1);
+    if (!primaryEntity) throw new Error("Evidence primary entity missing.");
+    const unrelatedEntityId = randomUUID();
+    await db.insert(globalEntities).values({
+      ...primaryEntity,
+      id: unrelatedEntityId,
+      canonicalName: "Unrelated Evidence Entity",
+      normalizedName: "unrelated evidence entity",
+      canonicalDomain: "unrelated-evidence.example",
+      websiteUrl: "https://unrelated-evidence.example",
+      stablePublicIdentifiers: ["official_registry:unrelated-evidence"],
+      publicIdentityAnchor: "e".repeat(64),
+    });
+    await expect(
+      adminRepository.appendEvidence({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(0, "199"),
+        evidence: { ...evidence(), globalEntityId: unrelatedEntityId },
+      }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    expect(await db.select().from(globalSignalEvidence)).toHaveLength(1);
+    expect(await db.select().from(globalRadarAdminEvents)).toHaveLength(0);
+  });
+
+  it("canonicalizes and appends evidence once, replays before revision with later now, and rejects changed reuse", async () => {
+    const signal = await fixture();
+    const input = {
+      signalId: signal.id,
+      actor,
+      envelope: envelope(0, "200"),
+      evidence: {
+        ...evidence("https://admin-evidence.example/public-update?utm_source=test"),
+        canonicalSourceUrl: "https://client-proposal.example/not-authoritative",
+        rawMetadata: { clientControlled: "must not persist" },
+      },
+    };
+    await expect(adminRepository.appendEvidence(input)).resolves.toMatchObject({ outcome: "appended", revision: 1 });
+    await expect(
+      adminRepository.appendEvidence({
+        ...input,
+        envelope: { ...input.envelope, now: new Date("2026-07-30T17:00:00.000Z") },
+      }),
+    ).resolves.toMatchObject({ outcome: "replayed", revision: 1 });
+    await expect(
+      adminRepository.appendEvidence({
+        ...input,
+        evidence: { ...input.evidence, claim: "Changed claim under the same key." },
+      }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "idempotency_mismatch" });
+    const rows = await db.select().from(globalSignalEvidence);
+    expect(rows).toHaveLength(2);
+    const appended = rows.find(({ runId }) => runId === null);
+    expect(appended).toMatchObject({
+      runId: null,
+      canonicalSourceUrl: "https://admin-evidence.example/public-update",
+      observedAt: new Date("2026-07-30T16:00:00.000Z"),
+      rawMetadata: {},
+    });
+    expect(JSON.stringify(appended)).not.toContain("clientControlled");
+  });
+
+  it("stores notes only in append-only history and never echoes note text from the mutation or audit", async () => {
+    const signal = await fixture();
+    const body = "Private administrator note for later review.";
+    const result = await adminRepository.appendNote({
+      signalId: signal.id,
+      actor,
+      envelope: envelope(0, "300"),
+      body,
+    });
+    expect(result).toEqual({ outcome: "appended", revision: 1 });
+    expect(JSON.stringify(result)).not.toContain(body);
+    const notes = await db
+      .select()
+      .from(globalSignalUpdates)
+      .where(eq(globalSignalUpdates.updateType, "note_appended"));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.reason).toBe(body);
+    const [audit] = await db.select().from(globalRadarAdminEvents);
+    expect(JSON.stringify(audit)).not.toContain(body);
+    const list = await adminRepository.listSignals({
+      signalClass: "direct_demand",
+      filters: { page: 1 },
+    });
+    expect(JSON.stringify(list)).not.toContain(body);
+    const detail = await adminRepository.getSignalDetail(signal.id);
+    expect(JSON.stringify(detail)).toContain(body);
+  });
+});
+
+describe("PostgreSQL Global Radar transactional administrator merge", () => {
+  const adminRepository = createGlobalRadarAdminRepository(db, {
+    scoreVersion: "global-radar-score-v1",
+    thresholds: { direct_demand: 70, demand_precursor: 65, ecosystem_momentum: 70 },
+  });
+  const actor = { userId: "00000000-0000-4000-8000-000000000099", email: userEmail };
+
+  async function mergeFixture() {
+    const now = new Date("2026-07-30T17:00:00.000Z");
+    await repository.queueRun(queueInput("admin-merge", { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Merge fixture was not claimed.");
+    const batch = validPersistenceBatch(claim.run.id);
+    const completed = await repository.completeRun({
+      ...completionInput(claim.run.id, claim.privateClaim.leaseToken, new Date(now.getTime() + 1_000)),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    if (completed.outcome !== "completed") throw new Error("Merge fixture failed.");
+    const [survivor] = await db.select().from(globalRadarSignals);
+    if (!survivor) throw new Error("Merge survivor missing.");
+    const duplicateId = randomUUID();
+    await db.insert(globalRadarSignals).values({
+      ...survivor,
+      id: duplicateId,
+      title: "Duplicate signal version",
+      dedupeKey: "9".repeat(64),
+    });
+    const [requirement] = await db.select().from(globalSignalRequirements);
+    const [evidenceRow] = await db.select().from(globalSignalEvidence);
+    const [update] = await db.select().from(globalSignalUpdates);
+    if (!requirement || !evidenceRow || !update) throw new Error("Merge children missing.");
+    const { id: _requirementId, ...requirementValues } = requirement;
+    const { id: _evidenceId, ...evidenceValues } = evidenceRow;
+    const { id: _updateId, ...updateValues } = update;
+    void _requirementId;
+    void _evidenceId;
+    void _updateId;
+    await db.insert(globalSignalRequirements).values({ ...requirementValues, signalId: duplicateId });
+    const [duplicateEvidence] = await db
+      .insert(globalSignalEvidence)
+      .values({ ...evidenceValues, signalId: duplicateId })
+      .returning({ id: globalSignalEvidence.id });
+    await db.insert(globalSignalUpdates).values({
+      ...updateValues,
+      signalId: duplicateId,
+      evidenceId: duplicateEvidence?.id ?? null,
+    });
+    return { survivor, duplicateId };
+  }
+
+  function input(survivorSignalId: string, duplicateSignalId: string, id: string) {
+    return {
+      survivorSignalId,
+      duplicateSignalId,
+      expectedSurvivorRevision: 0,
+      expectedDuplicateRevision: 0,
+      confirmed: true,
+      actor,
+      idempotencyKey: `00000000-0000-4000-8000-${id.padStart(12, "0")}`,
+      reason: "Confirmed duplicate public signal",
+      now: new Date("2026-07-30T18:00:00.000Z"),
+    };
+  }
+
+  it("merges without deleting or reparenting either signal graph and replays exactly", async () => {
+    const { survivor, duplicateId } = await mergeFixture();
+    const before = await graphRowCounts();
+    const request = input(survivor.id, duplicateId, "400");
+    await expect(adminRepository.mergeSignals(request)).resolves.toMatchObject({
+      outcome: "merged",
+      survivor: { signal: { id: survivor.id, revision: 1 } },
+      duplicate: { signal: { id: duplicateId, mergedIntoSignalId: survivor.id, revision: 1 } },
+    });
+    await expect(
+      adminRepository.mergeSignals({ ...request, now: new Date("2026-07-30T19:00:00.000Z") }),
+    ).resolves.toMatchObject({ outcome: "replayed" });
+    await expect(
+      adminRepository.mergeSignals({ ...request, reason: "Changed reuse" }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "idempotency_mismatch",
+      survivor: { signal: { id: survivor.id, revision: 1 } },
+      duplicate: {
+        signal: {
+          id: duplicateId,
+          mergedIntoSignalId: survivor.id,
+          revision: 1,
+        },
+      },
+    });
+    const after = await graphRowCounts();
+    expect(after.slice(0, 6)).toEqual(before.slice(0, 6));
+    expect(
+      await db.select().from(globalSignalRequirements).where(eq(globalSignalRequirements.signalId, duplicateId)),
+    ).toHaveLength(1);
+    expect(
+      await db.select().from(globalSignalEvidence).where(eq(globalSignalEvidence.signalId, duplicateId)),
+    ).toHaveLength(1);
+    expect(
+      await db.select().from(globalSignalUpdates).where(eq(globalSignalUpdates.updateType, "merged")),
+    ).toHaveLength(2);
+  });
+
+  it("locks lexical UUID order so opposite-order concurrent merges have one winner without deadlock", async () => {
+    const { survivor, duplicateId } = await mergeFixture();
+    const results = await Promise.all([
+      adminRepository.mergeSignals(input(survivor.id, duplicateId, "401")),
+      adminRepository.mergeSignals(input(duplicateId, survivor.id, "402")),
+    ]);
+    expect(results.filter(({ outcome }) => outcome === "merged")).toHaveLength(1);
+    expect(
+      results.filter(
+        (result) =>
+          result.outcome === "conflict" &&
+          ["revision_mismatch", "already_merged"].includes(result.reason),
+      ),
+    ).toHaveLength(1);
+    expect(
+      results.find(({ outcome }) => outcome === "conflict"),
+    ).toMatchObject({
+      survivor: { signal: { revision: 1 } },
+      duplicate: { signal: { revision: 1 } },
+    });
+  });
+});
+
+describe("PostgreSQL Global Radar administrator watchlist persistence", () => {
+  const adminRepository = createGlobalRadarAdminRepository(db, {
+    scoreVersion: "global-radar-score-v1",
+    thresholds: { direct_demand: 70, demand_precursor: 65, ecosystem_momentum: 70 },
+  });
+
+  async function existingEntityFixture() {
+    const now = new Date("2026-07-30T19:00:00.000Z");
+    await repository.queueRun(queueInput("admin-watchlist", { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Watchlist fixture was not claimed.");
+    const batch = validPersistenceBatch(claim.run.id);
+    const completed = await repository.completeRun({
+      ...completionInput(claim.run.id, claim.privateClaim.leaseToken, new Date(now.getTime() + 1_000)),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    if (completed.outcome !== "completed") throw new Error("Watchlist fixture failed.");
+    const [entity] = await db.select().from(globalEntities);
+    if (!entity) throw new Error("Watchlist entity missing.");
+    return entity;
+  }
+
+  const actor = () => ({ userId: administratorUserId, email: userEmail });
+  function configuration(state: "enabled" | "paused" | "disabled" = "enabled") {
+    return {
+      state,
+      priority: 80,
+      theme: "robotics_manufacturing" as const,
+      category: "component_suppliers",
+      categorySearchTermEn: "robotics component suppliers",
+      categorySearchTermZhCn: null,
+      countries: ["United States"],
+      languages: ["en"],
+      cadenceDays: 7,
+      nextScanAt: state === "enabled" ? "2026-08-01T00:00:00.000Z" : null,
+    };
+  }
+  function envelope(id: string, now = "2026-07-30T20:00:00.000Z") {
+    return {
+      idempotencyKey: `00000000-0000-4000-8000-${id.padStart(12, "0")}`,
+      reason: "Administrator watchlist configuration",
+      now: new Date(now),
+    };
+  }
+
+  it("creates, pauses, and disables one preserved entry with optimistic revisions and exact replay", async () => {
+    const entity = await existingEntityFixture();
+    const createInput = {
+      entity: { type: "existing" as const, entityId: entity.id, expectedRevision: 0 },
+      expectedEntryRevision: null,
+      actor: actor(),
+      envelope: envelope("500"),
+      configuration: configuration(),
+    };
+    await expect(adminRepository.upsertWatchlist(createInput)).resolves.toMatchObject({
+      outcome: "created",
+      entity: { id: entity.id, entityStatus: "watchlisted", revision: 1 },
+      entry: { state: "enabled", revision: 0 },
+    });
+    await expect(
+      adminRepository.upsertWatchlist({
+        ...createInput,
+        envelope: envelope("500", "2026-07-30T21:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({ outcome: "replayed" });
+    const paused = await adminRepository.upsertWatchlist({
+      entity: { type: "existing", entityId: entity.id, expectedRevision: 1 },
+      expectedEntryRevision: 0,
+      actor: actor(),
+      envelope: envelope("501"),
+      configuration: { ...configuration("paused"), nextScanAt: "2026-08-02T00:00:00.000Z" },
+    });
+    expect(paused).toMatchObject({ outcome: "updated", entry: { state: "paused", nextScanAt: null, revision: 1 } });
+    const disabled = await adminRepository.upsertWatchlist({
+      entity: { type: "existing", entityId: entity.id, expectedRevision: 1 },
+      expectedEntryRevision: 1,
+      actor: actor(),
+      envelope: envelope("502"),
+      configuration: configuration("disabled"),
+    });
+    expect(disabled).toMatchObject({ outcome: "updated", entry: { state: "disabled", revision: 2 } });
+    await db
+      .update(globalEntities)
+      .set({ entityStatus: "qualified" })
+      .where(eq(globalEntities.id, entity.id));
+    const reenabled = await adminRepository.upsertWatchlist({
+      entity: { type: "existing", entityId: entity.id, expectedRevision: 1 },
+      expectedEntryRevision: 2,
+      actor: actor(),
+      envelope: envelope("503"),
+      configuration: {
+        ...configuration(),
+        priority: 95,
+        cadenceDays: 14,
+        nextScanAt: "2026-08-15T00:00:00.000Z",
+      },
+    });
+    expect(reenabled).toMatchObject({
+      outcome: "updated",
+      entity: { entityStatus: "qualified", revision: 1 },
+      entry: {
+        state: "enabled",
+        priority: 95,
+        cadenceDays: 14,
+        nextScanAt: new Date("2026-08-15T00:00:00.000Z"),
+        revision: 3,
+      },
+    });
+    await expect(
+      adminRepository.getWatchlistByEntityId(entity.id),
+    ).resolves.toMatchObject({
+      outcome: "found",
+      entry: {
+        globalEntityId: entity.id,
+        state: "enabled",
+        priority: 95,
+        revision: 3,
+        entity: { entityStatus: "qualified", revision: 1 },
+      },
+    });
+    expect(await db.select().from(globalRadarWatchlistEntries)).toHaveLength(1);
+  });
+
+  it("enforces China localization, cadence, identity ownership, and signal-free strong identity creation", async () => {
+    const entity = await existingEntityFixture();
+    await expect(
+      adminRepository.upsertWatchlist({
+        entity: { type: "existing", entityId: entity.id, expectedRevision: 0 },
+        expectedEntryRevision: null,
+        actor: actor(),
+        envelope: envelope("510"),
+        configuration: {
+          ...configuration(),
+          countries: ["China"],
+          languages: ["en", "zh-CN"],
+          cadenceDays: 366,
+        },
+      }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    await expect(
+      adminRepository.upsertWatchlist({
+        entity: { type: "existing", entityId: entity.id, expectedRevision: 0 },
+        expectedEntryRevision: null,
+        actor: actor(),
+        envelope: envelope("511"),
+        configuration: {
+          ...configuration(),
+          countries: ["China"],
+          languages: ["en", "zh-CN"],
+        },
+      }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+
+    const proposedId = randomUUID();
+    const created = await adminRepository.upsertWatchlist({
+      entity: {
+        type: "create",
+        entityId: proposedId,
+        canonicalName: "Signal Free Robotics",
+        websiteUrl: "https://signal-free.example",
+        linkedinOrganizationUrl: null,
+        stablePublicIdentifiers: [],
+        canonicalCorporateGroupId: null,
+        headquartersCountry: "India",
+        headquartersCity: "Bengaluru",
+        operatingCountries: ["India"],
+        organisationType: "robotics_company",
+        sector: "robotics",
+        shortDescription: "A public robotics organisation identity.",
+      },
+      expectedEntryRevision: null,
+      actor: actor(),
+      envelope: envelope("512"),
+      configuration: configuration(),
+    });
+    expect(created).toMatchObject({
+      outcome: "created",
+      entity: { id: proposedId, entityStatus: "watchlisted", revision: 0 },
+    });
+    await expect(
+      adminRepository.upsertWatchlist({
+        entity: {
+          type: "create",
+          entityId: randomUUID(),
+          canonicalName: "Different Name",
+          websiteUrl: "https://signal-free.example",
+          linkedinOrganizationUrl: null,
+          stablePublicIdentifiers: [],
+          canonicalCorporateGroupId: null,
+          headquartersCountry: "India",
+          headquartersCity: null,
+          operatingCountries: null,
+          organisationType: "robotics_company",
+          sector: "robotics",
+          shortDescription: "Conflicting identity owner.",
+        },
+        expectedEntryRevision: null,
+        actor: actor(),
+        envelope: envelope("513"),
+        configuration: configuration(),
+      }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "entity_identity_conflict" });
+  });
+
+  it("allows exactly one optimistic concurrent entry update", async () => {
+    const entity = await existingEntityFixture();
+    await adminRepository.upsertWatchlist({
+      entity: { type: "existing", entityId: entity.id, expectedRevision: 0 },
+      expectedEntryRevision: null,
+      actor: actor(),
+      envelope: envelope("520"),
+      configuration: configuration(),
+    });
+    const results = await Promise.all([
+      adminRepository.upsertWatchlist({
+        entity: { type: "existing", entityId: entity.id, expectedRevision: 1 },
+        expectedEntryRevision: 0,
+        actor: actor(),
+        envelope: envelope("521"),
+        configuration: configuration("paused"),
+      }),
+      adminRepository.upsertWatchlist({
+        entity: { type: "existing", entityId: entity.id, expectedRevision: 1 },
+        expectedEntryRevision: 0,
+        actor: actor(),
+        envelope: envelope("522"),
+        configuration: configuration("disabled"),
+      }),
+    ]);
+    expect(results.filter(({ outcome }) => outcome === "updated")).toHaveLength(1);
+    expect(results.filter(({ outcome }) => outcome === "conflict")).toHaveLength(1);
+    expect(results.find(({ outcome }) => outcome === "conflict")).toMatchObject({
+      reason: "revision_mismatch",
+      entity: { id: entity.id, revision: 1 },
+      entry: { revision: 1 },
+    });
   });
 });

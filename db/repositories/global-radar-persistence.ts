@@ -1368,7 +1368,6 @@ export async function recomputeGlobalRadarMomentum(
             and(
               eq(globalSignalEvidence.signalId, signal.id),
               eq(globalSignalEvidence.isSyndicated, false),
-              isNotNull(globalSignalEvidence.runId),
               isNotNull(globalSignalEvidence.globalEntityId),
               inArray(globalSignalEvidence.globalEntityId, contributorIds),
               gte(

@@ -196,6 +196,7 @@ export {
   initialSignalStatusInputSchema,
   initialSignalStatusResultSchema,
   preserveRediscoveredSignalStatus,
+  resolveDirectDemandExpiryStatus,
   rediscoveredReobservationInputSchema,
   rediscoveredReobservationResultSchema,
   qualificationAssessmentSchema,
@@ -209,6 +210,7 @@ export {
 } from "./transitions";
 
 export type {
+  DirectDemandExpiryStatusResult,
   InitialSignalStatusInput,
   InitialSignalStatusResult,
   QualificationAssessment,

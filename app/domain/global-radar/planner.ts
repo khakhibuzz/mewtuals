@@ -367,8 +367,14 @@ function dueWatchlistEntries(
       if (!entry.category.trim()) {
         throw new Error("Global Radar watchlist category is required.");
       }
-      if (!Number.isInteger(entry.cadenceDays) || entry.cadenceDays < 1) {
-        throw new Error("Global Radar watchlist cadence must be a positive integer.");
+      if (
+        !Number.isInteger(entry.cadenceDays) ||
+        entry.cadenceDays < 1 ||
+        entry.cadenceDays > 365
+      ) {
+        throw new Error(
+          "Global Radar watchlist cadence must be an integer from 1 to 365 days.",
+        );
       }
       if (!Number.isInteger(entry.priority)) {
         throw new Error("Global Radar watchlist priority must be an integer.");
