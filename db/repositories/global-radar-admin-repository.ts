@@ -31,6 +31,7 @@ import type { MewtualsDatabase } from "../client";
 import {
   globalEntities,
   globalRadarAdminEvents,
+  globalRadarPromotions,
   globalRadarRuns,
   globalRadarSignalEntities,
   globalRadarSignals,
@@ -72,6 +73,7 @@ import {
 import {
   GLOBAL_RADAR_ADMIN_MAX_PAGE as MAX_PAGE,
   GLOBAL_RADAR_ADMIN_PAGE_SIZE as PAGE_SIZE,
+  assembleGlobalRadarWatchlistEnrichment,
   countGlobalRadarSignalsObservedToday,
   globalRadarSafeListSelection as safeListSelection,
   globalRadarSignalFilterConditions as filterConditions,
@@ -89,6 +91,7 @@ import {
   type SafeGlobalRadarOverviewMetrics,
   type SafeGlobalRadarSignalDetail,
   type SafeGlobalRadarWatchlistItem,
+  type SafeGlobalRadarWatchlistEnrichment,
 } from "./global-radar-admin-read-model";
 
 export type { GlobalRadarAdminClassificationInput } from "./global-radar-admin-classification";
@@ -116,6 +119,7 @@ export type {
   SafeGlobalRadarRunNotice,
   SafeGlobalRadarSignalDetail,
   SafeGlobalRadarSignalListItem,
+  SafeGlobalRadarWatchlistEnrichment,
   SafeGlobalRadarWatchlistItem,
 } from "./global-radar-admin-read-model";
 
@@ -2552,6 +2556,126 @@ export function createGlobalRadarAdminRepository(
         outcome: result.outcome,
         entity: toSafeGlobalRadarEntity(result.entity),
         entry: toSafeGlobalRadarWatchlistEntry(result.entry),
+      };
+    },
+
+    async getWatchlistEnrichment(input: {
+      globalEntityIds: readonly string[];
+      now: Date;
+    }): Promise<
+      | { outcome: "listed"; items: SafeGlobalRadarWatchlistEnrichment[] }
+      | { outcome: "conflict"; reason: "invalid_input" }
+    > {
+      if (
+        !Array.isArray(input.globalEntityIds) ||
+        input.globalEntityIds.length > PAGE_SIZE ||
+        input.globalEntityIds.some((id) => !isGlobalRadarAdminSignalId(id)) ||
+        !(input.now instanceof Date) ||
+        Number.isNaN(input.now.getTime())
+      ) {
+        return { outcome: "conflict", reason: "invalid_input" };
+      }
+      const globalEntityIds = [...new Set(input.globalEntityIds)];
+      if (globalEntityIds.length === 0) {
+        return { outcome: "listed", items: [] };
+      }
+      const selection = safeListSelection();
+      const [primarySignals, associatedSignals, promotions] = await Promise.all([
+        database
+          .selectDistinctOn([globalRadarSignals.globalEntityId], {
+            watchlistEntityId: globalRadarSignals.globalEntityId,
+            ...selection,
+          })
+          .from(globalRadarSignals)
+          .leftJoin(
+            globalEntities,
+            eq(globalRadarSignals.globalEntityId, globalEntities.id),
+          )
+          .where(
+            and(
+              inArray(globalRadarSignals.globalEntityId, globalEntityIds),
+              isNull(globalRadarSignals.mergedIntoSignalId),
+            ),
+          )
+          .orderBy(
+            globalRadarSignals.globalEntityId,
+            desc(globalRadarSignals.observedAt),
+            desc(globalRadarSignals.updatedAt),
+            asc(globalRadarSignals.id),
+          ),
+        database
+          .selectDistinctOn([globalRadarSignalEntities.globalEntityId], {
+            watchlistEntityId: globalRadarSignalEntities.globalEntityId,
+            ...selection,
+          })
+          .from(globalRadarSignalEntities)
+          .innerJoin(
+            globalRadarSignals,
+            eq(globalRadarSignalEntities.signalId, globalRadarSignals.id),
+          )
+          .leftJoin(
+            globalEntities,
+            eq(globalRadarSignals.globalEntityId, globalEntities.id),
+          )
+          .where(
+            and(
+              inArray(
+                globalRadarSignalEntities.globalEntityId,
+                globalEntityIds,
+              ),
+              isNull(globalRadarSignals.mergedIntoSignalId),
+            ),
+          )
+          .orderBy(
+            globalRadarSignalEntities.globalEntityId,
+            desc(globalRadarSignals.observedAt),
+            desc(globalRadarSignals.updatedAt),
+            asc(globalRadarSignals.id),
+          ),
+        database
+          .selectDistinctOn([globalRadarPromotions.globalEntityId], {
+            id: globalRadarPromotions.id,
+            globalEntityId: globalRadarPromotions.globalEntityId,
+            status: globalRadarPromotions.status,
+            discoveryCandidateId: globalRadarPromotions.discoveryCandidateId,
+            promotedAt: globalRadarPromotions.promotedAt,
+            reversedAt: globalRadarPromotions.reversedAt,
+            updatedAt: globalRadarPromotions.updatedAt,
+          })
+          .from(globalRadarPromotions)
+          .where(
+            and(
+              inArray(globalRadarPromotions.globalEntityId, globalEntityIds),
+              inArray(globalRadarPromotions.status, ["active", "reversed"]),
+            ),
+          )
+          .orderBy(
+            globalRadarPromotions.globalEntityId,
+            desc(globalRadarPromotions.updatedAt),
+            asc(globalRadarPromotions.id),
+          ),
+      ]);
+      const signalCandidates = [...primarySignals, ...associatedSignals]
+        .filter(
+          (row): row is typeof row & { watchlistEntityId: string } =>
+            row.watchlistEntityId !== null,
+        )
+        .map((row) => ({
+          signal: toSafeListItem(row),
+          globalEntityIds: [row.watchlistEntityId],
+        }));
+      const safePromotions = promotions.flatMap((promotion) =>
+        promotion.status === "active" || promotion.status === "reversed"
+          ? [{ ...promotion, status: promotion.status }]
+          : [],
+      );
+      return {
+        outcome: "listed",
+        items: assembleGlobalRadarWatchlistEnrichment({
+          globalEntityIds,
+          signals: signalCandidates,
+          promotions: safePromotions,
+        }),
       };
     },
 

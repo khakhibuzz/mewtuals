@@ -19,6 +19,7 @@ import {
   canonicalizeGlobalRadarWatchlistConfiguration,
 } from "../db/repositories/global-radar-admin-watchlist";
 import {
+  assembleGlobalRadarWatchlistEnrichment,
   countGlobalRadarSignalsObservedToday,
   globalRadarAllowedActions,
   isGlobalRadarAdminSignalId,
@@ -403,6 +404,77 @@ describe("Global Radar administrator watchlist contracts", () => {
     expect(boundGlobalRadarCollisionCandidateIds([ids[0]!, ...ids])).toEqual(
       ids.slice(0, 100),
     );
+  });
+});
+
+describe("Global Radar watchlist read enrichment", () => {
+  it("selects the latest safe signal, expiry, and successful promotion per entity", () => {
+    const signal = (id: string, observedAt: string) => ({
+      id,
+      signalClass: "direct_demand" as const,
+      title: `Signal ${id}`,
+      factualSummary: "Publicly supported fact.",
+      theme: "robotics_manufacturing",
+      sourceCountry: "China",
+      demandDomain: "robotics_manufacturing",
+      indiaRelevanceType: "globally_open" as const,
+      status: "qualified" as const,
+      score: 80,
+      expiresAt: new Date("2026-09-01T00:00:00.000Z"),
+      reobserveBy: null,
+      observedAt: new Date(observedAt),
+      revision: 2,
+      entity: null,
+    });
+
+    expect(
+      assembleGlobalRadarWatchlistEnrichment({
+        globalEntityIds: ["entity-a", "entity-b"],
+        signals: [
+          {
+            signal: signal("new", "2026-07-30T00:00:00.000Z"),
+            globalEntityIds: ["entity-a"],
+          },
+          {
+            signal: signal("old", "2026-07-01T00:00:00.000Z"),
+            globalEntityIds: ["entity-a", "entity-b"],
+          },
+        ],
+        promotions: [
+          {
+            id: "promotion-a",
+            globalEntityId: "entity-a",
+            status: "reversed",
+            discoveryCandidateId: "candidate-a",
+            promotedAt: new Date("2026-07-20T00:00:00.000Z"),
+            reversedAt: new Date("2026-07-29T00:00:00.000Z"),
+            updatedAt: new Date("2026-07-29T00:00:00.000Z"),
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        globalEntityId: "entity-a",
+        latestSignal: expect.objectContaining({ id: "new" }),
+        expiry: {
+          expiresAt: new Date("2026-09-01T00:00:00.000Z"),
+          reobserveBy: null,
+        },
+        promotion: expect.objectContaining({
+          id: "promotion-a",
+          status: "reversed",
+        }),
+      },
+      {
+        globalEntityId: "entity-b",
+        latestSignal: expect.objectContaining({ id: "old" }),
+        expiry: {
+          expiresAt: new Date("2026-09-01T00:00:00.000Z"),
+          reobserveBy: null,
+        },
+        promotion: null,
+      },
+    ]);
   });
 });
 

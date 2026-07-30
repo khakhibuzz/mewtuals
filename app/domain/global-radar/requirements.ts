@@ -1,8 +1,7 @@
 import { z } from "zod";
 
 import {
-  globalRadarLeafIdentifierLookup,
-  type GlobalRadarLeafIdentifier,
+  globalRadarLeafIdentifiers,
 } from "../taxonomies/global-radar-v1";
 import { indianExecutionArchetypes } from "../taxonomies/indian-execution-archetypes";
 import {
@@ -17,12 +16,9 @@ const stringArraySchema = z.array(boundedShortStringSchema).max(50);
 
 export const normalizedRequirementInputSchema = z.strictObject({
   kind: z.enum(requirementKinds),
-  capabilityTag: z.custom<GlobalRadarLeafIdentifier>(
-    (value) =>
-      typeof value === "string" &&
-      Object.hasOwn(globalRadarLeafIdentifierLookup, value),
-    { message: "Capability tag must use the Global Radar taxonomy." },
-  ),
+  capabilityTag: z.enum(globalRadarLeafIdentifiers, {
+    message: "Capability tag must use the Global Radar taxonomy.",
+  }),
   summary: z.string().trim().min(1).max(1_000),
   dataFamilies: stringArraySchema,
   sensorModalities: stringArraySchema,

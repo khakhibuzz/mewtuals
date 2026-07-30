@@ -503,6 +503,79 @@ export type SafeGlobalRadarWatchlistItem = Readonly<{
   }>;
 }>;
 
+export type SafeGlobalRadarWatchlistEnrichment = Readonly<{
+  globalEntityId: string;
+  latestSignal: SafeGlobalRadarSignalListItem | null;
+  expiry: Readonly<{
+    expiresAt: Date | null;
+    reobserveBy: Date | null;
+  }> | null;
+  promotion: Readonly<{
+    id: string;
+    status: "active" | "reversed";
+    discoveryCandidateId: string | null;
+    promotedAt: Date | null;
+    reversedAt: Date | null;
+  }> | null;
+}>;
+
+export function assembleGlobalRadarWatchlistEnrichment(input: Readonly<{
+  globalEntityIds: readonly string[];
+  signals: readonly Readonly<{
+    signal: SafeGlobalRadarSignalListItem;
+    globalEntityIds: readonly string[];
+  }>[];
+  promotions: readonly Readonly<{
+    id: string;
+    globalEntityId: string;
+    status: "active" | "reversed";
+    discoveryCandidateId: string | null;
+    promotedAt: Date | null;
+    reversedAt: Date | null;
+    updatedAt: Date;
+  }>[];
+}>): SafeGlobalRadarWatchlistEnrichment[] {
+  return input.globalEntityIds.map((globalEntityId) => {
+    const latestSignal = input.signals
+      .filter(({ globalEntityIds }) =>
+        globalEntityIds.includes(globalEntityId),
+      )
+      .map(({ signal }) => signal)
+      .sort(
+        (left, right) =>
+          right.observedAt.getTime() - left.observedAt.getTime() ||
+          left.id.localeCompare(right.id),
+      )[0] ?? null;
+    const promotion = input.promotions
+      .filter((candidate) => candidate.globalEntityId === globalEntityId)
+      .sort(
+        (left, right) =>
+          right.updatedAt.getTime() - left.updatedAt.getTime() ||
+          left.id.localeCompare(right.id),
+      )[0] ?? null;
+    return {
+      globalEntityId,
+      latestSignal,
+      expiry:
+        latestSignal?.signalClass === "direct_demand"
+          ? {
+              expiresAt: latestSignal.expiresAt,
+              reobserveBy: latestSignal.reobserveBy,
+            }
+          : null,
+      promotion: promotion
+        ? {
+            id: promotion.id,
+            status: promotion.status,
+            discoveryCandidateId: promotion.discoveryCandidateId,
+            promotedAt: promotion.promotedAt,
+            reversedAt: promotion.reversedAt,
+          }
+        : null,
+    };
+  });
+}
+
 export type ParsedGlobalRadarSignalFilters = Readonly<{
   page: number;
   status?: SignalStatus;

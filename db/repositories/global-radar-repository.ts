@@ -1,4 +1,14 @@
-import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  lte,
+  sql,
+} from "drizzle-orm";
 
 import {
   GLOBAL_RADAR_PROMPT_VERSION,
@@ -20,7 +30,10 @@ import {
   type RadarScanMode,
 } from "../../app/domain/global-radar";
 import type { MewtualsDatabase } from "../client";
-import { globalRadarRuns } from "../global-radar-schema";
+import {
+  globalRadarRuns,
+  globalRadarWatchlistEntries,
+} from "../global-radar-schema";
 import { users } from "../schema";
 import type { GlobalRadarRun } from "../types";
 import {
@@ -29,6 +42,10 @@ import {
   persistGlobalRadarBatch,
   recomputeGlobalRadarMomentum,
 } from "./global-radar-persistence";
+import {
+  deriveGlobalRadarPlanningContext,
+  type DerivedGlobalRadarPlanningContext,
+} from "./global-radar-planning-context";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -184,6 +201,10 @@ export type ListGlobalRadarRunsResult =
   | { outcome: "conflict"; reason: "invalid_input" };
 
 export type GlobalRadarRepository = {
+  loadPlanningContext(input: {
+    now: Date;
+    scanMode: RadarScanMode;
+  }): Promise<DerivedGlobalRadarPlanningContext>;
   queueRun(input: QueueGlobalRadarRunInput): Promise<QueueGlobalRadarRunResult>;
   claimRun(input: ClaimGlobalRadarRunInput): Promise<ClaimGlobalRadarRunResult>;
   completeRun(input: CompleteGlobalRadarRunInput): Promise<RadarRunMutationResult>;
@@ -564,6 +585,77 @@ export function createGlobalRadarRepository(
   leaseCodec: GlobalRadarLeaseCodec,
 ): GlobalRadarRepository {
   return {
+    async loadPlanningContext(input) {
+      if (
+        !(input.now instanceof Date) ||
+        Number.isNaN(input.now.getTime()) ||
+        !radarScanModes.includes(input.scanMode)
+      ) {
+        throw new Error("Global Radar planning context input is invalid.");
+      }
+      const coverageStart = new Date(
+        input.now.getTime() - 366 * 24 * 60 * 60 * 1_000,
+      );
+      const [completedRunRows, watchlistEntries] = await Promise.all([
+        database
+          .select({
+            planFingerprint: globalRadarRuns.planFingerprint,
+            planSnapshot: globalRadarRuns.planSnapshot,
+            completedAt: globalRadarRuns.completedAt,
+          })
+          .from(globalRadarRuns)
+          .where(
+            and(
+              inArray(globalRadarRuns.status, ["succeeded", "partial"]),
+              isNotNull(globalRadarRuns.completedAt),
+              gte(globalRadarRuns.completedAt, coverageStart),
+              lte(globalRadarRuns.completedAt, input.now),
+            ),
+          )
+          .orderBy(desc(globalRadarRuns.completedAt), desc(globalRadarRuns.id))
+          .limit(5_001),
+        input.scanMode === "watchlist_refresh"
+          ? database
+              .select({
+                category: globalRadarWatchlistEntries.category,
+                categorySearchTermEn:
+                  globalRadarWatchlistEntries.categorySearchTermEn,
+                categorySearchTermZhCn:
+                  globalRadarWatchlistEntries.categorySearchTermZhCn,
+                theme: globalRadarWatchlistEntries.theme,
+                countries: globalRadarWatchlistEntries.countries,
+                languages: globalRadarWatchlistEntries.languages,
+                cadenceDays: globalRadarWatchlistEntries.cadenceDays,
+                priority: globalRadarWatchlistEntries.priority,
+              })
+              .from(globalRadarWatchlistEntries)
+              .where(
+                and(
+                  eq(globalRadarWatchlistEntries.state, "enabled"),
+                  lte(globalRadarWatchlistEntries.nextScanAt, input.now),
+                ),
+              )
+              .orderBy(
+                desc(globalRadarWatchlistEntries.priority),
+                asc(globalRadarWatchlistEntries.id),
+              )
+              .limit(101)
+          : Promise.resolve([]),
+      ]);
+      const completedRuns = completedRunRows.map((row) => {
+        if (row.completedAt === null) {
+          throw new Error("Completed Global Radar run has no completion time.");
+        }
+        return { ...row, completedAt: row.completedAt };
+      });
+      return deriveGlobalRadarPlanningContext({
+        now: input.now,
+        scanMode: input.scanMode,
+        completedRuns,
+        watchlistEntries,
+      });
+    },
+
     async queueRun(input) {
       const validated = validateQueueInput(input);
       if (!validated) {
