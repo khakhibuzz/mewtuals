@@ -994,8 +994,9 @@ trigger enum. No existing column or row is deleted or repurposed.
 The migration harness must test:
 
 1. a fresh database through the new migration;
-2. upgrade from `0004` with populated users, sessions, profiles, Discovery
-   runs, candidates, identifiers, and evidence;
+2. upgrade from `0007` with populated users, sessions, profiles, verification
+   reviews, Opportunity Brief requests, Discovery runs, candidates,
+   identifiers, evidence, campaign keys, and candidate research versions;
 3. exact preservation of those populated rows and constraints after upgrade;
 4. the new Radar schema, enum, FK, check, uniqueness, and index contract.
 
