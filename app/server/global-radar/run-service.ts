@@ -10,6 +10,7 @@ import {
   GLOBAL_RADAR_TAXONOMY_VERSION,
   createGlobalRadarFingerprint,
   generateGlobalRadarQueries,
+  globalRadarValidationProposalSchema,
   globalRadarSourceFamilies,
   globalRadarThemes,
   parseGlobalRadarPlanSnapshot,
@@ -102,6 +103,12 @@ type RunMutationResult =
   | { outcome: "not_found" }
   | { outcome: "conflict"; reason: string; run?: unknown };
 
+type CompletionReplayLookupResult =
+  | { outcome: "not_terminal" }
+  | { outcome: "replayed"; run: unknown }
+  | { outcome: "not_found" }
+  | { outcome: "conflict"; reason: string; run?: unknown };
+
 export type GlobalRadarRunRepositoryPort = Readonly<{
   queueRun(
     input: GlobalRadarQueueRunPortInput,
@@ -126,11 +133,18 @@ export type GlobalRadarRunRepositoryPort = Readonly<{
       }
     | { outcome: "conflict"; reason: string }
   >;
+  lookupCompletionReplay(input: {
+    runId: string;
+    leaseToken: string;
+    planFingerprint: string;
+    batchFingerprint: string;
+  }): Promise<CompletionReplayLookupResult>;
   completeRun(input: {
     runId: string;
     leaseToken: string;
     planFingerprint: string;
     submissionHash: string;
+    batchFingerprint: string;
     now: Date;
     batch: GlobalRadarValidatedBatchPort;
   }): Promise<RunMutationResult>;
@@ -423,10 +437,31 @@ export function createGlobalRadarRunService(
       !input.batch ||
       typeof input.batch !== "object" ||
       Array.isArray(input.batch) ||
-      (input.batch as Record<string, unknown>).runId !== runId.data
+      !globalRadarValidationProposalSchema.safeParse(input.batch).success
     ) {
       return { outcome: "invalid" as const };
     }
+    const rawBatch = input.batch as Record<string, unknown>;
+    const planFingerprint = fingerprintSchema.safeParse(rawBatch.planFingerprint);
+    if (rawBatch.runId !== runId.data || !planFingerprint.success) {
+      return { outcome: "invalid" as const };
+    }
+    let batchFingerprint: string;
+    try {
+      batchFingerprint = createGlobalRadarFingerprint({
+        version: "global-radar-worker-submission-v1",
+        batch: rawBatch,
+      });
+    } catch {
+      return { outcome: "invalid" as const };
+    }
+    const replay = await dependencies.repository.lookupCompletionReplay({
+      runId: runId.data,
+      leaseToken: leaseToken.data,
+      planFingerprint: planFingerprint.data,
+      batchFingerprint,
+    });
+    if (replay.outcome !== "not_terminal") return mutationResult(replay);
     const completedAt = now();
     let batch: GlobalRadarValidatedBatchPort;
     try {
@@ -440,6 +475,7 @@ export function createGlobalRadarRunService(
     }
     if (
       batch.runId !== runId.data ||
+      batch.planFingerprint !== planFingerprint.data ||
       !fingerprintSchema.safeParse(batch.planFingerprint).success ||
       !fingerprintSchema.safeParse(batch.canonicalSubmissionHash).success
     ) {
@@ -451,6 +487,7 @@ export function createGlobalRadarRunService(
         leaseToken: leaseToken.data,
         planFingerprint: batch.planFingerprint,
         submissionHash: batch.canonicalSubmissionHash,
+        batchFingerprint,
         now: completedAt,
         batch,
       }),

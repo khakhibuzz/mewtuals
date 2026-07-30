@@ -233,6 +233,7 @@ function completionInput(
     leaseToken,
     planFingerprint: batch.planFingerprint,
     submissionHash: batch.canonicalSubmissionHash,
+    batchFingerprint: batch.canonicalSubmissionHash,
     now,
     batch,
     ...overrides,
@@ -1764,6 +1765,63 @@ describe("PostgreSQL Global Radar repository completion and safe reads", () => {
     expect(afterReplay?.updatedAt).toEqual(beforeReplay?.updatedAt);
   });
 
+  it("looks up an exact durable completion before replay validation and rejects a changed saved batch", async () => {
+    const now = new Date("2026-07-29T19:30:00.000Z");
+    await repository.queueRun(queueInput("complete-replay-lookup", { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+    const batchFingerprint = HASH_B;
+    const input = {
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(now.getTime() + 60_000),
+      ),
+      batchFingerprint,
+    };
+
+    await expect(
+      repository.lookupCompletionReplay({
+        runId: claim.run.id,
+        leaseToken: claim.privateClaim.leaseToken,
+        planFingerprint: input.planFingerprint,
+        batchFingerprint,
+      }),
+    ).resolves.toEqual({ outcome: "not_terminal" });
+    await expect(repository.completeRun(input)).resolves.toMatchObject({
+      outcome: "completed",
+    });
+    const [beforeLookup] = await db
+      .select({ updatedAt: globalRadarRuns.updatedAt })
+      .from(globalRadarRuns)
+      .where(eq(globalRadarRuns.id, claim.run.id));
+
+    await expect(
+      repository.lookupCompletionReplay({
+        runId: claim.run.id,
+        leaseToken: claim.privateClaim.leaseToken,
+        planFingerprint: input.planFingerprint,
+        batchFingerprint,
+      }),
+    ).resolves.toMatchObject({ outcome: "replayed", run: { status: "succeeded" } });
+    await expect(
+      repository.lookupCompletionReplay({
+        runId: claim.run.id,
+        leaseToken: claim.privateClaim.leaseToken,
+        planFingerprint: input.planFingerprint,
+        batchFingerprint: HASH_C,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "completion_identity_mismatch",
+    });
+    const [afterLookup] = await db
+      .select({ updatedAt: globalRadarRuns.updatedAt })
+      .from(globalRadarRuns)
+      .where(eq(globalRadarRuns.id, claim.run.id));
+    expect(afterLookup?.updatedAt).toEqual(beforeLookup?.updatedAt);
+  });
+
   it("derives all four terminal status cases, counters, and summaries from canonical batches", async () => {
     const cases = [
       { suffix: "zero-clean", signals: 0, errors: [], status: "succeeded" },
@@ -1861,6 +1919,88 @@ describe("PostgreSQL Global Radar repository completion and safe reads", () => {
       cases.length * generateGlobalRadarQueries(TEST_RADAR_PLAN).length,
     );
     expect(await db.select().from(globalRadarSignals)).toHaveLength(2);
+  });
+
+  it("counts failed executed queries as source failures without double-counting a linked source error", async () => {
+    const cases = [
+      {
+        suffix: "query-error-partial",
+        signals: 1,
+        sourceErrors: [],
+        status: "partial",
+        expectedErrors: 1,
+      },
+      {
+        suffix: "query-error-failed",
+        signals: 0,
+        sourceErrors: [],
+        status: "failed",
+        expectedErrors: 1,
+      },
+      {
+        suffix: "query-error-linked-summary",
+        signals: 1,
+        sourceErrors: [
+          { sourceName: "Codex public web", message: "Timed out" },
+        ],
+        status: "partial",
+        expectedErrors: 1,
+      },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      const now = new Date(
+        new Date("2026-07-29T22:00:00.000Z").getTime() + index * 60_000,
+      );
+      await repository.queueRun(queueInput(testCase.suffix, { now }));
+      const claim = await repository.claimRun({ now });
+      if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+      const batch = structuredClone(validPersistenceBatch(claim.run.id));
+      const plannedQuery = batch.executedQueries[0];
+      if (!plannedQuery) throw new Error("Test Radar plan generated no queries.");
+      batch.executedQueries[0] = {
+        ...plannedQuery,
+        executedAt: new Date(now.getTime() + 500).toISOString(),
+        error: "Search request timed out.",
+      };
+      if (testCase.signals === 0) {
+        batch.entities = [];
+        batch.signals = [];
+      }
+      batch.sourceErrors = testCase.sourceErrors.map((sourceError) => ({
+        ...sourceError,
+        queryFingerprint: plannedQuery.fingerprint,
+      }));
+      const canonicalBatch = rehashPersistenceBatch(batch);
+
+      const completed = await repository.completeRun({
+        ...completionInput(
+          claim.run.id,
+          claim.privateClaim.leaseToken,
+          new Date(now.getTime() + 1_000),
+        ),
+        submissionHash: canonicalBatch.canonicalSubmissionHash,
+        batchFingerprint: canonicalBatch.canonicalSubmissionHash,
+        batch: canonicalBatch,
+      });
+
+      expect(completed).toMatchObject({
+        outcome: "completed",
+        run: {
+          status: testCase.status,
+          numberSourceErrors: testCase.expectedErrors,
+          ...(testCase.status === "failed"
+            ? {
+                failure: {
+                  code: "completion_failed",
+                  message:
+                    "Global Radar completed with source errors and no signals.",
+                },
+              }
+            : {}),
+        },
+      });
+    }
   });
 
   it("accepts exactly fifty bounded source errors with exact counters and summary", async () => {

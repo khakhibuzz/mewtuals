@@ -169,8 +169,16 @@ export type CompleteGlobalRadarRunInput = {
   leaseToken: string;
   planFingerprint: string;
   submissionHash: string;
+  batchFingerprint: string;
   now: Date;
   batch: PersistableGlobalRadarBatch;
+};
+
+export type LookupGlobalRadarCompletionReplayInput = {
+  runId: string;
+  leaseToken: string;
+  planFingerprint: string;
+  batchFingerprint: string;
 };
 
 export type RadarRunConflictReason =
@@ -191,6 +199,39 @@ export type RadarRunMutationResult =
   | { outcome: "conflict"; reason: RadarRunConflictReason; run?: SafeRadarRun }
   | { outcome: "not_found" };
 
+export type GlobalRadarCompletionReplayLookupResult =
+  | { outcome: "not_terminal" }
+  | { outcome: "replayed"; run: SafeRadarRun }
+  | { outcome: "conflict"; reason: RadarRunConflictReason; run?: SafeRadarRun }
+  | { outcome: "not_found" };
+
+export function summarizeGlobalRadarSourceFailures(input: Readonly<{
+  executedQueries: readonly Readonly<{
+    fingerprint: string;
+    error: string | null;
+  }>[];
+  sourceErrors: readonly Readonly<{
+    queryFingerprint: string | null;
+    sourceName: string;
+    message: string;
+  }>[];
+}>): Readonly<{ numberSourceErrors: number }> {
+  const failedQueryFingerprints = new Set(
+    input.executedQueries
+      .filter(({ error }) => error !== null)
+      .map(({ fingerprint }) => fingerprint),
+  );
+  const independentlyReportedErrors = input.sourceErrors.filter(
+    ({ queryFingerprint }) =>
+      queryFingerprint === null ||
+      !failedQueryFingerprints.has(queryFingerprint),
+  ).length;
+  return Object.freeze({
+    numberSourceErrors:
+      failedQueryFingerprints.size + independentlyReportedErrors,
+  });
+}
+
 export type GetGlobalRadarRunResult =
   | { outcome: "found"; run: SafeRadarRun }
   | { outcome: "not_found" }
@@ -207,6 +248,9 @@ export type GlobalRadarRepository = {
   }): Promise<DerivedGlobalRadarPlanningContext>;
   queueRun(input: QueueGlobalRadarRunInput): Promise<QueueGlobalRadarRunResult>;
   claimRun(input: ClaimGlobalRadarRunInput): Promise<ClaimGlobalRadarRunResult>;
+  lookupCompletionReplay(
+    input: LookupGlobalRadarCompletionReplayInput,
+  ): Promise<GlobalRadarCompletionReplayLookupResult>;
   completeRun(input: CompleteGlobalRadarRunInput): Promise<RadarRunMutationResult>;
   failRun(input: FailGlobalRadarRunInput): Promise<RadarRunMutationResult>;
   abandonRun(input: AbandonGlobalRadarRunInput): Promise<RadarRunMutationResult>;
@@ -509,6 +553,33 @@ function storedFailure(run: GlobalRadarRun): SafeRadarFailure | null {
   return safeErrorSummary(run).failure ?? null;
 }
 
+function terminalCompletionResult(
+  run: GlobalRadarRun,
+  identity: Readonly<{
+    leaseTokenHash: string;
+    planFingerprint: string;
+    batchFingerprint: string;
+    submissionHash?: string;
+  }>,
+):
+  | { outcome: "replayed"; run: SafeRadarRun }
+  | { outcome: "conflict"; reason: RadarRunConflictReason; run: SafeRadarRun } {
+  if (
+    run.leaseTokenHash === identity.leaseTokenHash &&
+    run.planFingerprint === identity.planFingerprint &&
+    run.batchFingerprint === identity.batchFingerprint &&
+    (identity.submissionHash === undefined ||
+      run.submissionHash === identity.submissionHash)
+  ) {
+    return { outcome: "replayed", run: toSafeRun(run) };
+  }
+  return {
+    outcome: "conflict",
+    reason: "completion_identity_mismatch",
+    run: toSafeRun(run),
+  };
+}
+
 function canonicalSourceErrors(
   sourceErrors: readonly SafeRadarSourceError[],
 ): SafeRadarSourceError[] | null {
@@ -539,11 +610,12 @@ function canonicalSourceErrors(
 
 function completionSummary(
   numberSignalsFound: number,
+  numberSourceErrors: number,
   sourceErrors: SafeRadarSourceError[],
   rejections: Readonly<Record<string, number>> = {},
 ): Record<string, unknown> | null {
   const summary: Record<string, unknown> = {
-    ...(numberSignalsFound === 0 && sourceErrors.length > 0
+    ...(numberSignalsFound === 0 && numberSourceErrors > 0
       ? {
           failure: {
             code: "completion_failed",
@@ -850,12 +922,39 @@ export function createGlobalRadarRepository(
       }
     },
 
+    async lookupCompletionReplay(input) {
+      if (
+        !UUID_PATTERN.test(input.runId) ||
+        !SHA256_PATTERN.test(input.leaseToken) ||
+        !SHA256_PATTERN.test(input.planFingerprint) ||
+        !SHA256_PATTERN.test(input.batchFingerprint)
+      ) {
+        return { outcome: "conflict", reason: "invalid_input" };
+      }
+      const inputLeaseHash = requireLeaseHash(leaseCodec, input.leaseToken);
+      const [run] = await database
+        .select()
+        .from(globalRadarRuns)
+        .where(eq(globalRadarRuns.id, input.runId))
+        .limit(1);
+      if (!run) return { outcome: "not_found" };
+      if (run.status === "queued" || run.status === "running") {
+        return { outcome: "not_terminal" };
+      }
+      return terminalCompletionResult(run, {
+        leaseTokenHash: inputLeaseHash,
+        planFingerprint: input.planFingerprint,
+        batchFingerprint: input.batchFingerprint,
+      });
+    },
+
     async completeRun(input) {
       if (
         !UUID_PATTERN.test(input.runId) ||
         !SHA256_PATTERN.test(input.leaseToken) ||
         !SHA256_PATTERN.test(input.planFingerprint) ||
         !SHA256_PATTERN.test(input.submissionHash) ||
+        !SHA256_PATTERN.test(input.batchFingerprint) ||
         !(input.now instanceof Date) ||
         Number.isNaN(input.now.getTime())
       ) {
@@ -881,19 +980,12 @@ export function createGlobalRadarRepository(
           };
         }
         if (run.status !== "running") {
-          if (
-            run.leaseTokenHash === inputLeaseHash &&
-            run.planFingerprint === input.planFingerprint &&
-            run.submissionHash === input.submissionHash &&
-            run.batchFingerprint === input.submissionHash
-          ) {
-            return { outcome: "replayed" as const, run: toSafeRun(run) };
-          }
-          return {
-            outcome: "conflict" as const,
-            reason: "completion_identity_mismatch" as const,
-            run: toSafeRun(run),
-          };
+          return terminalCompletionResult(run, {
+            leaseTokenHash: inputLeaseHash,
+            planFingerprint: input.planFingerprint,
+            submissionHash: input.submissionHash,
+            batchFingerprint: input.batchFingerprint,
+          });
         }
         if (run.leaseTokenHash !== inputLeaseHash) {
           return {
@@ -971,12 +1063,17 @@ export function createGlobalRadarRepository(
           transaction,
           canonical.batch,
         );
+        const counters = {
+          ...persisted.counters,
+          ...summarizeGlobalRadarSourceFailures(canonical.batch),
+        };
         const sourceErrors = canonicalSourceErrors(persisted.sourceErrors);
         if (!sourceErrors) {
           throw new Error("Canonical Radar source errors became invalid.");
         }
         const errorSummary = completionSummary(
-          persisted.counters.numberSignalsFound,
+          counters.numberSignalsFound,
+          counters.numberSourceErrors,
           sourceErrors,
           persisted.rejections,
         );
@@ -984,10 +1081,9 @@ export function createGlobalRadarRepository(
           throw new GlobalRadarPersistenceConflict("invalid_input");
         }
         const status =
-          persisted.counters.numberSignalsFound === 0 && sourceErrors.length > 0
+          counters.numberSignalsFound === 0 && counters.numberSourceErrors > 0
             ? "failed"
-            : persisted.counters.numberSignalsFound > 0 &&
-                sourceErrors.length > 0
+            : counters.numberSignalsFound > 0 && counters.numberSourceErrors > 0
               ? "partial"
               : "succeeded";
         const [completed] = await transaction
@@ -997,8 +1093,8 @@ export function createGlobalRadarRepository(
             completedAt: input.now,
             updatedAt: input.now,
             submissionHash: input.submissionHash,
-            batchFingerprint: input.submissionHash,
-            ...persisted.counters,
+            batchFingerprint: input.batchFingerprint,
+            ...counters,
             errorSummary,
           })
           .where(eq(globalRadarRuns.id, run.id))

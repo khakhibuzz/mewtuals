@@ -111,6 +111,7 @@ function repositoryDouble(
   return {
     queueRun: vi.fn(),
     claimRun: vi.fn(),
+    lookupCompletionReplay: vi.fn(async () => ({ outcome: "not_terminal" })),
     completeRun: vi.fn(),
     failRun: vi.fn(),
     abandonRun: vi.fn(),
@@ -277,11 +278,15 @@ describe("Global Radar run service", () => {
     });
     const service = createService(repository, validateBatch);
     const body = {
+      schemaVersion: "global-radar-batch-v1",
+      promptVersion: "codex-public-web-v1",
+      taxonomyVersion: "global-radar-v1",
       runId: validated.runId,
       planFingerprint: validated.planFingerprint,
+      executedQueries: [],
+      entities: [],
       sourceErrors: [],
       signals: [],
-      rawPayload: "worker-proposal",
     };
 
     await expect(
@@ -326,9 +331,98 @@ describe("Global Radar run service", () => {
     expect(repository.completeRun).toHaveBeenCalledWith(
       expect.objectContaining({
         batch: validated,
+        batchFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
         submissionHash: validated.canonicalSubmissionHash,
       }),
     );
+  });
+
+  it("replays an exact durable completion before a later clock can revalidate the saved batch", async () => {
+    const terminal = safeRun({
+      status: "partial",
+      completedAt: NOW,
+      numberSignalsFound: 1,
+      numberSourceErrors: 1,
+    });
+    const lookupCompletionReplay = vi.fn(async () => ({
+      outcome: "replayed" as const,
+      run: terminal,
+    }));
+    const repository = repositoryDouble({ lookupCompletionReplay });
+    const validateBatch = vi.fn(() => {
+      throw new Error("The saved evidence is outside the later freshness horizon.");
+    });
+    const service = createService(repository, validateBatch);
+    const authorization = service.authorizeWorker(
+      `Bearer ${config.workerSecret}`,
+    );
+    const savedBatch = {
+      schemaVersion: "global-radar-batch-v1",
+      promptVersion: "codex-public-web-v1",
+      taxonomyVersion: "global-radar-v1",
+      runId: terminal.id,
+      planFingerprint: terminal.planFingerprint,
+      executedQueries: [],
+      entities: [],
+      signals: [],
+      sourceErrors: [],
+    };
+
+    await expect(
+      service.complete(authorization, {
+        runId: terminal.id,
+        leaseToken: "raw-lease-token",
+        batch: savedBatch,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "replayed",
+      run: { id: terminal.id, status: "partial" },
+    });
+    expect(lookupCompletionReplay).toHaveBeenCalledWith({
+      runId: terminal.id,
+      leaseToken: "raw-lease-token",
+      planFingerprint: terminal.planFingerprint,
+      batchFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(validateBatch).not.toHaveBeenCalled();
+    expect(repository.completeRun).not.toHaveBeenCalled();
+  });
+
+  it("returns a durable changed-completion conflict without revalidating the changed retry", async () => {
+    const lookupCompletionReplay = vi.fn(async () => ({
+      outcome: "conflict" as const,
+      reason: "completion_identity_mismatch",
+      run: safeRun({ status: "partial", completedAt: NOW }),
+    }));
+    const repository = repositoryDouble({ lookupCompletionReplay });
+    const validateBatch = vi.fn();
+    const service = createService(repository, validateBatch);
+    const authorization = service.authorizeWorker(
+      `Bearer ${config.workerSecret}`,
+    );
+
+    await expect(
+      service.complete(authorization, {
+        runId: "00000000-0000-4000-8000-000000000010",
+        leaseToken: "raw-lease-token",
+        batch: {
+          schemaVersion: "global-radar-batch-v1",
+          promptVersion: "codex-public-web-v1",
+          taxonomyVersion: "global-radar-v1",
+          runId: "00000000-0000-4000-8000-000000000010",
+          planFingerprint: "b".repeat(64),
+          executedQueries: [],
+          entities: [],
+          signals: [],
+          sourceErrors: [],
+        },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "completion_identity_mismatch",
+    });
+    expect(validateBatch).not.toHaveBeenCalled();
+    expect(repository.completeRun).not.toHaveBeenCalled();
   });
 
   it("maps terminal replay/conflicts and keeps fail and abandon inputs bounded", async () => {
