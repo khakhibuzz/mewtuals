@@ -322,3 +322,35 @@ export {
 } from "./query-generator";
 
 export type { SearchQuery } from "./query-generator";
+
+export {
+  normalizeRadarEvidence,
+  radarEvidenceNormalizationFailureReasons,
+  radarEvidenceProposalSchema,
+} from "./evidence";
+
+export type {
+  NormalizedRadarEvidence,
+  RadarEvidenceNormalizationFailureReason,
+  RadarEvidenceNormalizationResult,
+  RadarEvidenceProposal,
+} from "./evidence";
+
+export {
+  globalRadarBatchProposalSchema,
+  globalRadarValidationProposalSchema,
+  radarExecutedQueryProposalSchema,
+  radarSignalProposalSchema,
+  validateGlobalRadarBatch,
+} from "./validation-pipeline";
+
+export type {
+  GlobalRadarBatchProposal,
+  GlobalRadarValidationProposal,
+  RadarSignalProposal,
+  RadarValidationContext,
+  SafeSourceError,
+  ValidatedExecutedQuery,
+  ValidatedRadarBatch,
+  ValidatedRadarSignal,
+} from "./validation-pipeline";
