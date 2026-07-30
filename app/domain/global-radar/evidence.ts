@@ -4,9 +4,11 @@ import { globalRadarSourceFamilies } from "../taxonomies/global-radar-v1";
 import {
   boundedRecordSchema,
   candidateEvidenceSourceKinds,
+  complianceFactsSchema,
   confidenceSchema,
   isoTimestampSchema,
   publicHttpUrlSchema,
+  sensitiveDataFlagsSchema,
   type CandidateEvidence,
 } from "./contracts";
 import {
@@ -14,6 +16,7 @@ import {
   createEvidenceFingerprint,
 } from "./normalization";
 import { persistableRadarEvidenceSchema } from "./persistence";
+import { normalizedRequirementInputSchema } from "./requirements";
 
 const applicationRefSchema = z
   .string()
@@ -107,6 +110,17 @@ const indiaFactKinds = new Set([
   "service",
   "requirement_access",
 ]);
+const requirementEvidenceFields = new Set([
+  ...Object.keys(normalizedRequirementInputSchema.shape),
+  "globallyDeliverable",
+  "openToExternalCounterparties",
+]);
+const sensitiveDataEvidenceFields = new Set(
+  Object.keys(sensitiveDataFlagsSchema.shape),
+);
+const complianceEvidenceFields = new Set(
+  Object.keys(complianceFactsSchema.shape),
+);
 
 export const radarEvidenceProposalSchema = z
   .strictObject({
@@ -224,19 +238,18 @@ function isSupportedFieldPath(path: string): boolean {
   }
   if (
     segments[0] === "requirement" &&
-    segments.length >= 2 &&
-    segments.length <= 3
+    segments.length === 2 &&
+    requirementEvidenceFields.has(segments[1] ?? "")
   ) {
     return true;
   }
-  if (
-    segments[0] === "sensitiveDataAndCompliance" &&
-    segments.length === 3
-  ) {
-    return (
-      segments[1] === "sensitiveDataFlags" ||
-      segments[1] === "complianceFacts"
-    );
+  if (segments[0] === "sensitiveDataAndCompliance" && segments.length === 3) {
+    if (segments[1] === "sensitiveDataFlags") {
+      return sensitiveDataEvidenceFields.has(segments[2] ?? "");
+    }
+    if (segments[1] === "complianceFacts") {
+      return complianceEvidenceFields.has(segments[2] ?? "");
+    }
   }
   return false;
 }

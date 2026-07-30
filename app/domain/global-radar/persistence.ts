@@ -383,12 +383,12 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-type CanonicalMomentumEntityContext = Readonly<{
+export type CanonicalMomentumEntityContext = Readonly<{
   entityId: string;
   corporateGroupId: string;
 }>;
 
-function canonicalMomentumEntityContexts(
+export function canonicalMomentumEntityContexts(
   entities: readonly CanonicalPersistableRadarEntity[],
 ): ReadonlyMap<string, CanonicalMomentumEntityContext> | null {
   const parent = new Map(entities.map(({ entityRef }) => [entityRef, entityRef]));

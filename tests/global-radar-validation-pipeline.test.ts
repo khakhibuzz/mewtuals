@@ -214,7 +214,7 @@ function batch(overrides: Record<string, unknown> = {}) {
         stablePublicIdentifiers: [
           { namespace: "official_registry", value: "acme-robotics" },
         ],
-        canonicalCorporateGroupId: "group:acme-robotics",
+        canonicalCorporateGroupId: "group:acme-robotics" as string | null,
         headquartersCountry: "United States",
         headquartersCity: "Austin",
         operatingCountries: ["United States", "India"],
@@ -228,6 +228,92 @@ function batch(overrides: Record<string, unknown> = {}) {
     sourceErrors: [],
     ...overrides,
   };
+}
+
+function executedQuery(overrides: Record<string, unknown> = {}) {
+  return {
+    fingerprint: "b".repeat(64),
+    query: "robotics supplier registration",
+    language: "en",
+    sourceCountry: "United States",
+    theme: "robot_teleoperation_demonstrations",
+    signalIntent: "direct_demand",
+    sourceAdapter: "codex_public_web",
+    recencyDays: 30,
+    ordinal: 0,
+    executedAt: "2026-07-29T18:00:00.000Z",
+    resultsExamined: 4,
+    error: null,
+    ...overrides,
+  };
+}
+
+function momentumBatch() {
+  const proposal = structuredClone(batch());
+  proposal.entities.push({
+    ...proposal.entities[0]!,
+    entityRef: "entity-beta",
+    canonicalName: "Beta Robotics",
+    websiteUrl: "https://beta.example",
+    linkedinOrganizationUrl: "https://www.linkedin.com/company/beta-robotics",
+    stablePublicIdentifiers: [
+      { namespace: "official_registry", value: "beta-robotics" },
+    ],
+    canonicalCorporateGroupId: "group:beta-robotics",
+  });
+  proposal.signals = [
+    directSignal({
+      externalSignalId: "signal-robotics-momentum",
+      signalClass: "ecosystem_momentum",
+      signalType: "ecosystem_direction",
+      primaryEntityRef: null,
+      associatedEntities: [
+        { entityRef: "entity-acme", role: "contributor", confidence: 90 },
+        { entityRef: "entity-beta", role: "contributor", confidence: 85 },
+      ],
+      directDemandAsk: null,
+      precursorDevelopmentType: null,
+      momentumMetrics: { taxonomyConsistency: 90, evidenceQuality: 90 },
+      scoreComponents: null,
+      evergreen: null,
+      reobserveBy: null,
+      responsePath: null,
+      systemsContext: null,
+      indiaRelevance: {
+        proposedType: "no_current_India_fit",
+        rationale: "No current India fit is publicly supported.",
+        reasons: [],
+        constraints: [],
+        unknowns: ["Future counterparties remain unknown."],
+        confidence: 70,
+        regulatoryFacts: null,
+        logisticsFacts: null,
+      },
+      evidence: [
+        evidence({
+          contributorEntityRef: "entity-acme",
+          supportsDirectDemand: false,
+          supportsIndiaRelevance: false,
+          supportedFieldPaths: ["signal.factualSummary"],
+        }),
+        evidence({
+          contributorEntityRef: "entity-beta",
+          sourceUrl: "https://beta.example/research-direction",
+          canonicalSourceUrl: "https://beta.example/research-direction",
+          sourceName: "Beta Robotics",
+          sourceFamily: "official_research",
+          claim:
+            "Beta published a physical AI research direction for robot learning.",
+          englishSummary:
+            "Beta published a physical AI direction focused on robot learning.",
+          supportsDirectDemand: false,
+          supportsIndiaRelevance: false,
+          supportedFieldPaths: ["signal.factualSummary"],
+        }),
+      ],
+    }),
+  ];
+  return proposal;
 }
 
 const context: RadarValidationContext = {
@@ -349,20 +435,7 @@ describe("Global Radar server-authoritative validation pipeline", () => {
 
   it("recomputes query fingerprints and rewrites bounded source-error references", () => {
     const proposedFingerprint = "b".repeat(64);
-    const query = {
-      fingerprint: proposedFingerprint,
-      query: "robotics supplier registration",
-      language: "en",
-      sourceCountry: "United States",
-      theme: "robot_teleoperation_demonstrations",
-      signalIntent: "direct_demand",
-      sourceAdapter: "codex_public_web",
-      recencyDays: 30,
-      ordinal: 0,
-      executedAt: "2026-07-29T18:00:00.000Z",
-      resultsExamined: 4,
-      error: null,
-    };
+    const query = executedQuery({ fingerprint: proposedFingerprint });
     const validated = validate(
       batch({
         executedQueries: [query],
@@ -384,6 +457,66 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     expect(canonicalizeGlobalRadarPersistenceBatch(validated)).toMatchObject({
       valid: true,
     });
+  });
+
+  it("rejects duplicate proposed query fingerprint aliases", () => {
+    expect(() =>
+      validate(
+        batch({
+          executedQueries: [
+            executedQuery({ query: "robotics suppliers", ordinal: 0 }),
+            executedQuery({ query: "robotics manufacturers", ordinal: 1 }),
+          ],
+        }),
+      ),
+    ).toThrow(/duplicate proposed query fingerprint/i);
+  });
+
+  it("rejects payload-like query and source diagnostics while allowing safe summaries", () => {
+    const unsafeDiagnostics = [
+      "<html>raw rejected response body</html>",
+      "SQLSTATE 42P01: relation private.users does not exist",
+      "Error: connection failed\n    at query (/Users/service/db.ts:12:4)",
+      "Authorization: Bearer secret-token-value",
+      "password=plain-text-credential",
+      'Rejected response body: {"private":"payload"}',
+      Array.from({ length: 90 }, (_, index) => `pageword${index}`).join(" "),
+    ];
+
+    for (const message of unsafeDiagnostics) {
+      expect(
+        globalRadarValidationProposalSchema.safeParse(
+          batch({ executedQueries: [executedQuery({ error: message })] }),
+        ).success,
+      ).toBe(false);
+      expect(
+        globalRadarValidationProposalSchema.safeParse(
+          batch({
+            sourceErrors: [
+              {
+                sourceName: "Public web search",
+                message,
+                queryFingerprint: null,
+              },
+            ],
+          }),
+        ).success,
+      ).toBe(false);
+    }
+    expect(
+      globalRadarValidationProposalSchema.safeParse(
+        batch({
+          executedQueries: [executedQuery({ error: "Search request timed out." })],
+          sourceErrors: [
+            {
+              sourceName: "Public web search",
+              message: "The source did not respond before the timeout.",
+              queryFingerprint: null,
+            },
+          ],
+        }),
+      ).success,
+    ).toBe(true);
   });
 
   it("canonicalizes unordered proposal collections before hashing", () => {
@@ -512,70 +645,7 @@ describe("Global Radar server-authoritative validation pipeline", () => {
   });
 
   it("derives valid momentum from independent entity evidence", () => {
-    const proposal = structuredClone(batch());
-    proposal.entities.push({
-      ...proposal.entities[0]!,
-      entityRef: "entity-beta",
-      canonicalName: "Beta Robotics",
-      websiteUrl: "https://beta.example",
-      linkedinOrganizationUrl: "https://www.linkedin.com/company/beta-robotics",
-      stablePublicIdentifiers: [
-        { namespace: "official_registry", value: "beta-robotics" },
-      ],
-      canonicalCorporateGroupId: "group:beta-robotics",
-    });
-    proposal.signals = [
-      directSignal({
-        externalSignalId: "signal-robotics-momentum",
-        signalClass: "ecosystem_momentum",
-        signalType: "ecosystem_direction",
-        primaryEntityRef: null,
-        associatedEntities: [
-          { entityRef: "entity-acme", role: "contributor", confidence: 90 },
-          { entityRef: "entity-beta", role: "contributor", confidence: 85 },
-        ],
-        directDemandAsk: null,
-        precursorDevelopmentType: null,
-        momentumMetrics: { taxonomyConsistency: 90, evidenceQuality: 90 },
-        scoreComponents: null,
-        evergreen: null,
-        reobserveBy: null,
-        responsePath: null,
-        systemsContext: null,
-        indiaRelevance: {
-          proposedType: "no_current_India_fit",
-          rationale: "No current India fit is publicly supported.",
-          reasons: [],
-          constraints: [],
-          unknowns: ["Future counterparties remain unknown."],
-          confidence: 70,
-          regulatoryFacts: null,
-          logisticsFacts: null,
-        },
-        evidence: [
-          evidence({
-            contributorEntityRef: "entity-acme",
-            supportsDirectDemand: false,
-            supportsIndiaRelevance: false,
-            supportedFieldPaths: ["signal.factualSummary"],
-          }),
-          evidence({
-            contributorEntityRef: "entity-beta",
-            sourceUrl: "https://beta.example/research-direction",
-            canonicalSourceUrl: "https://beta.example/research-direction",
-            sourceName: "Beta Robotics",
-            sourceFamily: "official_research",
-            claim:
-              "Beta published a physical AI research direction for robot learning.",
-            englishSummary:
-              "Beta published a physical AI direction focused on robot learning.",
-            supportsDirectDemand: false,
-            supportsIndiaRelevance: false,
-            supportedFieldPaths: ["signal.factualSummary"],
-          }),
-        ],
-      }),
-    ];
+    const proposal = momentumBatch();
     const validated = validate(proposal);
 
     expect(validated.entities).toHaveLength(2);
@@ -597,6 +667,63 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     });
     expect(canonicalizeGlobalRadarPersistenceBatch(validated)).toMatchObject({
       valid: true,
+    });
+  });
+
+  it("does not count aliased public identities as independent momentum", () => {
+    const proposal = momentumBatch();
+    proposal.entities[0]!.canonicalCorporateGroupId = null;
+    proposal.entities[1]!.canonicalCorporateGroupId = null;
+    proposal.entities[0]!.stablePublicIdentifiers.push({
+      namespace: "official_registry",
+      value: "shared-robotics-entity",
+    });
+    proposal.entities[1]!.stablePublicIdentifiers.push({
+      namespace: "official_registry",
+      value: "shared-robotics-entity",
+    });
+
+    const validated = validate(proposal);
+
+    expect(validated.signals).toEqual([]);
+    expect(validated.entities).toEqual([]);
+    expect(validated.rejections.insufficient_momentum_evidence).toBe(1);
+    expect(canonicalizeGlobalRadarPersistenceBatch(validated)).toMatchObject({
+      valid: true,
+    });
+  });
+
+  it("applies compliance actionability reductions before direct-demand scoring", () => {
+    const unresolved = validate(batch());
+    const severe = validate(
+      batch({
+        signals: [
+          directSignal({
+            sensitiveDataAndCompliance: {
+              sensitiveDataFlags: {
+                ...ALL_UNKNOWN_SENSITIVE_DATA,
+                faces: "severe",
+              },
+              complianceFacts: {
+                consent: null,
+                deIdentification: null,
+                legalReview: null,
+                knownResidencyRequirements: null,
+                participantRightsComplexity: null,
+              },
+            },
+          }),
+        ],
+      }),
+    );
+
+    expect(unresolved.signals[0]).toMatchObject({
+      initialStatus: "needs_review",
+      score: { components: { actionability: 70 } },
+    });
+    expect(severe.signals[0]).toMatchObject({
+      initialStatus: "needs_review",
+      score: { components: { actionability: 60 } },
     });
   });
 

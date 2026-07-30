@@ -157,6 +157,25 @@ describe("Global Radar evidence extraction", () => {
     });
   });
 
+  it("allows only exact requirement and compliance provenance fields", () => {
+    expect(
+      normalizeRadarEvidence(
+        evidenceProposal({ supportedFieldPaths: ["requirement.workerSecret"] }),
+      ),
+    ).toEqual({ valid: false, reason: "unsupported_field_path" });
+    expect(
+      normalizeRadarEvidence(
+        evidenceProposal({
+          supportedFieldPaths: [
+            "requirement.capabilityTag",
+            "sensitiveDataAndCompliance.sensitiveDataFlags.faces",
+            "sensitiveDataAndCompliance.complianceFacts.consent",
+          ],
+        }),
+      ),
+    ).toMatchObject({ valid: true });
+  });
+
   it("preserves Chinese original evidence separately from its English summary", () => {
     const result = normalizeRadarEvidence(
       evidenceProposal({

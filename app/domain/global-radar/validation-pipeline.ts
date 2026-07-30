@@ -43,6 +43,7 @@ import {
   type EntityIdentity,
 } from "./normalization";
 import {
+  canonicalMomentumEntityContexts,
   canonicalizeGlobalRadarPersistenceBatch,
   createGlobalRadarPersistenceHash,
   createGlobalRadarSignalDedupeKey,
@@ -51,6 +52,7 @@ import {
   persistableRadarEvidenceSchema,
   persistableRadarExecutedQuerySchema,
   persistableRadarSignalSchema,
+  type CanonicalMomentumEntityContext,
   type PersistableGlobalRadarBatch,
   type PersistableRadarEntity,
   type PersistableRadarExecutedQuery,
@@ -76,6 +78,7 @@ import {
   type RadarClock,
 } from "./scoring";
 import {
+  assessComplianceReview,
   systemsContextSchema,
   validateSystemsContext,
   type SystemsContext,
@@ -85,6 +88,18 @@ import { determineInitialSignalStatus } from "./transitions";
 const MAX_BATCH_BYTES = 2 * 1_024 * 1_024;
 const documentMarkupPattern =
   /<(?:!doctype\b|\?xml\b|!\[cdata\[|\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\/?>)/i;
+const unsafeDiagnosticPatterns = [
+  documentMarkupPattern,
+  /\b(?:authorization|proxy-authorization)\s*:/i,
+  /\b(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i,
+  /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|credential|client[_ -]?secret|session[_ -]?id|cookie|set-cookie)\b\s*[:=]/i,
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
+  /\b(?:sqlstate|postgres(?:ql)?|syntax error at or near|relation\s+\S+\s+does not exist)\b/i,
+  /\b(?:select|insert|update|delete|alter|drop|create)\b[\s\S]{0,80}\b(?:from|into|table|where|values|set)\b/i,
+  /(?:^|\n)\s*at\s+(?:async\s+)?[\w$.<>]+\s+\([^)\n]+\)/m,
+  /(?:\/Users\/|\/home\/|node_modules\/|[A-Za-z]:\\)/,
+  /\b(?:raw|request|response|rejected)\s+(?:body|payload|content)\s*[:=]/i,
+] as const;
 const applicationRefSchema = z
   .string()
   .trim()
@@ -92,6 +107,20 @@ const applicationRefSchema = z
   .max(200)
   .regex(/^[a-z0-9][a-z0-9._:-]*$/);
 const boundedText = (maximum: number) => z.string().trim().min(1).max(maximum);
+const safeDiagnosticTextSchema = boundedText(1_000)
+  .refine(
+    (value) => {
+      const wordCount =
+        value.match(/\p{L}[\p{L}\p{N}'’-]*/gu)?.length ?? 0;
+      return (
+        wordCount <= 80 &&
+        (value.match(/\n/g)?.length ?? 0) <= 2 &&
+        !unsafeDiagnosticPatterns.some((pattern) => pattern.test(value))
+      );
+    },
+    { message: "Source diagnostics must be concise and payload-free." },
+  )
+  .transform((value) => value.replace(/\s+/g, " "));
 const nullableTimestamp = isoTimestampSchema.nullable();
 const associatedEntityProposalSchema = z.strictObject({
   entityRef: applicationRefSchema,
@@ -212,7 +241,13 @@ export const radarSignalProposalSchema = z
   });
 
 export const radarExecutedQueryProposalSchema =
-  persistableRadarExecutedQuerySchema;
+  persistableRadarExecutedQuerySchema.extend({
+    error: safeDiagnosticTextSchema.nullable(),
+  });
+
+const radarSourceErrorProposalSchema = sourceErrorSchema.extend({
+  message: safeDiagnosticTextSchema,
+});
 
 const validationProposalShape = {
   schemaVersion: z.literal(GLOBAL_RADAR_SCHEMA_VERSION),
@@ -223,7 +258,7 @@ const validationProposalShape = {
   executedQueries: z.array(radarExecutedQueryProposalSchema).max(120),
   entities: z.array(persistableRadarEntitySchema).max(50),
   signals: z.array(radarSignalProposalSchema).max(20),
-  sourceErrors: z.array(sourceErrorSchema).max(50),
+  sourceErrors: z.array(radarSourceErrorProposalSchema).max(50),
 } as const;
 
 function addProposalTotalsIssues(
@@ -496,6 +531,7 @@ function normalizeExecutedQueries(
   }
   const fingerprintMap = new Map<string, string>();
   const fingerprints = new Set<string>();
+  const proposedFingerprints = new Set<string>();
   const ordinals = new Set<number>();
   const normalized = queries.map((query, index) => {
     const planned = expected?.[index];
@@ -518,9 +554,13 @@ function normalizeExecutedQueries(
       return invalidProposal(`executed query ${index} is in the future`);
     }
     const fingerprint = queryIdentity(query);
+    if (proposedFingerprints.has(query.fingerprint)) {
+      return invalidProposal("duplicate proposed query fingerprint alias");
+    }
     if (fingerprints.has(fingerprint) || ordinals.has(query.ordinal)) {
       return invalidProposal("executed queries must have unique identities");
     }
+    proposedFingerprints.add(query.fingerprint);
     fingerprints.add(fingerprint);
     ordinals.add(query.ordinal);
     fingerprintMap.set(query.fingerprint, fingerprint);
@@ -724,6 +764,7 @@ function normalizeSignalEvidence(
   proposal: RadarSignalProposal,
   entitiesByRef: ReadonlyMap<string, PersistableRadarEntity>,
   identitiesByRef: ReadonlyMap<string, EntityIdentity>,
+  momentumContexts: ReadonlyMap<string, CanonicalMomentumEntityContext> | null,
   now: Date,
 ):
   | Readonly<{ valid: true; items: readonly ClassifiedEvidence[] }>
@@ -750,11 +791,13 @@ function normalizeSignalEvidence(
     if (!entity || !identity) {
       return Object.freeze({ valid: false, reason: "invalid_evidence" });
     }
-    const classificationIdentityValue = classificationIdentity(
-      entityRef,
-      entity,
-      identity,
-    );
+    const momentumContext = momentumContexts?.get(entityRef);
+    const classificationIdentityValue = momentumContext
+      ? Object.freeze({
+          organizationId: momentumContext.entityId,
+          corporateGroupId: momentumContext.corporateGroupId,
+        })
+      : classificationIdentity(entityRef, entity, identity);
     const classified = Object.freeze({
       evidence: normalized.evidence,
       candidate: Object.freeze({
@@ -870,6 +913,7 @@ function scoreDirectProposal(
   relevanceType: z.output<typeof proposedIndiaRelevanceSchema>["proposedType"],
   observedAt: string,
   evidence: readonly ClassifiedEvidence[],
+  actionability: number | null,
   clock: RadarClock,
 ): DirectDemandScoreResult {
   const anchorAt =
@@ -887,6 +931,7 @@ function scoreDirectProposal(
     explicitness: classification.gateFacts.explicitCurrentAsk ? 100 : 0,
     evidenceConfidence: classification.gateFacts.evidenceConfidence,
     freshness: freshness.valid ? freshness.score : null,
+    actionability,
     indiaFit: indiaFitScore(relevanceType),
     responseAccessibility: classification.gateFacts.responsePathVerified
       ? 100
@@ -915,21 +960,18 @@ function scorePrecursorProposal(
 function scoreMomentumProposal(
   proposal: z.output<typeof momentumSignalProposalSchema>,
   evidence: readonly ClassifiedEvidence[],
-  entitiesByRef: ReadonlyMap<string, PersistableRadarEntity>,
-  identitiesByRef: ReadonlyMap<string, EntityIdentity>,
+  momentumContexts: ReadonlyMap<string, CanonicalMomentumEntityContext>,
   observedAt: string,
 ): MomentumDerivationResult {
   const observations = evidence.flatMap(({ evidence: item }) => {
     const entityRef = item.contributorEntityRef;
     if (entityRef === null || item.isSyndicated) return [];
-    const entity = entitiesByRef.get(entityRef);
-    const identity = identitiesByRef.get(entityRef);
-    if (!entity || !identity) return [];
-    const entityKey = classificationIdentity(entityRef, entity, identity);
+    const entityKey = momentumContexts.get(entityRef);
+    if (!entityKey) return [];
     return [
       {
         evidenceId: item.evidenceFingerprint,
-        entityId: entityKey.organizationId,
+        entityId: entityKey.entityId,
         corporateGroupId: entityKey.corporateGroupId,
         sourceId: item.evidenceFingerprint,
         sourceFamily: item.sourceFamily,
@@ -948,6 +990,54 @@ function scoreMomentumProposal(
     createGlobalRadarMomentumPolicy(proposal.demandDomain),
     { now: () => new Date(observedAt) },
   );
+}
+
+function momentumContextsForSignal(
+  proposal: z.output<typeof momentumSignalProposalSchema>,
+  entitiesByRef: ReadonlyMap<string, PersistableRadarEntity>,
+  identitiesByRef: ReadonlyMap<string, EntityIdentity>,
+): ReadonlyMap<string, CanonicalMomentumEntityContext> | null {
+  const entities = proposal.associatedEntities.flatMap(({ entityRef }) => {
+    const entity = entitiesByRef.get(entityRef);
+    const identity = identitiesByRef.get(entityRef);
+    return entity && identity ? [{ ...entity, identity }] : [];
+  });
+  if (entities.length !== proposal.associatedEntities.length) return null;
+  const contexts = canonicalMomentumEntityContexts(entities);
+  if (!contexts) return null;
+  const values = [...contexts.values()];
+  const independentCount = Math.min(
+    new Set(values.map(({ entityId }) => entityId)).size,
+    new Set(values.map(({ corporateGroupId }) => corporateGroupId)).size,
+  );
+  return independentCount >= 2 ? contexts : null;
+}
+
+function directCompliancePolicy(
+  proposal: z.output<typeof directDemandSignalProposalSchema>,
+): Readonly<{
+  actionability: number | null;
+  requiresReview: boolean;
+}> | null {
+  const actionability = proposal.scoreComponents.actionability;
+  if (actionability === null) {
+    return Object.freeze({
+      actionability: null,
+      requiresReview: complianceRequiresReview(
+        proposal.sensitiveDataAndCompliance,
+      ),
+    });
+  }
+  const reviewed = assessComplianceReview({
+    currentStatus: "newly_discovered",
+    actionability,
+    assessment: proposal.sensitiveDataAndCompliance,
+  });
+  if (!reviewed.valid) return null;
+  return Object.freeze({
+    actionability: reviewed.actionability,
+    requiresReview: reviewed.status === "needs_review",
+  });
 }
 
 function inferredStackType(
@@ -1030,10 +1120,21 @@ function validateSignal(
   ) {
     return Object.freeze({ valid: false, reason: "invalid_evidence" });
   }
+  const momentumContexts =
+    proposal.signalClass === "ecosystem_momentum"
+      ? momentumContextsForSignal(proposal, entitiesByRef, identitiesByRef)
+      : null;
+  if (proposal.signalClass === "ecosystem_momentum" && !momentumContexts) {
+    return Object.freeze({
+      valid: false,
+      reason: "insufficient_momentum_evidence",
+    });
+  }
   const evidenceResult = normalizeSignalEvidence(
     proposal,
     entitiesByRef,
     identitiesByRef,
+    momentumContexts,
     now,
   );
   if (!evidenceResult.valid) return evidenceResult;
@@ -1106,6 +1207,13 @@ function validateSignal(
     | PrecursorScoreResult
     | MomentumDerivationResult;
   let threshold: number;
+  const compliancePolicy =
+    proposal.signalClass === "direct_demand"
+      ? directCompliancePolicy(proposal)
+      : null;
+  if (proposal.signalClass === "direct_demand" && !compliancePolicy) {
+    return Object.freeze({ valid: false, reason: "invalid_evidence" });
+  }
   if (proposal.signalClass === "direct_demand") {
     score = scoreDirectProposal(
       proposal,
@@ -1113,6 +1221,7 @@ function validateSignal(
       indiaAssessment.relevanceType,
       observedAt,
       evidenceResult.items,
+      compliancePolicy!.actionability,
       context.clock,
     );
     threshold = thresholds.directDemand;
@@ -1128,8 +1237,7 @@ function validateSignal(
     score = scoreMomentumProposal(
       proposal,
       evidenceResult.items,
-      entitiesByRef,
-      identitiesByRef,
+      momentumContexts!,
       observedAt,
     );
     threshold = thresholds.momentum;
@@ -1156,9 +1264,9 @@ function validateSignal(
     return Object.freeze({ valid: false, reason: "invalid_evidence" });
   }
   const status = determineInitialSignalStatus({
-    complianceRequiresReview: complianceRequiresReview(
-      proposal.sensitiveDataAndCompliance,
-    ),
+    complianceRequiresReview:
+      compliancePolicy?.requiresReview ??
+      complianceRequiresReview(proposal.sensitiveDataAndCompliance),
     score: score.score,
     scoreCoverage: score.scoreCoverage,
   });
