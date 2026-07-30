@@ -349,6 +349,12 @@ function metricsRecord(value: unknown) {
 
 function overviewRecord(value: unknown) {
   const source = (value ?? {}) as Record<string, unknown>;
+  const india = (source.india ?? {}) as Record<string, unknown>;
+  const countries = (source.countries ?? {}) as Record<string, unknown>;
+  const requirementMix = (source.requirementMix ?? {}) as Record<
+    string,
+    unknown
+  >;
   const latest =
     source.latestRun && typeof source.latestRun === "object"
       ? (source.latestRun as Record<string, unknown>)
@@ -368,7 +374,24 @@ function overviewRecord(value: unknown) {
       })
     : [];
   return {
+    newSignals: numberValue(source.newSignals),
+    activeDirectDemand: numberValue(source.activeDirectDemand),
+    highQualityPrecursors: numberValue(source.highQualityPrecursors),
+    india: {
+      explicit: numberValue(india.explicit),
+      inferred: numberValue(india.inferred),
+    },
+    countries: {
+      unitedStates: numberValue(countries.unitedStates),
+      china: numberValue(countries.china),
+      other: numberValue(countries.other),
+    },
+    requirementMix: {
+      physicalData: numberValue(requirementMix.physicalData),
+      hardware: numberValue(requirementMix.hardware),
+    },
     capabilityFamilies,
+    expiringDirectDemand: numberValue(source.expiringDirectDemand),
     promotionCount: numberValue(source.promotedEntities),
     latestRun: latest
       ? {
