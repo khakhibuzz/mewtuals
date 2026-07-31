@@ -20,6 +20,8 @@ import {
   createGlobalRadarSignalDedupeKeyFromIdentityAnchors,
   globalRadarDemandFamilyLookup,
   isoTimestampSchema,
+  missingMomentumWorkerScoredMetricEvidencePaths,
+  missingWorkerScoredComponentEvidencePaths,
   resolveDirectDemandExpiryStatus,
   signalClassLookup,
   transitionSignal,
@@ -1264,6 +1266,7 @@ export function createGlobalRadarAdminRepository(
               isPrimarySource: globalSignalEvidence.isPrimarySource,
               isSyndicated: globalSignalEvidence.isSyndicated,
               supportsDirectDemand: globalSignalEvidence.supportsDirectDemand,
+              supportedFieldPaths: globalSignalEvidence.supportedFieldPaths,
             })
             .from(globalSignalEvidence)
             .where(eq(globalSignalEvidence.signalId, signal.id))
@@ -1279,6 +1282,20 @@ export function createGlobalRadarAdminRepository(
             .where(eq(globalRadarSignalEntities.signalId, signal.id)),
         ]);
         if (evidence.length > MAX_GLOBAL_RADAR_ADMIN_MOMENTUM_EVIDENCE) {
+          return { outcome: "classification_requirements_not_met" as const };
+        }
+        const missingScoreEvidencePaths =
+          classification.signalClass === "ecosystem_momentum"
+            ? missingMomentumWorkerScoredMetricEvidencePaths({
+                momentumMetrics: classification.components,
+                evidence,
+              })
+            : missingWorkerScoredComponentEvidencePaths({
+                signalClass: classification.signalClass,
+                scoreComponents: classification.components,
+                evidence,
+              });
+        if (missingScoreEvidencePaths.length > 0) {
           return { outcome: "classification_requirements_not_met" as const };
         }
         const targetGraph = createGlobalRadarClassificationGraph({

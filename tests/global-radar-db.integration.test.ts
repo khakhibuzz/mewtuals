@@ -25,6 +25,7 @@ import {
   type PersistableGlobalRadarBatch,
   type RadarPlan,
 } from "../app/domain/global-radar";
+import { createGlobalRadarAdminService } from "../app/server/global-radar/admin-service";
 import { hashGlobalRadarLeaseToken } from "../app/server/global-radar/worker-auth";
 import { closeDb, getDb, type MewtualsDatabase } from "../db/client";
 import * as globalRadarDatabaseSchema from "../db/global-radar-schema";
@@ -5060,19 +5061,43 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     },
   });
   const actor = { userId: "00000000-0000-4000-8000-000000000099", email: userEmail };
+  const directWorkerScorePaths = [
+    "scoreComponents.actionability",
+    "scoreComponents.commercialPotential",
+    "scoreComponents.repeatability",
+    "scoreComponents.strategicLearning",
+    "scoreComponents.complianceComplexity",
+  ];
+  const precursorWorkerScorePaths = [
+    "scoreComponents.proximityToExternalDemand",
+    "scoreComponents.fundingDeploymentMomentum",
+    "scoreComponents.likelyDataHardwareIntensity",
+    "scoreComponents.strategicRelevance",
+  ];
+  const momentumWorkerScorePaths = [
+    "momentumMetrics.taxonomyConsistency",
+    "momentumMetrics.evidenceQuality",
+  ];
 
-  async function persistedDirect(suffix: string) {
+  async function persistedDirect(
+    suffix: string,
+    prepareBatch?: (batch: PersistableGlobalRadarBatch) => void,
+  ) {
     const now = new Date("2026-07-30T13:00:00.000Z");
     await repository.queueRun(queueInput(`admin-review-${suffix}`, { now }));
     const claim = await repository.claimRun({ now });
     if (claim.outcome !== "claimed") throw new Error("Admin review fixture was not claimed.");
-    const batch = validPersistenceBatch(claim.run.id, {
+    let batch = validPersistenceBatch(claim.run.id, {
       externalSignalId: `admin-review-${suffix}`,
       sourceUrl: `https://review-${suffix}.example/request`,
       stableIdentifierValue: `admin-review-${suffix}`,
       websiteUrl: `https://review-${suffix}.example`,
       linkedinOrganizationUrl: null,
     });
+    if (prepareBatch) {
+      prepareBatch(batch);
+      batch = rehashPersistenceBatch(batch);
+    }
     const completed = await repository.completeRun({
       ...completionInput(
         claim.run.id,
@@ -5083,8 +5108,46 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       batch,
     });
     if (completed.outcome !== "completed") throw new Error("Admin review fixture failed.");
-    const [signal] = await db.select().from(globalRadarSignals);
+    const [signal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.firstRunId, claim.run.id));
     if (!signal) throw new Error("Admin review signal was not persisted.");
+    return signal;
+  }
+
+  async function persistedMomentum(
+    suffix: string,
+    prepareBatch?: (batch: PersistableGlobalRadarBatch) => void,
+  ) {
+    const now = new Date("2026-07-30T13:00:00.000Z");
+    await repository.queueRun(queueInput(`admin-review-${suffix}`, { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") {
+      throw new Error("Admin momentum fixture was not claimed.");
+    }
+    let batch = validMomentumPersistenceBatch(claim.run.id);
+    if (prepareBatch) {
+      prepareBatch(batch);
+      batch = rehashPersistenceBatch(batch);
+    }
+    const completed = await repository.completeRun({
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(now.getTime() + 1_000),
+      ),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    if (completed.outcome !== "completed") {
+      throw new Error("Admin momentum fixture failed.");
+    }
+    const [signal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.firstRunId, claim.run.id));
+    if (!signal) throw new Error("Admin momentum signal was not persisted.");
     return signal;
   }
 
@@ -5100,6 +5163,194 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       now: new Date(now),
     };
   }
+
+  function adminService(now = "2026-07-30T14:00:00.000Z") {
+    return createGlobalRadarAdminService({
+      repository: adminRepository,
+      adminEmails: [userEmail],
+      now: () => new Date(now),
+      queueManualRun: async () => ({ outcome: "invalid" }),
+      promote: async () => ({ outcome: "invalid" }),
+      reversePromotion: async () => ({ outcome: "invalid" }),
+    });
+  }
+
+  function serviceEnvelope(expectedRevision: number, suffix: string) {
+    const { now: _now, ...value } = envelope(expectedRevision, suffix);
+    void _now;
+    return value;
+  }
+
+  function expectedWorkerEvidence(paths: readonly string[]) {
+    return paths.map((path) =>
+      expect.objectContaining({
+        component: path.split(".")[1],
+        basis: "worker_evidence",
+        evidence: [
+          expect.objectContaining({ matchedFieldPaths: [path] }),
+        ],
+      }),
+    );
+  }
+
+  async function signalWriteSnapshot(signalId: string) {
+    const [signal, updates, events, promotions] = await Promise.all([
+      db
+        .select()
+        .from(globalRadarSignals)
+        .where(eq(globalRadarSignals.id, signalId))
+        .limit(1),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(globalSignalUpdates)
+        .where(eq(globalSignalUpdates.signalId, signalId)),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(globalRadarAdminEvents)
+        .where(eq(globalRadarAdminEvents.targetId, signalId)),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(globalRadarPromotions),
+    ]);
+    return {
+      signal: signal[0],
+      updates: updates[0]?.count ?? 0,
+      events: events[0]?.count ?? 0,
+      promotions: promotions[0]?.count ?? 0,
+    };
+  }
+
+  it("rejects unsupported direct score inputs before classification writes", async () => {
+    const signal = await persistedDirect("direct-score-provenance");
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "monitoring" })
+      .where(eq(globalRadarSignals.id, signal.id));
+    const before = await signalWriteSnapshot(signal.id);
+
+    await expect(
+      adminService().editClassification(actor, signal.id, {
+        ...serviceEnvelope(0, "901"),
+        classification: {
+          signalClass: "direct_demand",
+          signalType: "procurement",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            explicitness: 90,
+            evidenceConfidence: 85,
+            freshness: 80,
+            actionability: 80,
+            indiaFit: 75,
+            commercialPotential: 75,
+            repeatability: 70,
+            responseAccessibility: 70,
+            strategicLearning: 70,
+            complianceComplexity: 20,
+          },
+          activity: {
+            evergreen: false,
+            expiresAt: "2026-09-30T00:00:00.000Z",
+            reobserveBy: null,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "classification_requirements_not_met",
+      httpStatus: 409,
+    });
+    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
+  });
+
+  it("rejects unsupported precursor scores without writes or qualification", async () => {
+    const signal = await persistedDirect("precursor-score-provenance", (batch) => {
+      const direct = batch.signals[0];
+      if (!direct || direct.signalClass !== "direct_demand") {
+        throw new Error("Direct provenance fixture was not classified.");
+      }
+      const lowScore = scoreDirectDemand({
+        ...direct.score.components,
+        explicitness: 60,
+      });
+      if (!lowScore.valid) throw new Error("Low direct score did not derive.");
+      direct.score = lowScore;
+      direct.evidence[0]!.supportedFieldPaths.push(...directWorkerScorePaths);
+    });
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "monitoring" })
+      .where(eq(globalRadarSignals.id, signal.id));
+    const before = await signalWriteSnapshot(signal.id);
+    const service = adminService();
+
+    await expect(
+      service.editClassification(actor, signal.id, {
+        ...serviceEnvelope(0, "902"),
+        classification: {
+          signalClass: "demand_precursor",
+          signalType: "funding",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            evidenceConfidence: 80,
+            proximityToExternalDemand: 70,
+            fundingDeploymentMomentum: 80,
+            likelyDataHardwareIntensity: 70,
+            indiaFit: 80,
+            estimatedTimeHorizon: 80,
+            strategicRelevance: 75,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "classification_requirements_not_met",
+      httpStatus: 409,
+    });
+    await expect(
+      service.reviewSignal(actor, signal.id, {
+        ...serviceEnvelope(0, "903"),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "qualification_requirements_not_met",
+      httpStatus: 409,
+    });
+    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
+  });
+
+  it("rejects unsupported momentum metrics before classification writes", async () => {
+    const signal = await persistedMomentum("momentum-score-provenance");
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "monitoring" })
+      .where(eq(globalRadarSignals.id, signal.id));
+    const before = await signalWriteSnapshot(signal.id);
+
+    await expect(
+      adminService("2026-07-31T16:00:00.000Z").editClassification(
+        actor,
+        signal.id,
+        {
+          ...serviceEnvelope(0, "904"),
+          classification: {
+            signalClass: "ecosystem_momentum",
+            signalType: "ecosystem_direction",
+            demandDomain: "robot_learning_and_manipulation",
+            components: {
+              taxonomyConsistency: 85,
+              evidenceQuality: 80,
+            },
+          },
+        },
+      ),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "classification_requirements_not_met",
+      httpStatus: 409,
+    });
+    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
+  });
 
   it("enforces allowed transitions, derives qualification, and preserves promoted no-India-fit status", async () => {
     const signal = await persistedDirect("transitions");
@@ -5360,7 +5611,12 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
   });
 
   it("edits direct expiry and cross-class classification without stale class fields", async () => {
-    const signal = await persistedDirect("edits");
+    const signal = await persistedDirect("edits", (batch) => {
+      batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
+        ...directWorkerScorePaths,
+        ...precursorWorkerScorePaths,
+      );
+    });
     const expiry = await adminRepository.editDirectDemandExpiry({
       signalId: signal.id,
       actor,
@@ -5376,28 +5632,44 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       detail: { signal: { revision: 1, reobserveBy: new Date("2026-08-30T00:00:00.000Z") } },
     });
     await db.update(globalRadarSignals).set({ status: "monitoring" }).where(eq(globalRadarSignals.id, signal.id));
-    const classification = await adminRepository.editSignalClassification({
-      signalId: signal.id,
+    const classification = await adminService().editClassification(
       actor,
-      envelope: envelope(1, "32"),
-      classification: {
-        signalClass: "demand_precursor",
-        signalType: "funding",
-        demandDomain: "robot_learning_and_manipulation",
-        components: {
-          evidenceConfidence: 80,
-          proximityToExternalDemand: 70,
-          fundingDeploymentMomentum: 80,
-          likelyDataHardwareIntensity: 70,
-          indiaFit: 80,
-          estimatedTimeHorizon: 80,
-          strategicRelevance: 75,
+      signal.id,
+      {
+        ...serviceEnvelope(1, "32"),
+        classification: {
+          signalClass: "demand_precursor",
+          signalType: "funding",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            evidenceConfidence: 80,
+            proximityToExternalDemand: 70,
+            fundingDeploymentMomentum: 80,
+            likelyDataHardwareIntensity: 70,
+            indiaFit: 80,
+            estimatedTimeHorizon: 80,
+            strategicRelevance: 75,
+          },
         },
       },
-    });
+    );
     expect(classification).toMatchObject({
       outcome: "updated",
-      detail: { signal: { signalClass: "demand_precursor", status: "monitoring", revision: 2 } },
+      detail: {
+        signalClass: "demand_precursor",
+        status: "monitoring",
+        revision: 2,
+        sections: expect.arrayContaining([
+          expect.objectContaining({
+            id: "score_rationale",
+            data: expect.objectContaining({
+              componentEvidence: expect.arrayContaining(
+                expectedWorkerEvidence(precursorWorkerScorePaths),
+              ),
+            }),
+          }),
+        ]),
+      },
     });
     const [stored] = await db.select().from(globalRadarSignals).where(eq(globalRadarSignals.id, signal.id));
     expect(stored).toMatchObject({
@@ -5409,36 +5681,51 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       precursorScore: expect.any(Number),
     });
 
-    const restoredDirect = await adminRepository.editSignalClassification({
-      signalId: signal.id,
+    const restoredDirect = await adminService().editClassification(
       actor,
-      envelope: envelope(2, "33"),
-      classification: {
-        signalClass: "direct_demand",
-        signalType: "procurement",
-        demandDomain: "robot_learning_and_manipulation",
-        components: {
-          explicitness: 90,
-          evidenceConfidence: 85,
-          freshness: 80,
-          actionability: 80,
-          indiaFit: 75,
-          commercialPotential: 75,
-          repeatability: 70,
-          responseAccessibility: 70,
-          strategicLearning: 70,
-          complianceComplexity: 20,
-        },
-        activity: {
-          evergreen: false,
-          expiresAt: "2026-09-30T00:00:00.000Z",
-          reobserveBy: null,
+      signal.id,
+      {
+        ...serviceEnvelope(2, "33"),
+        classification: {
+          signalClass: "direct_demand",
+          signalType: "procurement",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            explicitness: 90,
+            evidenceConfidence: 85,
+            freshness: 80,
+            actionability: 80,
+            indiaFit: 75,
+            commercialPotential: 75,
+            repeatability: 70,
+            responseAccessibility: 70,
+            strategicLearning: 70,
+            complianceComplexity: 20,
+          },
+          activity: {
+            evergreen: false,
+            expiresAt: "2026-09-30T00:00:00.000Z",
+            reobserveBy: null,
+          },
         },
       },
-    });
+    );
     expect(restoredDirect).toMatchObject({
       outcome: "updated",
-      detail: { signal: { signalClass: "direct_demand", revision: 3 } },
+      detail: {
+        signalClass: "direct_demand",
+        revision: 3,
+        sections: expect.arrayContaining([
+          expect.objectContaining({
+            id: "score_rationale",
+            data: expect.objectContaining({
+              componentEvidence: expect.arrayContaining(
+                expectedWorkerEvidence(directWorkerScorePaths),
+              ),
+            }),
+          }),
+        ]),
+      },
     });
     const [restored] = await db
       .select()
@@ -5554,7 +5841,12 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     await repository.queueRun(queueInput("admin-momentum-classification", { now }));
     const claim = await repository.claimRun({ now });
     if (claim.outcome !== "claimed") throw new Error("Momentum classification fixture was not claimed.");
-    const batch = validMomentumPersistenceBatch(claim.run.id);
+    let batch = validMomentumPersistenceBatch(claim.run.id);
+    batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
+      ...precursorWorkerScorePaths,
+      ...momentumWorkerScorePaths,
+    );
+    batch = rehashPersistenceBatch(batch);
     const completed = await repository.completeRun({
       ...completionInput(claim.run.id, claim.privateClaim.leaseToken, new Date(now.getTime() + 1_000)),
       submissionHash: batch.canonicalSubmissionHash,
@@ -5576,11 +5868,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       .set({ status: "monitoring" })
       .where(eq(globalRadarSignals.id, momentum.id));
 
+    const service = adminService("2026-07-31T16:00:00.000Z");
     await expect(
-      adminRepository.editSignalClassification({
-        signalId: momentum.id,
-        actor,
-        envelope: envelope(0, "35", "2026-07-31T16:00:00.000Z"),
+      service.editClassification(actor, momentum.id, {
+        ...serviceEnvelope(0, "35"),
         classification: {
           signalClass: "demand_precursor",
           primaryEntityId: contributor.globalEntityId,
@@ -5599,7 +5890,20 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       }),
     ).resolves.toMatchObject({
       outcome: "updated",
-      detail: { signal: { signalClass: "demand_precursor", revision: 1 } },
+      detail: {
+        signalClass: "demand_precursor",
+        revision: 1,
+        sections: expect.arrayContaining([
+          expect.objectContaining({
+            id: "score_rationale",
+            data: expect.objectContaining({
+              componentEvidence: expect.arrayContaining(
+                expectedWorkerEvidence(precursorWorkerScorePaths),
+              ),
+            }),
+          }),
+        ]),
+      },
     });
     const precursorGraph = await db
       .select({
@@ -5617,10 +5921,8 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     ).toBe(false);
 
     await expect(
-      adminRepository.editSignalClassification({
-        signalId: momentum.id,
-        actor,
-        envelope: envelope(1, "36", "2026-07-31T16:00:00.000Z"),
+      service.editClassification(actor, momentum.id, {
+        ...serviceEnvelope(1, "36"),
         classification: {
           signalClass: "ecosystem_momentum",
           signalType: "ecosystem_direction",
@@ -5633,7 +5935,20 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       }),
     ).resolves.toMatchObject({
       outcome: "updated",
-      detail: { signal: { signalClass: "ecosystem_momentum", revision: 2 } },
+      detail: {
+        signalClass: "ecosystem_momentum",
+        revision: 2,
+        sections: expect.arrayContaining([
+          expect.objectContaining({
+            id: "score_rationale",
+            data: expect.objectContaining({
+              componentEvidence: expect.arrayContaining(
+                expectedWorkerEvidence(momentumWorkerScorePaths),
+              ),
+            }),
+          }),
+        ]),
+      },
     });
     const [restoredMomentum] = await db
       .select()
