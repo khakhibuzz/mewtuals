@@ -166,7 +166,10 @@ function signalDetailReadModel() {
           isSyndicated: false,
           supportsDirectDemand: true,
           supportsIndiaRelevance: false,
-          supportedFieldPaths: ["signal.factualSummary"],
+          supportedFieldPaths: [
+            "signal.factualSummary",
+            "directDemandAsk.supplier_registration",
+          ],
         },
       ],
     },
