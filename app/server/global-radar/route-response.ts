@@ -18,6 +18,7 @@ const workerConflictReasons = new Set([
   "invalid_state",
   "lease_expired",
   "lease_mismatch",
+  "maintenance_failed",
   "request_mismatch",
 ]);
 

@@ -443,6 +443,27 @@ describe("Global Radar worker HTTP adapters", () => {
     }
   });
 
+  it("returns a bounded maintenance conflict from the worker claim route", async () => {
+    const service = workerService({
+      claim: vi.fn(async () => ({
+        outcome: "conflict",
+        reason: "maintenance_failed",
+        privateError: "database details must not cross the route",
+      })),
+    });
+
+    const response = await createGlobalRadarWorkerClaimHandler({
+      getService: () => service,
+    })(workerRequest("/api/global-radar/worker/claim", {}));
+
+    expect(response.status).toBe(409);
+    await expect(json(response)).resolves.toEqual({
+      ok: false,
+      outcome: "conflict",
+      reason: "maintenance_failed",
+    });
+  });
+
   it("accepts lease tokens only on complete and fail", async () => {
     const service = workerService();
     const response = await createGlobalRadarWorkerClaimHandler({
