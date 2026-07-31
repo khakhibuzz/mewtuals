@@ -6639,6 +6639,29 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
     expect(metrics.outcome === "listed" ? metrics.metrics.demandFamilies : {}).toEqual({
       robot_learning_and_manipulation: 1,
     });
+    const overview = await adminRepository.getOverviewMetrics({
+      now: new Date("2026-07-30T12:00:00.000Z"),
+    });
+    expect(overview).toMatchObject({
+      outcome: "listed",
+      metrics: {
+        newSignals: 1,
+        activeDirectDemand: 1,
+        highQualityPrecursors: 0,
+        india: { explicit: 1, inferred: 0 },
+        countries: { unitedStates: 1, china: 0, other: 0 },
+        requirementMix: { physicalData: 1, hardware: 0 },
+        capabilityFamilies: [
+          { capability: expect.any(String), signals: 1 },
+        ],
+        expiringDirectDemand: 1,
+        promotedEntities: 0,
+        latestRun: { id: expect.any(String), status: "succeeded" },
+        sourceErrors: 0,
+        mergedDuplicates: 0,
+      },
+    });
+
     await db.insert(globalRadarSignals).values({
       ...signal,
       id: randomUUID(),
@@ -6655,29 +6678,6 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
         ? boundedMetrics.metrics.demandFamilies
         : {},
     ).not.toHaveProperty("unbounded_private_family");
-
-    const overview = await adminRepository.getOverviewMetrics({
-      now: new Date("2026-07-30T12:00:00.000Z"),
-    });
-    expect(overview).toMatchObject({
-      outcome: "listed",
-      metrics: {
-        newSignals: 2,
-        activeDirectDemand: 2,
-        highQualityPrecursors: 0,
-        india: { explicit: 2, inferred: 0 },
-        countries: { unitedStates: 2, china: 0, other: 0 },
-        requirementMix: { physicalData: 1, hardware: 0 },
-        capabilityFamilies: [
-          { capability: expect.any(String), signals: 1 },
-        ],
-        expiringDirectDemand: 2,
-        promotedEntities: 0,
-        latestRun: { id: expect.any(String), status: "succeeded" },
-        sourceErrors: 0,
-        mergedDuplicates: 0,
-      },
-    });
 
     const detail = await adminRepository.getSignalDetail(signal.id);
     expect(detail).toMatchObject({
@@ -7464,6 +7464,59 @@ describe("PostgreSQL Global Radar score provenance on aggregate reads", () => {
       .set({
         effectiveFrom: new Date(signal.effectiveFrom.getTime() + 1_000),
       })
+      .where(eq(globalRadarSignals.id, signal.id));
+
+    await expect(
+      adminRepository.getOverviewMetrics({ now: readAt }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
+  });
+
+  it("rejects one-second direct expiry-anchor drift on overview", async () => {
+    const signal = await persistReadProvenanceFixture(
+      "direct-expiry-anchor-drift",
+      "direct_demand",
+    );
+    if (signal.expiresAt === null) {
+      throw new Error("Direct score-input drift fixture has no expiry anchor.");
+    }
+    await db
+      .update(globalRadarSignals)
+      .set({ expiresAt: new Date(signal.expiresAt.getTime() + 1_000) })
+      .where(eq(globalRadarSignals.id, signal.id));
+
+    await expect(
+      adminRepository.getOverviewMetrics({ now: readAt }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
+  });
+
+  it("rejects a malformed direct freshness-evidence anchor on overview", async () => {
+    const signal = await persistReadProvenanceFixture(
+      "direct-malformed-freshness-anchor",
+      "direct_demand",
+    );
+    const snapshot = structuredClone(
+      signal.scoreEvidenceSnapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    const freshnessAssociation = snapshot.componentEvidence.find(
+      ({ component }) => component === "freshness",
+    );
+    const freshnessEvidence = freshnessAssociation?.evidence[0];
+    if (!freshnessAssociation || !freshnessEvidence) {
+      throw new Error("Direct freshness-anchor fixture has no evidence citation.");
+    }
+    freshnessAssociation.evidence[0] = {
+      ...freshnessEvidence,
+      matchedFieldPaths: ["signal.announcedAt", "signal.effectiveFrom"],
+    };
+    await db
+      .update(globalRadarSignals)
+      .set({ scoreEvidenceSnapshot: snapshot })
       .where(eq(globalRadarSignals.id, signal.id));
 
     await expect(

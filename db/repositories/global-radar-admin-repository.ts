@@ -952,14 +952,16 @@ export function createGlobalRadarAdminRepository(
           activeSignals.map(({ observedAt }) => observedAt),
           input.now,
         );
-        const precursorScoreProvenance =
+        const overviewScoreProvenance =
           await validateStoredGlobalRadarScoreProvenanceBatch(
             database,
             activeSignals.filter(
-              ({ signalClass }) => signalClass === "demand_precursor",
+              ({ signalClass }) =>
+                signalClass === "direct_demand" ||
+                signalClass === "demand_precursor",
             ),
           );
-        if (!precursorScoreProvenance.valid) {
+        if (!overviewScoreProvenance.valid) {
           return {
             outcome: "conflict",
             reason: "score_provenance_invalid",
