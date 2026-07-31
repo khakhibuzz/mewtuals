@@ -429,7 +429,7 @@ test("every allowed administrator action uses a bounded Radar mutation and adopt
       ["Mark no India fit", "No current India fit"],
     ] as const) {
       await fillReviewReason(page, reason);
-      await page.getByRole("button", { name: label }).click();
+      await page.getByRole("button", { name: label, exact: true }).click();
       await expect(page.getByRole("status")).toContainText("Signal updated.");
     }
 
