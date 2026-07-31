@@ -572,6 +572,92 @@ describe("Global Radar signal actions", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Evidence appended.");
   });
 
+  it("appends momentum evidence for an explicitly selected safe contributor", async () => {
+    const user = userEvent.setup();
+    const secondContributorId = "00000000-0000-4000-8000-000000000021";
+    const associatedOrganisations = [
+      {
+        id: RADAR_ASSOCIATED_ENTITY_ID,
+        canonicalName: "Fictional Partner Example",
+        revision: 8,
+      },
+      {
+        id: secondContributorId,
+        canonicalName: "Second Momentum Contributor",
+        revision: 11,
+      },
+    ];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "appended",
+        revision: 5,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "found",
+        detail: globalRadarDetailFixture({
+          signalClass: "ecosystem_momentum",
+          revision: 5,
+          includePrimaryOrganisation: false,
+          allowedActions: ["append_evidence"],
+          associatedOrganisations,
+          evidenceEntityId: secondContributorId,
+        }),
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderDetail({
+      signalClass: "ecosystem_momentum",
+      includePrimaryOrganisation: false,
+      allowedActions: ["append_evidence"],
+      associatedOrganisations,
+    });
+
+    const evidenceForm = screen.getByRole("group", {
+      name: "Append public evidence",
+    });
+    const owner = within(evidenceForm).getByLabelText("Evidence owner");
+    expect(within(owner).getByRole("option", {
+      name: "Select a contributor",
+    })).toHaveValue("");
+    expect(within(owner).getByRole("option", {
+      name: "Fictional Partner Example",
+    })).toHaveValue(RADAR_ASSOCIATED_ENTITY_ID);
+    expect(within(owner).getByRole("option", {
+      name: "Second Momentum Contributor",
+    })).toHaveValue(secondContributorId);
+    await user.selectOptions(owner, secondContributorId);
+
+    const requiredFields: [string, string][] = [
+      ["Evidence reason", "Attribute the public evidence to its contributor."],
+      ["Source URL", "https://second.example/momentum"],
+      ["Canonical source URL", "https://second.example/momentum"],
+      ["Source name", "Second contributor direction"],
+      ["Source type", "official_direction_page"],
+      ["Source language", "en"],
+      ["Source country", "United States"],
+      ["Public claim", "The contributor published an ecosystem direction."],
+      ["Evidence English summary", "The contributor published an ecosystem direction."],
+      ["Observed at (ISO timestamp)", "2026-07-31T04:30:00.000Z"],
+      ["Evidence confidence", "90"],
+      ["Supported field paths", "momentumMetrics.taxonomyConsistency"],
+    ];
+    for (const [name, value] of requiredFields) {
+      await user.type(within(evidenceForm).getByLabelText(name), value);
+    }
+    await user.click(within(evidenceForm).getByRole("button", {
+      name: "Append evidence",
+    }));
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+    ) as { evidence: { globalEntityId: string | null } };
+    expect(body.evidence.globalEntityId).toBe(secondContributorId);
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Evidence appended.",
+    );
+  });
+
   it("requires preservation confirmation and merges without delete semantics", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({

@@ -15,6 +15,7 @@ import {
 } from "./GlobalRadarPromotionActions";
 import {
   adminSection,
+  associatedOrganisations,
   booleanValue,
   collectionItems,
   detailSection,
@@ -321,6 +322,10 @@ function ExpiryAction({ detail, pending, run, invalid }: ActionFormProps) {
 
 function EvidenceAction({ detail, pending, run, invalid }: ActionFormProps) {
   const organisation = primaryOrganisation(detail);
+  const momentumOwners = detail.signalClass === "ecosystem_momentum"
+    ? associatedOrganisations(detail, "contributor")
+    : [];
+  const [selectedMomentumOwnerId, setSelectedMomentumOwnerId] = useState("");
   const [form, setForm] = useState({
     reason: "", sourceUrl: "", canonicalSourceUrl: "", sourceName: "", sourceType: "",
     sourceLanguage: "", sourceCountry: "", sourceFamily: globalRadarSourceFamilies[0],
@@ -334,12 +339,18 @@ function EvidenceAction({ detail, pending, run, invalid }: ActionFormProps) {
     const confidence = Number(form.evidenceConfidence);
     const translation = form.translationConfidence.trim() ? Number(form.translationConfidence) : null;
     const supportedFieldPaths = splitValues(form.supportedFieldPaths);
+    const globalEntityId = detail.signalClass === "ecosystem_momentum"
+      ? momentumOwners.some(({ id }) => id === selectedMomentumOwnerId)
+        ? selectedMomentumOwnerId
+        : null
+      : optionalText(organisation.id);
     if (!form.reason.trim() || !form.sourceUrl.trim() || !form.canonicalSourceUrl.trim() ||
         !form.sourceName.trim() || !form.sourceType.trim() || !form.sourceLanguage.trim() ||
         !form.sourceCountry.trim() || !form.claim.trim() || !form.englishSummary.trim() ||
         !form.observedAt.trim() || !Number.isInteger(confidence) || confidence < 0 || confidence > 100 ||
         (translation !== null && (!Number.isInteger(translation) || translation < 0 || translation > 100)) ||
-        supportedFieldPaths.length === 0) {
+        supportedFieldPaths.length === 0 ||
+        (detail.signalClass === "ecosystem_momentum" && !globalEntityId)) {
       invalid("Review every required public-evidence field before appending.");
       return;
     }
@@ -353,7 +364,7 @@ function EvidenceAction({ detail, pending, run, invalid }: ActionFormProps) {
       body: {
         ...mutationEnvelope(detail, form.reason),
         evidence: {
-          globalEntityId: optionalText(organisation.id),
+          globalEntityId,
           sourceUrl: form.sourceUrl.trim(),
           canonicalSourceUrl: form.canonicalSourceUrl.trim(),
           sourceName: form.sourceName.trim(),
@@ -379,7 +390,30 @@ function EvidenceAction({ detail, pending, run, invalid }: ActionFormProps) {
     });
   }
   const input = (label: string, key: keyof typeof form, maximum: number, textarea = false) => <label><span>{label}</span>{textarea ? <textarea maxLength={maximum} onChange={(event) => set(key, event.target.value)} value={String(form[key])} /> : <input maxLength={maximum} onChange={(event) => set(key, event.target.value)} value={String(form[key])} />}</label>;
-  return <form className={styles.actionForm} onSubmit={(event) => { event.preventDefault(); submit(); }}><fieldset disabled={pending}><legend>Append public evidence</legend>{input("Evidence reason", "reason", 2_000, true)}{input("Source URL", "sourceUrl", 2_048)}{input("Canonical source URL", "canonicalSourceUrl", 2_048)}{input("Source name", "sourceName", 200)}{input("Source type", "sourceType", 100)}{input("Source language", "sourceLanguage", 35)}{input("Source country", "sourceCountry", 100)}<label><span>Source family</span><select onChange={(event) => set("sourceFamily", event.target.value)} value={String(form.sourceFamily)}>{globalRadarSourceFamilies.map((family) => <option key={family} value={family}>{displayLabel(family)}</option>)}</select></label>{input("Public claim", "claim", 1_000, true)}{input("Source excerpt", "sourceExcerpt", 500, true)}{input("Evidence English summary", "englishSummary", 2_000, true)}{input("Published at (ISO timestamp)", "publishedAt", 35)}{input("Observed at (ISO timestamp)", "observedAt", 35)}<label><span>Evidence confidence</span><input max={100} min={0} onChange={(event) => set("evidenceConfidence", event.target.value)} type="number" value={String(form.evidenceConfidence)} /></label><label><span>Translation confidence</span><input max={100} min={0} onChange={(event) => set("translationConfidence", event.target.value)} type="number" value={String(form.translationConfidence)} /></label>{input("Supported field paths", "supportedFieldPaths", 5_000, true)}<div className={styles.checkboxGrid}>{([[
+  const ownerControl = detail.signalClass === "ecosystem_momentum" ? (
+    <label>
+      <span>Evidence owner</span>
+      <select
+        onChange={(event) => setSelectedMomentumOwnerId(event.target.value)}
+        required
+        value={selectedMomentumOwnerId}
+      >
+        <option value="">Select a contributor</option>
+        {momentumOwners.map((owner) => (
+          <option key={String(owner.id)} value={String(owner.id)}>
+            {text(owner.canonicalName)}
+          </option>
+        ))}
+      </select>
+    </label>
+  ) : (
+    <p>
+      Evidence owner (locked): {optionalText(organisation.id)
+        ? `${text(organisation.canonicalName)} · ${text(organisation.id)}`
+        : "No primary organisation recorded"}
+    </p>
+  );
+  return <form className={styles.actionForm} onSubmit={(event) => { event.preventDefault(); submit(); }}><fieldset disabled={pending}><legend>Append public evidence</legend>{ownerControl}{input("Evidence reason", "reason", 2_000, true)}{input("Source URL", "sourceUrl", 2_048)}{input("Canonical source URL", "canonicalSourceUrl", 2_048)}{input("Source name", "sourceName", 200)}{input("Source type", "sourceType", 100)}{input("Source language", "sourceLanguage", 35)}{input("Source country", "sourceCountry", 100)}<label><span>Source family</span><select onChange={(event) => set("sourceFamily", event.target.value)} value={String(form.sourceFamily)}>{globalRadarSourceFamilies.map((family) => <option key={family} value={family}>{displayLabel(family)}</option>)}</select></label>{input("Public claim", "claim", 1_000, true)}{input("Source excerpt", "sourceExcerpt", 500, true)}{input("Evidence English summary", "englishSummary", 2_000, true)}{input("Published at (ISO timestamp)", "publishedAt", 35)}{input("Observed at (ISO timestamp)", "observedAt", 35)}<label><span>Evidence confidence</span><input max={100} min={0} onChange={(event) => set("evidenceConfidence", event.target.value)} type="number" value={String(form.evidenceConfidence)} /></label><label><span>Translation confidence</span><input max={100} min={0} onChange={(event) => set("translationConfidence", event.target.value)} type="number" value={String(form.translationConfidence)} /></label>{input("Supported field paths", "supportedFieldPaths", 5_000, true)}<div className={styles.checkboxGrid}>{([[
     "Primary source", "isPrimarySource"], ["Syndicated source", "isSyndicated"], ["Supports direct demand", "supportsDirectDemand"], ["Supports India relevance", "supportsIndiaRelevance"],
   ] as const).map(([label, key]) => <label className={styles.confirmation} key={key}><input checked={Boolean(form[key])} onChange={(event) => set(key, event.target.checked)} type="checkbox" /><span>{label}</span></label>)}</div><button type="submit">Append evidence</button></fieldset></form>;
 }

@@ -6,6 +6,7 @@ import { GlobalRadarSignalDetail } from "../app/components/global-radar/GlobalRa
 import { getGlobalRadarApplication } from "../app/server/global-radar";
 import { getCurrentSession } from "../app/server/session";
 import {
+  RADAR_ASSOCIATED_ENTITY_ID,
   RADAR_DETAIL_HEADINGS,
   RADAR_SIGNAL_ID,
   globalRadarDetailFixture,
@@ -138,6 +139,39 @@ describe("GlobalRadarSignalDetail", () => {
     );
     expect(responsePath.querySelector('a[href^="mailto:"]')).toBeNull();
     expect(responsePath).not.toHaveTextContent(/contact now|apply now|send/i);
+  });
+
+  it("displays momentum evidence ownership from the safe contributor detail", () => {
+    const secondContributorId = "00000000-0000-4000-8000-000000000021";
+    render(
+      <GlobalRadarSignalDetail
+        initialDetail={globalRadarDetailFixture({
+          signalClass: "ecosystem_momentum",
+          includePrimaryOrganisation: false,
+          associatedOrganisations: [
+            {
+              id: RADAR_ASSOCIATED_ENTITY_ID,
+              canonicalName: "Fictional Partner Example",
+              revision: 8,
+            },
+            {
+              id: secondContributorId,
+              canonicalName: "Second Momentum Contributor",
+              revision: 11,
+            },
+          ],
+          evidenceEntityId: secondContributorId,
+        }) as never}
+        returnTo="/admin/global-demand-radar/momentum"
+      />,
+    );
+
+    const evidence = screen.getByRole("region", {
+      name: "Supporting evidence",
+    });
+    expect(evidence).toHaveTextContent(
+      `Evidence owner: Second Momentum Contributor · ${secondContributorId}`,
+    );
   });
 
   it("renders nested bounded specification, regulatory, and logistics values without raw JSON", () => {

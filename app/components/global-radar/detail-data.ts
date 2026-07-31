@@ -71,6 +71,23 @@ export function primaryOrganisation(detail: GlobalRadarSignalDetail) {
   return record(detailSection(detail, "organisation").primary);
 }
 
+export function associatedOrganisations(
+  detail: GlobalRadarSignalDetail,
+  role?: string,
+) {
+  return collectionItems(detailSection(detail, "organisation").associated)
+    .filter((item) => role === undefined || item.role === role)
+    .map((item) => record(item.organisation))
+    .filter(
+      (organisation, index, organisations) =>
+        typeof organisation.id === "string" &&
+        typeof organisation.canonicalName === "string" &&
+        organisations.findIndex(
+          (candidate) => candidate.id === organisation.id,
+        ) === index,
+    );
+}
+
 export function adminSection(detail: GlobalRadarSignalDetail) {
   return detailSection(detail, "admin_notes_and_actions");
 }

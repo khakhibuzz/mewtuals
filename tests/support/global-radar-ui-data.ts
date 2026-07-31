@@ -134,6 +134,7 @@ type DetailOptions = {
   }>[];
   promotionEntityId?: string;
   promotedEntityRevision?: number;
+  evidenceEntityId?: string | null;
   notes?: readonly Record<string, unknown>[];
 };
 
@@ -393,6 +394,10 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
         truncated: false,
         items: [{
           id: "00000000-0000-4000-8000-000000000014",
+          globalEntityId:
+            options.evidenceEntityId === undefined
+              ? RADAR_ENTITY_ID
+              : options.evidenceEntityId,
           sourceUrl: "https://fictional-robotics.example/suppliers",
           canonicalSourceUrl: "https://fictional-robotics.example/suppliers",
           sourceName: "Official supplier notice",

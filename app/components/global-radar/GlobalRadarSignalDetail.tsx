@@ -7,6 +7,7 @@ import { useState } from "react";
 import { GlobalRadarActions } from "./GlobalRadarActions";
 import {
   adminSection,
+  associatedOrganisations,
   collectionItems,
   detailSection,
   displayLabel,
@@ -322,7 +323,32 @@ function Compliance({ detail }: { detail: GlobalRadarSignalDetailDto }) {
 
 function SupportingEvidence({ detail }: { detail: GlobalRadarSignalDetailDto }) {
   const items = collectionItems(detailSection(detail, "supporting_evidence"));
-  return items.length > 0 ? <ul className={styles.evidenceList}>{items.map((item) => <li key={text(item.id)}><a href={text(item.sourceUrl)} rel="noreferrer" target="_blank">{text(item.sourceName)}</a><p>{displayLabel(text(item.sourceType))} · {text(item.sourceCountry)} · confidence {numberValue(item.evidenceConfidence)}</p><Values values={stringValues(item.supportedFieldPaths)} /></li>)}</ul> : <p>No supporting evidence recorded.</p>;
+  const primary = primaryOrganisation(detail);
+  const safeOrganisations = [
+    ...(typeof primary.id === "string" ? [primary] : []),
+    ...associatedOrganisations(detail),
+  ];
+  return items.length > 0 ? (
+    <ul className={styles.evidenceList}>
+      {items.map((item) => {
+        const ownerId = optionalText(item.globalEntityId);
+        const owner = safeOrganisations.find(({ id }) => id === ownerId);
+        const ownerLabel = ownerId
+          ? `${owner ? text(owner.canonicalName) : "Unavailable in current safe detail"} · ${ownerId}`
+          : "Signal-wide evidence";
+        return (
+          <li key={text(item.id)}>
+            <a href={text(item.sourceUrl)} rel="noreferrer" target="_blank">
+              {text(item.sourceName)}
+            </a>
+            <p>Evidence owner: {ownerLabel}</p>
+            <p>{displayLabel(text(item.sourceType))} · {text(item.sourceCountry)} · confidence {numberValue(item.evidenceConfidence)}</p>
+            <Values values={stringValues(item.supportedFieldPaths)} />
+          </li>
+        );
+      })}
+    </ul>
+  ) : <p>No supporting evidence recorded.</p>;
 }
 
 function OriginalLanguage({ detail }: { detail: GlobalRadarSignalDetailDto }) {
