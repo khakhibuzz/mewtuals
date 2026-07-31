@@ -1168,10 +1168,9 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
       run: { id: partialClaim.runId, status: "partial" },
     });
     const graphAfterLateCompletionReplay = await radarGraphCounts();
-    expect(graphAfterLateCompletionReplay).toEqual({
-      ...graphBeforeLateCompletionReplay,
-      updates: graphBeforeLateCompletionReplay.updates + 1,
-    });
+    expect(graphAfterLateCompletionReplay).toEqual(
+      graphBeforeLateCompletionReplay,
+    );
     await expect(
       radar.run.complete(radarWorker, {
         runId: partialClaim.runId,
@@ -1182,7 +1181,7 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
       outcome: "replayed",
       run: { id: partialClaim.runId, status: "partial" },
     });
-    expect(await radarGraphCounts()).toEqual(graphAfterLateCompletionReplay);
+    expect(await radarGraphCounts()).toEqual(graphBeforeLateCompletionReplay);
   });
 });
 

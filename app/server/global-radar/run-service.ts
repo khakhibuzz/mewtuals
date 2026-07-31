@@ -539,11 +539,7 @@ export function createGlobalRadarRunService(
       batchFingerprint,
     });
     if (replay.outcome === "replayed") {
-      const replayedAt = now();
-      if (!validDate(replayedAt)) return { outcome: "invalid" as const };
-      return (await runMaintenance(replayedAt))
-        ? mutationResult(replay)
-        : maintenanceConflict(replay.run);
+      return mutationResult(replay);
     }
     if (replay.outcome !== "not_terminal") return mutationResult(replay);
     const completedAt = now();
@@ -576,7 +572,7 @@ export function createGlobalRadarRunService(
       batch,
     });
     if (
-      (completed.outcome === "completed" || completed.outcome === "replayed") &&
+      completed.outcome === "completed" &&
       !(await runMaintenance(completedAt))
     ) {
       return maintenanceConflict(completed.run);
