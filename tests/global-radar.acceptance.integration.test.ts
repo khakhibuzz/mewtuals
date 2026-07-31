@@ -1167,7 +1167,22 @@ describe("Global Demand Radar PostgreSQL acceptance", () => {
       outcome: "replayed",
       run: { id: partialClaim.runId, status: "partial" },
     });
-    expect(await radarGraphCounts()).toEqual(graphBeforeLateCompletionReplay);
+    const graphAfterLateCompletionReplay = await radarGraphCounts();
+    expect(graphAfterLateCompletionReplay).toEqual({
+      ...graphBeforeLateCompletionReplay,
+      updates: graphBeforeLateCompletionReplay.updates + 1,
+    });
+    await expect(
+      radar.run.complete(radarWorker, {
+        runId: partialClaim.runId,
+        leaseToken: partialClaim.leaseToken,
+        batch: partialBatch,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "replayed",
+      run: { id: partialClaim.runId, status: "partial" },
+    });
+    expect(await radarGraphCounts()).toEqual(graphAfterLateCompletionReplay);
   });
 });
 
