@@ -408,6 +408,30 @@ function detailWithSectionData(
   };
 }
 
+function safeEvidenceCitation(
+  id: string,
+  globalEntityId: string | null,
+) {
+  return {
+    id,
+    globalEntityId,
+    sourceUrl: "https://fictional.example/public-evidence",
+    canonicalSourceUrl: "https://fictional.example/public-evidence",
+    sourceName: "Fictional public evidence",
+    sourceType: "official_update",
+    sourceCountry: "China",
+    sourceFamily: "official_company_material",
+    publishedAt: null,
+    observedAt: "2026-07-31T05:00:00.000Z",
+    evidenceConfidence: 85,
+    isPrimarySource: true,
+    isSyndicated: false,
+    supportsDirectDemand: true,
+    supportsIndiaRelevance: false,
+    supportedFieldPaths: ["signal.factualSummary"],
+  };
+}
+
 function safeRun() {
   return {
     id: REQUEST_ID,
@@ -1142,6 +1166,41 @@ describe("Global Radar administrator HTTP adapters", () => {
       latest: safeDetail(),
     });
     expect(JSON.stringify(body)).not.toMatch(/private|SQL|rawPayload/);
+  });
+
+  it("preserves nullable evidence ownership through the administrator detail route", async () => {
+    const detail = detailWithSectionData("supporting_evidence", {
+      total: 2,
+      truncated: false,
+      items: [
+        safeEvidenceCitation(
+          "00000000-0000-4000-8000-000000000221",
+          ENTITY_ID,
+        ),
+        safeEvidenceCitation(
+          "00000000-0000-4000-8000-000000000222",
+          null,
+        ),
+      ],
+    });
+    const service = adminService({
+      getSignalDetail: vi.fn(async () => ({ outcome: "found", detail })),
+    });
+    const response = await createGlobalRadarAdminSignalGetHandler(
+      dependencies(service),
+    )(
+      new Request(
+        `https://mewtuals.com/api/admin/global-demand-radar/signals/${SIGNAL_ID}`,
+      ),
+      signalContext(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(responseBody(response)).resolves.toEqual({
+      ok: true,
+      outcome: "found",
+      detail,
+    });
   });
 
   it("recursively allowlists every nested administrator response DTO", async () => {

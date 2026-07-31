@@ -292,6 +292,7 @@ const requirementSchema = z.object({
 
 const evidenceCitationSchema = z.object({
   id: uuidSchema,
+  globalEntityId: uuidSchema.nullable(),
   sourceUrl: boundedText(2_048),
   canonicalSourceUrl: boundedText(2_048),
   sourceName: boundedText(200),

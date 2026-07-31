@@ -494,6 +494,10 @@ test("every allowed administrator action uses a bounded Radar mutation and adopt
     await page.getByRole("button", { name: "Promote to India Discovery" }).click();
     await expect(page.getByRole("status")).toContainText("Promoted to India Discovery.");
 
+    await expect(page.getByText(
+      `Promotion entity (locked): ${primaryEntityName} · ${primaryEntityId}`,
+    )).toBeVisible();
+
     await page.getByLabel("Reversal reason").fill("Reverse the fictional intake only");
     await page.getByLabel("Confirm Discovery candidate preservation").check();
     await page.getByRole("button", { name: "Reverse promotion" }).click();
@@ -1108,6 +1112,7 @@ function browserDetail(
               status === "promoted"
                 ? {
                     id: randomUUID(),
+                    globalEntityId: primaryEntityId,
                     status: "active",
                     discoveryCandidateId: randomUUID(),
                     revisionContext: {
