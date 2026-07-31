@@ -39,6 +39,7 @@ import {
   globalSignalUpdates,
 } from "../global-radar-schema";
 import type { GlobalEntity, GlobalRadarSignal } from "../types";
+import { createGlobalRadarDedupeLockKey } from "./global-radar-admin-classification-transaction";
 
 type GlobalRadarTransaction = Parameters<
   Parameters<MewtualsDatabase["transaction"]>[0]
@@ -46,6 +47,7 @@ type GlobalRadarTransaction = Parameters<
 
 const ENTITY_IDENTITY_LOCK_NAMESPACE =
   "global-radar:entity-identity:v1:" as const;
+const MAX_GLOBAL_RADAR_MERGE_CHAIN_HOPS = 32;
 
 export type GlobalRadarPersistenceConflictReason =
   | "entity_identity_conflict"
@@ -865,6 +867,103 @@ async function appendWorkerUpdate(
     .onConflictDoNothing();
 }
 
+async function resolveCurrentSignalByDedupeIdentity(
+  transaction: GlobalRadarTransaction,
+  input: {
+    dedupeVersion: string;
+    dedupeKey: string;
+    signalClass: GlobalRadarSignal["signalClass"];
+  },
+): Promise<GlobalRadarSignal | null> {
+  await transaction.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${createGlobalRadarDedupeLockKey(input.dedupeKey)}, 0))`,
+  );
+  const matches = await transaction
+    .select()
+    .from(globalRadarSignals)
+    .where(
+      and(
+        eq(globalRadarSignals.dedupeVersion, input.dedupeVersion),
+        eq(globalRadarSignals.dedupeKey, input.dedupeKey),
+      ),
+    )
+    .orderBy(asc(globalRadarSignals.id));
+  if (matches.length === 0) return null;
+
+  const observedRows = new Map(matches.map((row) => [row.id, row]));
+  const loadObservedRow = async (id: string): Promise<GlobalRadarSignal> => {
+    const cached = observedRows.get(id);
+    if (cached) return cached;
+    const [row] = await transaction
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, id))
+      .limit(1);
+    if (!row) throw new GlobalRadarPersistenceConflict("invalid_input");
+    observedRows.set(row.id, row);
+    return row;
+  };
+  for (const match of matches) {
+    const path = new Set<string>();
+    let current = match;
+    for (let hops = 0; ; hops += 1) {
+      if (path.has(current.id)) {
+        throw new GlobalRadarPersistenceConflict("invalid_input");
+      }
+      path.add(current.id);
+      if (current.mergedIntoSignalId === null) break;
+      if (hops === MAX_GLOBAL_RADAR_MERGE_CHAIN_HOPS) {
+        throw new GlobalRadarPersistenceConflict("invalid_input");
+      }
+      current = await loadObservedRow(current.mergedIntoSignalId);
+    }
+  }
+
+  const lockedRows = await transaction
+    .select()
+    .from(globalRadarSignals)
+    .where(inArray(globalRadarSignals.id, [...observedRows.keys()]))
+    .orderBy(asc(globalRadarSignals.id))
+    .for("update");
+  if (lockedRows.length !== observedRows.size) {
+    throw new GlobalRadarPersistenceConflict("invalid_input");
+  }
+  const lockedById = new Map(lockedRows.map((row) => [row.id, row]));
+  const roots = new Map<string, GlobalRadarSignal>();
+  for (const match of matches) {
+    const lockedMatch = lockedById.get(match.id);
+    if (
+      !lockedMatch ||
+      lockedMatch.dedupeVersion !== input.dedupeVersion ||
+      lockedMatch.dedupeKey !== input.dedupeKey
+    ) {
+      throw new GlobalRadarPersistenceConflict("invalid_input");
+    }
+    const path = new Set<string>();
+    let current = lockedMatch;
+    for (let hops = 0; ; hops += 1) {
+      if (path.has(current.id) || current.signalClass !== input.signalClass) {
+        throw new GlobalRadarPersistenceConflict("invalid_input");
+      }
+      path.add(current.id);
+      if (current.mergedIntoSignalId === null) {
+        roots.set(current.id, current);
+        break;
+      }
+      if (hops === MAX_GLOBAL_RADAR_MERGE_CHAIN_HOPS) {
+        throw new GlobalRadarPersistenceConflict("invalid_input");
+      }
+      const next = lockedById.get(current.mergedIntoSignalId);
+      if (!next) throw new GlobalRadarPersistenceConflict("invalid_input");
+      current = next;
+    }
+  }
+  if (roots.size !== 1) {
+    throw new GlobalRadarPersistenceConflict("invalid_input");
+  }
+  return roots.values().next().value ?? null;
+}
+
 async function persistSignals(
   transaction: GlobalRadarTransaction,
   batch: CanonicalPersistableGlobalRadarBatch,
@@ -885,18 +984,11 @@ async function persistSignals(
       entityIds,
       resolvedDedupeKey,
     );
-    const [existing] = await transaction
-      .select()
-      .from(globalRadarSignals)
-      .where(
-        and(
-          eq(globalRadarSignals.dedupeVersion, GLOBAL_RADAR_DEDUPE_VERSION),
-          eq(globalRadarSignals.dedupeKey, proposed.dedupeKey),
-          isNull(globalRadarSignals.mergedIntoSignalId),
-        ),
-      )
-      .for("update")
-      .limit(1);
+    const existing = await resolveCurrentSignalByDedupeIdentity(transaction, {
+      dedupeVersion: GLOBAL_RADAR_DEDUPE_VERSION,
+      dedupeKey: resolvedDedupeKey,
+      signalClass: signal.signalClass,
+    });
     if (existing) {
       const observedAt = new Date(signal.observedAt);
       const graph = await persistSignalGraph(

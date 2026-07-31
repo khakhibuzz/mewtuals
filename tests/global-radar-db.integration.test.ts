@@ -6294,6 +6294,190 @@ describe("PostgreSQL Global Radar transactional administrator merge", () => {
     ).toHaveLength(2);
   });
 
+  it("keeps both historical dedupe identities attached to the survivor after a real merge", async () => {
+    async function persistObservation(input: {
+      suffix: string;
+      claimedAt: string;
+      observedAt: string;
+      sourceUrl: string;
+    }) {
+      const claimedAt = new Date(input.claimedAt);
+      await repository.queueRun(queueInput(input.suffix, { now: claimedAt }));
+      const claim = await repository.claimRun({ now: claimedAt });
+      if (claim.outcome !== "claimed") {
+        throw new Error(`Rediscovery fixture ${input.suffix} was not claimed.`);
+      }
+      const batch = validPersistenceBatch(claim.run.id, {
+        observedAt: input.observedAt,
+        sourceUrl: input.sourceUrl,
+        externalSignalId: `signal-${input.suffix}`,
+      });
+      const completed = await repository.completeRun({
+        ...completionInput(
+          claim.run.id,
+          claim.privateClaim.leaseToken,
+          new Date(claimedAt.getTime() + 60_000),
+        ),
+        submissionHash: batch.canonicalSubmissionHash,
+        batch,
+      });
+      expect(completed).toMatchObject({ outcome: "completed" });
+      return { batch, claim, completed };
+    }
+
+    const survivorSource = "https://acme.example/public-request";
+    const duplicateSource = "https://acme.example/duplicate-public-request";
+    const first = await persistObservation({
+      suffix: "merge-alias-survivor",
+      claimedAt: "2026-07-30T16:00:00.000Z",
+      observedAt: "2026-07-30T16:00:30.000Z",
+      sourceUrl: survivorSource,
+    });
+    const second = await persistObservation({
+      suffix: "merge-alias-duplicate",
+      claimedAt: "2026-07-30T16:10:00.000Z",
+      observedAt: "2026-07-30T16:10:30.000Z",
+      sourceUrl: duplicateSource,
+    });
+    const initialSignals = await db
+      .select()
+      .from(globalRadarSignals);
+    expect(initialSignals).toHaveLength(2);
+    const survivor = initialSignals.find(
+      ({ dedupeKey }) => dedupeKey === first.batch.signals[0]!.dedupeKey,
+    );
+    const duplicate = initialSignals.find(
+      ({ dedupeKey }) => dedupeKey === second.batch.signals[0]!.dedupeKey,
+    );
+    if (!survivor || !duplicate) {
+      throw new Error("Real merge alias fixture signals were not persisted.");
+    }
+    expect(survivor.id).not.toBe(duplicate.id);
+
+    await expect(
+      adminRepository.mergeSignals(input(survivor.id, duplicate.id, "403")),
+    ).resolves.toMatchObject({
+      outcome: "merged",
+      survivor: { signal: { id: survivor.id, revision: 1 } },
+      duplicate: {
+        signal: {
+          id: duplicate.id,
+          mergedIntoSignalId: survivor.id,
+          revision: 1,
+        },
+      },
+    });
+
+    const originalGraphIds = async (signalId: string) => {
+      const [requirements, evidence, updates] = await Promise.all([
+        db
+          .select({ id: globalSignalRequirements.id })
+          .from(globalSignalRequirements)
+          .where(eq(globalSignalRequirements.signalId, signalId)),
+        db
+          .select({ id: globalSignalEvidence.id })
+          .from(globalSignalEvidence)
+          .where(eq(globalSignalEvidence.signalId, signalId)),
+        db
+          .select({ id: globalSignalUpdates.id })
+          .from(globalSignalUpdates)
+          .where(eq(globalSignalUpdates.signalId, signalId)),
+      ]);
+      return {
+        requirements: requirements.map(({ id }) => id),
+        evidence: evidence.map(({ id }) => id),
+        updates: updates.map(({ id }) => id),
+      };
+    };
+    const survivorGraph = await originalGraphIds(survivor.id);
+    const duplicateGraph = await originalGraphIds(duplicate.id);
+
+    const rediscoveredSurvivor = await persistObservation({
+      suffix: "merge-alias-survivor-rediscovered",
+      claimedAt: "2026-08-01T16:00:00.000Z",
+      observedAt: "2026-08-01T16:00:30.000Z",
+      sourceUrl: survivorSource,
+    });
+    const rediscoveredDuplicate = await persistObservation({
+      suffix: "merge-alias-duplicate-rediscovered",
+      claimedAt: "2026-08-02T16:00:00.000Z",
+      observedAt: "2026-08-02T16:00:30.000Z",
+      sourceUrl: duplicateSource,
+    });
+    expect(rediscoveredSurvivor.completed).toMatchObject({
+      run: { numberUpdated: 1, numberNew: 0 },
+    });
+    expect(rediscoveredDuplicate.completed).toMatchObject({
+      run: { numberUpdated: 1, numberNew: 0 },
+    });
+
+    const finalSignals = await db
+      .select()
+      .from(globalRadarSignals);
+    expect(finalSignals).toHaveLength(2);
+    expect(finalSignals.find(({ id }) => id === survivor.id)).toMatchObject({
+      dedupeKey: first.batch.signals[0]!.dedupeKey,
+      mergedIntoSignalId: null,
+      mostRecentRunId: rediscoveredDuplicate.claim.run.id,
+      lastSeenAt: new Date("2026-08-02T16:00:30.000Z"),
+      revision: 1,
+    });
+    expect(finalSignals.find(({ id }) => id === duplicate.id)).toMatchObject({
+      dedupeKey: second.batch.signals[0]!.dedupeKey,
+      mergedIntoSignalId: survivor.id,
+      mostRecentRunId: second.claim.run.id,
+      lastSeenAt: new Date("2026-07-30T16:10:30.000Z"),
+      revision: 1,
+    });
+
+    const finalSurvivorGraph = await originalGraphIds(survivor.id);
+    const finalDuplicateGraph = await originalGraphIds(duplicate.id);
+    for (const [graphName, ids] of Object.entries(survivorGraph)) {
+      expect(finalSurvivorGraph[graphName as keyof typeof survivorGraph]).toEqual(
+        expect.arrayContaining(ids),
+      );
+    }
+    expect(finalDuplicateGraph).toEqual(duplicateGraph);
+  });
+
+  it("fails closed when a corrupted merge alias chain contains a cycle", async () => {
+    const { survivor, duplicateId } = await mergeFixture();
+    await expect(
+      adminRepository.mergeSignals(input(survivor.id, duplicateId, "404")),
+    ).resolves.toMatchObject({ outcome: "merged" });
+    await db
+      .update(globalRadarSignals)
+      .set({ mergedIntoSignalId: duplicateId })
+      .where(eq(globalRadarSignals.id, survivor.id));
+    const before = await graphRowCounts();
+
+    const now = new Date("2026-08-01T18:00:00.000Z");
+    await repository.queueRun(queueInput("merge-alias-cycle", { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") {
+      throw new Error("Corrupt merge alias fixture was not claimed.");
+    }
+    const batch = validPersistenceBatch(claim.run.id, {
+      observedAt: "2026-08-01T18:00:30.000Z",
+    });
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          claim.run.id,
+          claim.privateClaim.leaseToken,
+          new Date(now.getTime() + 60_000),
+        ),
+        submissionHash: batch.canonicalSubmissionHash,
+        batch,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "invalid_input",
+    });
+    expect(await graphRowCounts()).toEqual(before);
+    expect(await db.select().from(globalRadarSignals)).toHaveLength(2);
+  });
+
   it("locks lexical UUID order so opposite-order concurrent merges have one winner without deadlock", async () => {
     const { survivor, duplicateId } = await mergeFixture();
     const results = await Promise.all([
