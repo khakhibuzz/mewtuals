@@ -343,6 +343,7 @@ export {
   MAX_SCORE_COMPONENT_EVIDENCE_CITATIONS,
   MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS,
   deriveScoreComponentEvidenceAssociations,
+  directDemandFreshnessEvidencePaths,
   directDemandScoreEvidenceComponents,
   directDemandWorkerScoredComponents,
   hasCompleteScoreComponentEvidenceAssociations,
@@ -354,10 +355,12 @@ export {
   momentumScoreEvidenceComponents,
   precursorScoreEvidenceComponents,
   precursorWorkerScoredComponents,
+  selectDirectDemandFreshnessEvidencePath,
 } from "./score-evidence";
 
 export type {
   DirectDemandWorkerScoredComponent,
+  DirectDemandFreshnessEvidencePath,
   MomentumWorkerScoredMetric,
   MomentumWorkerScoredMetricEvidencePath,
   PrecursorWorkerScoredComponent,

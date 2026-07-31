@@ -24,6 +24,7 @@ import {
   missingMomentumWorkerScoredMetricEvidencePaths,
   missingWorkerScoredComponentEvidencePaths,
   resolveDirectDemandExpiryStatus,
+  selectDirectDemandFreshnessEvidencePath,
   signalClassLookup,
   transitionSignal,
   type IndiaRelevanceType,
@@ -1268,6 +1269,7 @@ export function createGlobalRadarAdminRepository(
               sourceFamily: globalSignalEvidence.sourceFamily,
               publishedAt: globalSignalEvidence.publishedAt,
               observedAt: globalSignalEvidence.observedAt,
+              evidenceConfidence: globalSignalEvidence.evidenceConfidence,
               isPrimarySource: globalSignalEvidence.isPrimarySource,
               isSyndicated: globalSignalEvidence.isSyndicated,
               supportsDirectDemand: globalSignalEvidence.supportsDirectDemand,
@@ -1309,12 +1311,41 @@ export function createGlobalRadarAdminRepository(
             signalClass: classification.signalClass,
             signalType: classification.signalType,
             indiaRelevanceType: signal.indiaRelevanceType,
+            freshnessEvidencePath:
+              classification.signalClass === "direct_demand"
+                ? selectDirectDemandFreshnessEvidencePath({
+                    announcedAt: signal.announcedAt?.toISOString() ?? null,
+                    effectiveFrom: signal.effectiveFrom?.toISOString() ?? null,
+                    evidence: evidence.map(({ publishedAt }) => ({
+                      publishedAt: publishedAt?.toISOString() ?? null,
+                    })),
+                  })
+                : undefined,
             components: classification.components,
             evidence: evidence.map(
-              ({ id, sourceUrl, sourceName, supportedFieldPaths }) => ({
+              ({
+                id,
+                globalEntityId,
+                sourceUrl,
+                sourceName,
+                evidenceConfidence,
+                publishedAt,
+                observedAt,
+                isPrimarySource,
+                isSyndicated,
+                sourceFamily,
+                supportedFieldPaths,
+              }) => ({
                 id,
                 sourceUrl,
                 sourceName,
+                contributorEntityId: globalEntityId,
+                evidenceConfidence,
+                publishedAt: publishedAt?.toISOString() ?? null,
+                observedAt: observedAt.toISOString(),
+                isPrimarySource,
+                isSyndicated,
+                sourceFamily,
                 supportedFieldPaths,
               }),
             ),
@@ -1487,7 +1518,6 @@ export function createGlobalRadarAdminRepository(
             and(
               eq(globalRadarSignals.dedupeVersion, signal.dedupeVersion),
               eq(globalRadarSignals.dedupeKey, dedupeKey),
-              isNull(globalRadarSignals.mergedIntoSignalId),
               sql`${globalRadarSignals.id} <> ${signal.id}`,
             ),
           )

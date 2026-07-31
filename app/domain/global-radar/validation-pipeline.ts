@@ -78,8 +78,10 @@ import {
   type RadarClock,
 } from "./scoring";
 import {
+  hasCompleteScoreComponentEvidenceAssociations,
   missingMomentumWorkerScoredMetricEvidencePaths,
   missingWorkerScoredComponentEvidencePaths,
+  selectDirectDemandFreshnessEvidencePath,
 } from "./score-evidence";
 import {
   assessComplianceReview,
@@ -1272,6 +1274,41 @@ function validateSignal(
     }
   }
   if (!score.valid) {
+    return Object.freeze({ valid: false, reason: "invalid_evidence" });
+  }
+  if (
+    proposal.signalClass !== "ecosystem_momentum" &&
+    !hasCompleteScoreComponentEvidenceAssociations({
+      signalClass: proposal.signalClass,
+      signalType:
+        proposal.signalClass === "direct_demand"
+          ? proposal.directDemandAsk.type
+          : proposal.precursorDevelopmentType,
+      indiaRelevanceType: indiaAssessment.relevanceType,
+      freshnessEvidencePath:
+        proposal.signalClass === "direct_demand"
+          ? selectDirectDemandFreshnessEvidencePath({
+              announcedAt: proposal.announcedAt,
+              effectiveFrom: proposal.effectiveFrom,
+              evidence: evidenceResult.items.map(({ evidence: item }) => item),
+            })
+          : undefined,
+      components: score.components,
+      evidence: evidenceResult.items.map(({ evidence: item }) => ({
+        id: item.evidenceFingerprint,
+        sourceUrl: item.sourceUrl,
+        sourceName: item.sourceName,
+        contributorEntityId: item.contributorEntityRef,
+        evidenceConfidence: item.evidenceConfidence,
+        publishedAt: item.publishedAt,
+        observedAt: item.observedAt,
+        isPrimarySource: item.isPrimarySource,
+        isSyndicated: item.isSyndicated,
+        sourceFamily: item.sourceFamily,
+        supportedFieldPaths: item.supportedFieldPaths,
+      })),
+    })
+  ) {
     return Object.freeze({ valid: false, reason: "invalid_evidence" });
   }
   const systemsContext = validatedSystemsContext(

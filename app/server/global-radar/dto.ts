@@ -1,6 +1,7 @@
 import {
   GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
   deriveScoreComponentEvidenceAssociations,
+  selectDirectDemandFreshnessEvidencePath,
 } from "../../domain/global-radar";
 
 export const GLOBAL_RADAR_DETAIL_SECTIONS = [
@@ -144,9 +145,9 @@ function safeJson(value: unknown, depth = 0): unknown {
   return output;
 }
 
-function childCollection(
+function childCollection<Item>(
   value: unknown,
-  mapItem: (item: unknown) => unknown,
+  mapItem: (item: unknown) => Item,
 ) {
   const source = readRecord(value, "child collection");
   if (!Array.isArray(source.items)) {
@@ -236,6 +237,7 @@ function evidenceCitation(value: unknown) {
   const source = readRecord(value, "evidence");
   return {
     id: readString(source.id, "evidence id"),
+    globalEntityId: nullableString(source.globalEntityId),
     sourceUrl: readString(source.sourceUrl, "evidence URL"),
     canonicalSourceUrl: readString(
       source.canonicalSourceUrl,
@@ -274,6 +276,25 @@ function scoreEvidenceSource(value: unknown) {
     id: readString(source.id, "score evidence id"),
     sourceUrl: readString(source.sourceUrl, "score evidence URL"),
     sourceName: readString(source.sourceName, "score evidence source name"),
+    contributorEntityId: nullableString(source.globalEntityId),
+    evidenceConfidence: readNumber(
+      source.evidenceConfidence,
+      "score evidence confidence",
+    ),
+    publishedAt: nullableIsoTimestamp(source.publishedAt),
+    observedAt: isoTimestamp(source.observedAt, "score evidence observation"),
+    isPrimarySource: readBoolean(
+      source.isPrimarySource,
+      "score evidence primary-source flag",
+    ),
+    isSyndicated: readBoolean(
+      source.isSyndicated,
+      "score evidence syndication flag",
+    ),
+    sourceFamily: readString(
+      source.sourceFamily,
+      "score evidence source family",
+    ),
     supportedFieldPaths: stringArray(source.supportedFieldPaths),
   };
 }
@@ -617,10 +638,14 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
   const notes = childCollection(source.notes, note);
   const associated = childCollection(source.associatedOrganisations, (item) => {
     const association = readRecord(item, "associated organisation");
+    const associatedOrganisation = organisation(association.organisation);
+    if (!associatedOrganisation) {
+      throw new Error("Invalid Global Radar associated organisation.");
+    }
     return {
       role: readString(association.role, "association role"),
       confidence: readNumber(association.confidence, "association confidence"),
-      organisation: organisation(association.organisation),
+      organisation: associatedOrganisation,
     };
   });
   const scoreRationale = readRecord(
@@ -645,6 +670,7 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
   ) {
     throw new Error("Invalid Global Radar signal class.");
   }
+  const scoreEvidence = evidence.items.map(scoreEvidenceSource);
   const componentEvidence = deriveScoreComponentEvidenceAssociations({
     signalClass,
     signalType: readString(signal.signalType, "signal type"),
@@ -652,8 +678,19 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
       signal.indiaRelevanceType,
       "India relevance type",
     ),
+    momentumContributorEntityIds: associated.items.flatMap((item) =>
+      item.role === "contributor" ? [item.organisation.id] : [],
+    ),
+    freshnessEvidencePath:
+      signalClass === "direct_demand"
+        ? selectDirectDemandFreshnessEvidencePath({
+            announcedAt: nullableIsoTimestamp(timeline.announcedAt),
+            effectiveFrom: nullableIsoTimestamp(timeline.effectiveFrom),
+            evidence: scoreEvidence,
+          })
+        : undefined,
     components: activeScore,
-    evidence: evidence.items.map(scoreEvidenceSource),
+    evidence: scoreEvidence,
   });
   const physicalRequirements = requirements.items.filter((item) => {
     const candidate = item as { kind: string };

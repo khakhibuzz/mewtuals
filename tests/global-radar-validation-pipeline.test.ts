@@ -86,6 +86,8 @@ function evidence(overrides: Record<string, unknown> = {}) {
     supportsIndiaRelevance: true,
     supportedFieldPaths: [
       "signal.factualSummary",
+      "signal.announcedAt",
+      "signal.effectiveFrom",
       "directDemandAsk.data_collection_request",
       "indiaRelevance.explicit_India.collection",
       "responsePath",
@@ -241,6 +243,7 @@ function precursorSignal(overrides: Record<string, unknown> = {}) {
         supportsIndiaRelevance: false,
         supportedFieldPaths: [
           "signal.factualSummary",
+          "signal.effectiveFrom",
           "precursorDevelopment.funding",
           "scoreComponents.proximityToExternalDemand",
           "scoreComponents.fundingDeploymentMomentum",
@@ -697,6 +700,23 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     expect(rejected.rejections.invalid_evidence).toBe(1);
   });
 
+  it("rejects active server-derived direct components without field evidence", () => {
+    const missingFreshnessEvidence = evidence({
+      supportedFieldPaths: evidence().supportedFieldPaths.filter(
+        (path) =>
+          path !== "signal.announcedAt" && path !== "signal.effectiveFrom",
+      ),
+    });
+    const rejected = validate(
+      batch({
+        signals: [directSignal({ evidence: [missingFreshnessEvidence] })],
+      }),
+    );
+
+    expect(rejected.signals).toEqual([]);
+    expect(rejected.rejections.invalid_evidence).toBe(1);
+  });
+
   it("requires evidence for each non-null worker-scored precursor component", () => {
     const fullyLinked = precursorSignal();
     const fullyLinkedEvidence = fullyLinked.evidence[0]!;
@@ -720,6 +740,31 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     );
 
     expect(validate(batch({ signals: [fullyLinked] })).signals).toHaveLength(1);
+    expect(rejected.signals).toEqual([]);
+    expect(rejected.rejections.invalid_evidence).toBe(1);
+  });
+
+  it("rejects active server-derived precursor components without field evidence", () => {
+    const precursor = precursorSignal();
+    const source = precursor.evidence[0]!;
+    const rejected = validate(
+      batch({
+        signals: [
+          precursorSignal({
+            effectiveFrom: "2026-09-15T00:00:00.000Z",
+            evidence: [
+              {
+                ...source,
+                supportedFieldPaths: source.supportedFieldPaths.filter(
+                  (path) => path !== "signal.effectiveFrom",
+                ),
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
     expect(rejected.signals).toEqual([]);
     expect(rejected.rejections.invalid_evidence).toBe(1);
   });

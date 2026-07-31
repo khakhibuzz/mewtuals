@@ -136,6 +136,8 @@ const teleoperatedRobotData = envelope({
           "Atlas publicly requests external providers for teleoperated robot trajectory data.",
         supportedFieldPaths: [
           "signal.factualSummary",
+          "signal.announcedAt",
+          "signal.effectiveFrom",
           "directDemandAsk.data_collection_request",
           ...directWorkerScoreEvidencePaths,
         ],
@@ -241,6 +243,8 @@ const humanoidDeployment = envelope({
           "Northstar announced a dated humanoid deployment without an external supplier ask.",
         supportedFieldPaths: [
           "signal.factualSummary",
+          "signal.announcedAt",
+          "signal.effectiveFrom",
           "precursorDevelopment.deployment",
           ...precursorWorkerScoreEvidencePaths,
         ],
@@ -364,6 +368,8 @@ const indiaAutonomousNavigationData = envelope({
           "Saffron publicly seeks Indian suppliers for autonomous-navigation road data collection.",
         supportedFieldPaths: [
           "signal.factualSummary",
+          "signal.announcedAt",
+          "signal.effectiveFrom",
           "directDemandAsk.data_collection_request",
           "indiaRelevance.explicit_India.roads_or_environments",
           ...directWorkerScoreEvidencePaths,
@@ -479,6 +485,8 @@ const chineseIndianManufacturing = envelope({
           "The company is seeking manufacturing partners located in India for a fictional mobile robot platform.",
         supportedFieldPaths: [
           "signal.factualSummary",
+          "signal.announcedAt",
+          "signal.effectiveFrom",
           "directDemandAsk.manufacturing_request",
           "indiaRelevance.explicit_India.manufacturing",
           ...directWorkerScoreEvidencePaths,
@@ -600,6 +608,8 @@ const noisyIndianLanguageSpeech = envelope({
           "Monsoon publicly seeks Indian suppliers for noisy Hindi and Tamil robot-command speech.",
         supportedFieldPaths: [
           "signal.factualSummary",
+          "signal.announcedAt",
+          "signal.effectiveFrom",
           "directDemandAsk.data_collection_request",
           "indiaRelevance.explicit_India.languages",
           ...directWorkerScoreEvidencePaths,

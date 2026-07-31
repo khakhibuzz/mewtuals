@@ -335,6 +335,13 @@ describe("Global Radar DTO serializers", () => {
         }),
       ],
     });
+    expect(section("supporting_evidence").data).toMatchObject({
+      items: [
+        expect.objectContaining({
+          globalEntityId: "00000000-0000-4000-8000-000000000001",
+        }),
+      ],
+    });
     expect(section("score_rationale").data).toMatchObject({
       activeClass: "direct_demand",
       score: 82,
@@ -412,6 +419,24 @@ describe("Global Radar DTO serializers", () => {
           ]),
         }),
         expect.objectContaining({
+          component: "evidenceConfidence",
+          basis: "server_derived",
+          evidence: expect.arrayContaining([
+            expect.objectContaining({
+              matchedFieldPaths: ["evidence.evidenceConfidence"],
+            }),
+          ]),
+        }),
+        expect.objectContaining({
+          component: "freshness",
+          basis: "server_derived",
+          evidence: expect.arrayContaining([
+            expect.objectContaining({
+              matchedFieldPaths: ["signal.announcedAt"],
+            }),
+          ]),
+        }),
+        expect.objectContaining({
           component: "commercialPotential",
           value: 70,
           basis: "worker_evidence",
@@ -448,10 +473,27 @@ describe("Global Radar DTO serializers", () => {
 
   it("associates every active momentum component with bounded public evidence", () => {
     const detail = detailReadModel();
+    const contributorOne = detail.organisation;
+    const contributorTwo = {
+      ...contributorOne,
+      id: "00000000-0000-4000-8000-000000000021",
+      canonicalName: "Second Contributor",
+    };
     Object.assign(detail.signal, {
       signalClass: "ecosystem_momentum",
       signalType: "ecosystem_direction",
       score: 78,
+    });
+    Object.assign(detail, {
+      organisation: null,
+      associatedOrganisations: {
+        total: 2,
+        truncated: false,
+        items: [
+          { role: "contributor", confidence: 90, organisation: contributorOne },
+          { role: "contributor", confidence: 85, organisation: contributorTwo },
+        ],
+      },
     });
     Object.assign(detail.scoreRationale.momentum, {
       independentEntityCount: 4,
@@ -476,6 +518,38 @@ describe("Global Radar DTO serializers", () => {
       "momentumMetrics.taxonomyConsistency",
       "momentumMetrics.evidenceQuality",
     ];
+    const eligibleEvidence = detail.evidence.items[0]!;
+    detail.evidence.items = [
+      eligibleEvidence,
+      {
+        ...eligibleEvidence,
+        id: "00000000-0000-4000-8000-000000000022",
+        globalEntityId: contributorTwo.id,
+        sourceUrl: "https://second.example/direction",
+        canonicalSourceUrl: "https://second.example/direction",
+        sourceName: "Second Contributor",
+        supportedFieldPaths: ["signal.factualSummary"],
+      },
+      {
+        ...eligibleEvidence,
+        id: "00000000-0000-4000-8000-000000000023",
+        sourceUrl: "https://mirror.example/syndicated",
+        canonicalSourceUrl: "https://mirror.example/syndicated",
+        sourceName: "Syndicated Mirror",
+        isSyndicated: true,
+        supportedFieldPaths: ["signal.factualSummary"],
+      },
+      {
+        ...eligibleEvidence,
+        id: "00000000-0000-4000-8000-000000000024",
+        globalEntityId: "00000000-0000-4000-8000-000000000025",
+        sourceUrl: "https://unrelated.example/direction",
+        canonicalSourceUrl: "https://unrelated.example/direction",
+        sourceName: "Unrelated Organisation",
+        supportedFieldPaths: ["signal.factualSummary"],
+      },
+    ];
+    detail.evidence.total = detail.evidence.items.length;
 
     const dto = serializeGlobalRadarSignalDetail(detail);
     const scoreSection = dto.sections.find(
@@ -484,7 +558,7 @@ describe("Global Radar DTO serializers", () => {
       componentEvidence: Array<{
         component: string;
         basis: string;
-        evidence: Array<{ matchedFieldPaths: string[] }>;
+        evidence: Array<{ sourceUrl: string; matchedFieldPaths: string[] }>;
       }>;
     };
 
@@ -532,6 +606,43 @@ describe("Global Radar DTO serializers", () => {
         )
         .every(({ basis }) => basis === "server_derived"),
     ).toBe(true);
+    const serverDerivedSources = new Set(
+      scoreSection.componentEvidence
+        .filter(({ basis }) => basis === "server_derived")
+        .flatMap(({ evidence }) =>
+          evidence.map(({ sourceUrl }) => sourceUrl),
+        ),
+    );
+    expect(serverDerivedSources).toEqual(
+      new Set([
+        eligibleEvidence.sourceUrl,
+        "https://second.example/direction",
+      ]),
+    );
+    const derivationMetadataPath = new Map([
+      ["independentEntityCount", "evidence.contributorEntityId"],
+      ["independentEntityBreadth", "evidence.contributorEntityId"],
+      ["primarySourceCount", "evidence.isPrimarySource"],
+      ["primarySourceDepth", "evidence.isPrimarySource"],
+      ["sourceFamilyCount", "evidence.sourceFamily"],
+      ["sourceDiversity", "evidence.sourceFamily"],
+      ["volume7Days", "evidence.observedAt"],
+      ["volume30Days", "evidence.observedAt"],
+      ["volume90Days", "evidence.observedAt"],
+      ["weightedVolume", "evidence.observedAt"],
+      ["growthVsPreviousPeriod", "evidence.observedAt"],
+    ]);
+    for (const association of scoreSection.componentEvidence) {
+      const expectedPath = derivationMetadataPath.get(association.component);
+      if (expectedPath === undefined) continue;
+      expect(
+        association.evidence.every(
+          ({ matchedFieldPaths }) =>
+            matchedFieldPaths.length === 1 &&
+            matchedFieldPaths[0] === expectedPath,
+        ),
+      ).toBe(true);
+    }
   });
 
   it("links every active precursor component, including no-current-fit India scoring", () => {
@@ -556,7 +667,6 @@ describe("Global Radar DTO serializers", () => {
       "signal.factualSummary",
       "signal.effectiveFrom",
       "precursorDevelopment.deployment",
-      "indiaRelevance.no_current_India_fit.requirement_access",
       "scoreComponents.proximityToExternalDemand",
       "scoreComponents.fundingDeploymentMomentum",
       "scoreComponents.likelyDataHardwareIntensity",
@@ -590,9 +700,7 @@ describe("Global Radar DTO serializers", () => {
           basis: "server_derived",
           evidence: [
             expect.objectContaining({
-              matchedFieldPaths: [
-                "indiaRelevance.no_current_India_fit.requirement_access",
-              ],
+              matchedFieldPaths: ["precursorDevelopment.deployment"],
             }),
           ],
         }),

@@ -15,6 +15,7 @@ import {
   createGlobalRadarFingerprint,
   createGlobalRadarPersistenceHash,
   createGlobalRadarSignalDedupeKey,
+  createGlobalRadarSignalDedupeKeyFromIdentityAnchors,
   deriveEcosystemMomentum,
   generateGlobalRadarQueries,
   normalizeRequirements,
@@ -5568,6 +5569,116 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       httpStatus: 409,
     });
     expect(await signalWriteSnapshot(signal.id)).toEqual(before);
+  });
+
+  it("rejects reclassification when a merged alias retains the target dedupe key", async () => {
+    const signal = await persistedDirect(
+      "classification-merged-alias-collision",
+      (batch) => {
+        batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
+          ...precursorWorkerScorePaths,
+          "precursorDevelopment.funding",
+          "signal.effectiveFrom",
+          "indiaRelevance.explicit_India.collection",
+        );
+      },
+    );
+    if (!signal.globalEntityId) {
+      throw new Error("Classification alias fixture has no primary entity.");
+    }
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "monitoring" })
+      .where(eq(globalRadarSignals.id, signal.id));
+    const [entityRow, requirements, evidenceRows] = await Promise.all([
+      db
+        .select({ publicIdentityAnchor: globalEntities.publicIdentityAnchor })
+        .from(globalEntities)
+        .where(eq(globalEntities.id, signal.globalEntityId))
+        .limit(1),
+      db
+        .select({ fingerprint: globalSignalRequirements.requirementFingerprint })
+        .from(globalSignalRequirements)
+        .where(eq(globalSignalRequirements.signalId, signal.id)),
+      db
+        .select({
+          canonicalSourceUrl: globalSignalEvidence.canonicalSourceUrl,
+          isPrimarySource: globalSignalEvidence.isPrimarySource,
+          isSyndicated: globalSignalEvidence.isSyndicated,
+        })
+        .from(globalSignalEvidence)
+        .where(eq(globalSignalEvidence.signalId, signal.id)),
+    ]);
+    const publicIdentityAnchor = entityRow[0]?.publicIdentityAnchor;
+    if (!publicIdentityAnchor) {
+      throw new Error("Classification alias fixture has no identity anchor.");
+    }
+    const targetDedupeKey = createGlobalRadarSignalDedupeKeyFromIdentityAnchors(
+      {
+        signalClass: "demand_precursor",
+        primaryEntityRef: signal.globalEntityId,
+        associatedEntities: [],
+        demandDomain: "robot_learning_and_manipulation",
+        signalType: "funding",
+        theme: signal.theme,
+        requirements,
+        announcedAt: signal.announcedAt?.toISOString() ?? null,
+        observedAt: signal.observedAt.toISOString(),
+        targetGeographies: signal.targetGeographies,
+        evidence: evidenceRows,
+      },
+      new Map([[signal.globalEntityId, publicIdentityAnchor]]),
+    );
+    const aliasId = randomUUID();
+    await db.insert(globalRadarSignals).values({
+      ...signal,
+      id: aliasId,
+      dedupeKey: targetDedupeKey,
+      mergedIntoSignalId: signal.id,
+      status: "monitoring",
+    });
+    const before = await signalWriteSnapshot(signal.id);
+
+    await expect(
+      adminService().editClassification(actor, signal.id, {
+        ...serviceEnvelope(0, "9022"),
+        classification: {
+          signalClass: "demand_precursor",
+          signalType: "funding",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            evidenceConfidence: 80,
+            proximityToExternalDemand: 70,
+            fundingDeploymentMomentum: 80,
+            likelyDataHardwareIntensity: 70,
+            indiaFit: 80,
+            estimatedTimeHorizon: 80,
+            strategicRelevance: 75,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "duplicate_signal",
+      httpStatus: 409,
+    });
+    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
+    await expect(
+      db
+        .select({
+          dedupeKey: globalRadarSignals.dedupeKey,
+          mergedIntoSignalId: globalRadarSignals.mergedIntoSignalId,
+          revision: globalRadarSignals.revision,
+        })
+        .from(globalRadarSignals)
+        .where(eq(globalRadarSignals.id, aliasId)),
+    ).resolves.toEqual([
+      {
+        dedupeKey: targetDedupeKey,
+        mergedIntoSignalId: signal.id,
+        revision: signal.revision,
+      },
+    ]);
   });
 
   it("rejects unsupported momentum metrics before classification writes", async () => {

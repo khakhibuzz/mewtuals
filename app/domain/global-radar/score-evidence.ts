@@ -37,6 +37,16 @@ export const GLOBAL_RADAR_SCORE_EVIDENCE_VERSION =
 export const MAX_SCORE_COMPONENT_EVIDENCE_CITATIONS = 10;
 export const MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS = 10;
 
+export const directDemandFreshnessEvidencePaths = Object.freeze([
+  "signal.announcedAt",
+  "signal.effectiveFrom",
+  "evidence.publishedAt",
+  "evidence.observedAt",
+] as const);
+
+export type DirectDemandFreshnessEvidencePath =
+  (typeof directDemandFreshnessEvidencePaths)[number];
+
 export const directDemandScoreEvidenceComponents = Object.freeze([
   "demandExplicitness",
   "evidenceConfidence",
@@ -88,6 +98,13 @@ export type ScoreEvidenceSource = Readonly<{
   id: string;
   sourceUrl: string;
   sourceName: string;
+  contributorEntityId: string | null;
+  evidenceConfidence: number;
+  publishedAt: string | null;
+  observedAt: string;
+  isPrimarySource: boolean;
+  isSyndicated: boolean;
+  sourceFamily: string;
   supportedFieldPaths: readonly string[];
 }>;
 
@@ -178,16 +195,35 @@ type ScoreEvidenceSignalClass =
 type EvidenceSelector = Readonly<{
   expectedBasis: ScoreEvidenceBasis;
   rationale: string;
-  match(path: string): boolean;
+  match?(path: string): boolean;
+  derivedFieldPath?: string;
+  includeSource?(source: ScoreEvidenceSource): boolean;
 }>;
 
-const allEvidenceSelector = (
-  rationale: string,
-): EvidenceSelector => ({
-  expectedBasis: "server_derived",
-  rationale,
-  match: () => true,
-});
+export function selectDirectDemandFreshnessEvidencePath(input: Readonly<{
+  announcedAt: string | null;
+  effectiveFrom: string | null;
+  evidence: readonly Readonly<{ publishedAt: string | null }>[];
+}>): DirectDemandFreshnessEvidencePath {
+  if (input.announcedAt !== null) return "signal.announcedAt";
+  if (input.effectiveFrom !== null) return "signal.effectiveFrom";
+  return input.evidence.some(({ publishedAt }) => publishedAt !== null)
+    ? "evidence.publishedAt"
+    : "evidence.observedAt";
+}
+
+function derivedMetadataEvidenceSelector(input: Readonly<{
+  path: string;
+  rationale: string;
+  includeSource?(source: ScoreEvidenceSource): boolean;
+}>): EvidenceSelector {
+  return {
+    expectedBasis: "server_derived",
+    rationale: input.rationale,
+    derivedFieldPath: input.path,
+    includeSource: input.includeSource,
+  };
+}
 
 function workerEvidenceSelector(component: WorkerScoredComponent): EvidenceSelector {
   const path = `scoreComponents.${component}`;
@@ -199,10 +235,32 @@ function workerEvidenceSelector(component: WorkerScoredComponent): EvidenceSelec
   };
 }
 
+function indiaFitEvidenceSelector(input: Readonly<{
+  field: "directDemandAsk" | "precursorDevelopment";
+  signalType: string;
+  indiaRelevanceType: string;
+}>): EvidenceSelector {
+  if (input.indiaRelevanceType === "no_current_India_fit") {
+    return {
+      expectedBasis: "server_derived",
+      rationale:
+        "Server-derived from the absence of a public India linkage in the cited classified evidence.",
+      match: (path) => path === `${input.field}.${input.signalType}`,
+    };
+  }
+  return {
+    expectedBasis: "server_derived",
+    rationale:
+      "Server-derived from public evidence supporting the assessed India relevance.",
+    match: (path) => path.startsWith(`indiaRelevance.${input.indiaRelevanceType}.`),
+  };
+}
+
 function directEvidenceSelector(
   component: (typeof directDemandScoreEvidenceComponents)[number],
   signalType: string,
   indiaRelevanceType: string,
+  freshnessEvidencePath: DirectDemandFreshnessEvidencePath | undefined,
 ): EvidenceSelector {
   if (directDemandWorkerScoredComponents.includes(
     component as DirectDemandWorkerScoredComponent,
@@ -218,27 +276,39 @@ function directEvidenceSelector(
         match: (path) => path === `directDemandAsk.${signalType}`,
       };
     case "evidenceConfidence":
+      return derivedMetadataEvidenceSelector({
+        path: "evidence.evidenceConfidence",
+        rationale:
+          "Server-derived from the confidence recorded on each public evidence item.",
+      });
+    case "freshness": {
+      const rationale =
+        "Server-derived from the selected signal date or dated public evidence input.";
+      if (freshnessEvidencePath === "evidence.publishedAt") {
+        return derivedMetadataEvidenceSelector({
+          path: freshnessEvidencePath,
+          rationale,
+          includeSource: ({ publishedAt }) => publishedAt !== null,
+        });
+      }
+      if (freshnessEvidencePath === "evidence.observedAt") {
+        return derivedMetadataEvidenceSelector({
+          path: freshnessEvidencePath,
+          rationale,
+        });
+      }
       return {
         expectedBasis: "server_derived",
-        rationale:
-          "Server-derived from the confidence of public evidence for the classified direct-demand ask.",
-        match: (path) => path === `directDemandAsk.${signalType}`,
+        rationale,
+        match: (path) => path === freshnessEvidencePath,
       };
-    case "freshness":
-      return {
-        expectedBasis: "server_derived",
-        rationale:
-          "Server-derived from cited signal dates or the earliest dated public evidence.",
-        match: (path) =>
-          path === "signal.announcedAt" || path === "signal.effectiveFrom",
-      };
+    }
     case "indiaFit":
-      return {
-        expectedBasis: "server_derived",
-        rationale:
-          "Server-derived from public evidence supporting the assessed India relevance.",
-        match: (path) => path.startsWith(`indiaRelevance.${indiaRelevanceType}.`),
-      };
+      return indiaFitEvidenceSelector({
+        field: "directDemandAsk",
+        signalType,
+        indiaRelevanceType,
+      });
     case "responseAccessibility":
       return {
         expectedBasis: "server_derived",
@@ -265,19 +335,17 @@ function precursorEvidenceSelector(
   }
   switch (component) {
     case "evidenceConfidence":
-      return {
-        expectedBasis: "server_derived",
+      return derivedMetadataEvidenceSelector({
+        path: "evidence.evidenceConfidence",
         rationale:
-          "Server-derived from the confidence of public evidence for the classified precursor development.",
-        match: (path) => path === `precursorDevelopment.${signalType}`,
-      };
+          "Server-derived from the confidence recorded on each public evidence item.",
+      });
     case "indiaFit":
-      return {
-        expectedBasis: "server_derived",
-        rationale:
-          "Server-derived from public evidence supporting the assessed India relevance.",
-        match: (path) => path.startsWith(`indiaRelevance.${indiaRelevanceType}.`),
-      };
+      return indiaFitEvidenceSelector({
+        field: "precursorDevelopment",
+        signalType,
+        indiaRelevanceType,
+      });
     case "estimatedTimeHorizon":
       return {
         expectedBasis: "server_derived",
@@ -291,6 +359,7 @@ function precursorEvidenceSelector(
 
 function momentumEvidenceSelector(
   component: (typeof momentumScoreEvidenceComponents)[number],
+  contributorEntityIds: ReadonlySet<string>,
 ): EvidenceSelector {
   if (
     component === "taxonomyConsistency" ||
@@ -304,9 +373,24 @@ function momentumEvidenceSelector(
       match: (candidate) => candidate === path,
     };
   }
-  return allEvidenceSelector(
-    "Server-derived from deduplicated public evidence, entity breadth, and the versioned momentum policy.",
-  );
+  const path =
+    component === "independentEntityCount" ||
+    component === "independentEntityBreadth"
+      ? "evidence.contributorEntityId"
+      : component === "primarySourceCount" || component === "primarySourceDepth"
+        ? "evidence.isPrimarySource"
+        : component === "sourceFamilyCount" || component === "sourceDiversity"
+          ? "evidence.sourceFamily"
+          : "evidence.observedAt";
+  return derivedMetadataEvidenceSelector({
+    path,
+    rationale:
+      "Server-derived from this metadata on non-syndicated contributor evidence and the versioned momentum policy.",
+    includeSource: (source) =>
+      !source.isSyndicated &&
+      source.contributorEntityId !== null &&
+      contributorEntityIds.has(source.contributorEntityId),
+  });
 }
 
 function componentNamesForClass(
@@ -326,12 +410,15 @@ function selectorForComponent(
   component: ScoreEvidenceComponent,
   signalType: string,
   indiaRelevanceType: string,
+  momentumContributorEntityIds: readonly string[],
+  freshnessEvidencePath: DirectDemandFreshnessEvidencePath | undefined,
 ): EvidenceSelector {
   if (signalClass === "direct_demand") {
     return directEvidenceSelector(
       component as (typeof directDemandScoreEvidenceComponents)[number],
       signalType,
       indiaRelevanceType,
+      freshnessEvidencePath,
     );
   }
   if (signalClass === "demand_precursor") {
@@ -343,6 +430,7 @@ function selectorForComponent(
   }
   return momentumEvidenceSelector(
     component as (typeof momentumScoreEvidenceComponents)[number],
+    new Set(momentumContributorEntityIds),
   );
 }
 
@@ -351,9 +439,12 @@ function selectedCitations(
   evidence: readonly ScoreEvidenceSource[],
 ): readonly ScoreComponentEvidenceCitation[] {
   const directlyMatched = evidence.flatMap((source) => {
-    const matchedFieldPaths = source.supportedFieldPaths
-      .filter((path) => selector.match(path))
-      .slice(0, MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS);
+    if (selector.includeSource && !selector.includeSource(source)) return [];
+    const matchedFieldPaths = selector.derivedFieldPath
+      ? [selector.derivedFieldPath]
+      : source.supportedFieldPaths
+          .filter((path) => selector.match?.(path) === true)
+          .slice(0, MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS);
     return matchedFieldPaths.length > 0
       ? [{ source, matchedFieldPaths }]
       : [];
@@ -376,6 +467,8 @@ export function deriveScoreComponentEvidenceAssociations(input: Readonly<{
   signalClass: ScoreEvidenceSignalClass;
   signalType: string;
   indiaRelevanceType: string;
+  momentumContributorEntityIds?: readonly string[];
+  freshnessEvidencePath?: DirectDemandFreshnessEvidencePath;
   components: Readonly<Record<string, unknown>>;
   evidence: readonly ScoreEvidenceSource[];
 }>): readonly ScoreComponentEvidenceAssociation[] {
@@ -388,6 +481,8 @@ export function deriveScoreComponentEvidenceAssociations(input: Readonly<{
         component,
         input.signalType,
         input.indiaRelevanceType,
+        input.momentumContributorEntityIds ?? [],
+        input.freshnessEvidencePath,
       );
       const evidence = selectedCitations(selector, input.evidence);
       if (evidence.length === 0) {
@@ -413,6 +508,8 @@ export function hasCompleteScoreComponentEvidenceAssociations(
     signalClass: ScoreEvidenceSignalClass;
     signalType: string;
     indiaRelevanceType: string;
+    momentumContributorEntityIds?: readonly string[];
+    freshnessEvidencePath?: DirectDemandFreshnessEvidencePath;
     components: Readonly<Record<string, unknown>>;
     evidence: readonly ScoreEvidenceSource[];
   }>,
@@ -426,6 +523,8 @@ export function hasCompleteScoreComponentEvidenceAssociations(
         component,
         input.signalType,
         input.indiaRelevanceType,
+        input.momentumContributorEntityIds ?? [],
+        input.freshnessEvidencePath,
       ),
       input.evidence,
     ).length > 0;
