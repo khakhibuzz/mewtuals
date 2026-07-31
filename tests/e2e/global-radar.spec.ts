@@ -368,6 +368,20 @@ test("every allowed administrator action uses a bounded Radar mutation and adopt
         await fulfillJson(route, 200, { ok: true, outcome: "updated" });
         return;
       }
+      if (url.pathname.endsWith("/qualification")) {
+        await fulfillJson(route, 200, {
+          ok: true,
+          outcome: "updated",
+          entity: {
+            id: primaryEntityId,
+            canonicalName: primaryEntityName,
+            headquartersCountry: fixtureCountry,
+            entityStatus: "qualified",
+            revision: 1,
+          },
+        });
+        return;
+      }
       if (url.pathname.endsWith("/promotions/reverse")) {
         await fulfillJson(route, 200, { ok: true, outcome: "reversed" });
         return;
@@ -464,6 +478,14 @@ test("every allowed administrator action uses a bounded Radar mutation and adopt
     await page.getByLabel("Watchlist reason").fill("Keep the fictional public signal monitored");
     await page.getByRole("button", { name: "Save watchlist" }).click();
     await expect(page.getByRole("status")).toContainText("Watchlist updated.");
+
+    await page
+      .getByLabel("Entity qualification reason")
+      .fill("Exceptional relevance confirmed from public primary sources");
+    await page.getByRole("button", { name: "Qualify entity" }).click();
+    await expect(page.getByRole("status")).toContainText(
+      "Entity qualified for exceptional strategic relevance.",
+    );
 
     await page.getByLabel("Promotion reason").fill("Controlled fictional intake");
     await page
@@ -1138,6 +1160,7 @@ function actionsRepresentedBy(mutations: readonly RadarMutation[]) {
     else if (path.endsWith("/notes")) actions.add("append_note");
     else if (path.endsWith("/merge")) actions.add("merge");
     else if (path.endsWith("/watchlist")) actions.add("edit_watchlist");
+    else if (path.endsWith("/qualification")) actions.add("qualify_entity");
     else if (path.endsWith("/promotions/reverse")) actions.add("reverse_promotion");
     else if (path.endsWith("/promotions")) actions.add("promote");
   }

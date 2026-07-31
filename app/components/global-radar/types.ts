@@ -229,6 +229,7 @@ export type GlobalRadarAllowedAction =
   | "append_note"
   | "merge"
   | "edit_watchlist"
+  | "qualify_entity"
   | "promote"
   | "reverse_promotion";
 
@@ -388,6 +389,7 @@ const globalRadarAllowedActionValues = new Set<string>([
   "append_note",
   "merge",
   "edit_watchlist",
+  "qualify_entity",
   "promote",
   "reverse_promotion",
 ]);

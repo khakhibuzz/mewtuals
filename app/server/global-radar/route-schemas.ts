@@ -207,6 +207,11 @@ export const globalRadarWatchlistBodySchema = z.strictObject({
   configuration: watchlistConfigurationSchema,
 });
 
+export const globalRadarEntityQualificationBodySchema = z.strictObject({
+  entityId: globalRadarRouteUuidSchema,
+  ...mutationEnvelopeShape,
+});
+
 export const globalRadarPromotionBodySchema = z
   .strictObject({
     entityId: globalRadarRouteUuidSchema,

@@ -82,6 +82,7 @@ import {
   globalRadarSignalOrder as signalOrder,
   parseGlobalRadarSignalFilters as parseSignalFilters,
   isGlobalRadarAdminSignalId,
+  isGlobalRadarEntityQualifiableStatus,
   toSafeGlobalRadarSignalListItem as toSafeListItem,
   type GlobalRadarAdminConfiguration,
   type GlobalRadarClassMetrics,
@@ -2193,6 +2194,129 @@ export function createGlobalRadarAdminRepository(
         outcome: result.outcome,
         survivor: survivor.detail,
         duplicate: duplicate.detail,
+      };
+    },
+
+    async qualifyEntity(input: {
+      entityId: string;
+      actor: GlobalRadarAdminActor;
+      envelope: GlobalRadarAdminEnvelope;
+    }): Promise<
+      | {
+          outcome: "updated" | "replayed";
+          entity: ReturnType<typeof toSafeGlobalRadarEntity>;
+        }
+      | {
+          outcome: "conflict";
+          reason:
+            | "invalid_input"
+            | "not_found"
+            | "revision_mismatch"
+            | "idempotency_mismatch"
+            | "transition_not_allowed";
+          entity?: ReturnType<typeof toSafeGlobalRadarEntity>;
+        }
+    > {
+      const canonical = canonicalAdminEnvelope(input.actor, input.envelope);
+      if (!canonical || !UUID_PATTERN.test(input.entityId)) {
+        return { outcome: "conflict", reason: "invalid_input" };
+      }
+      const entityId = input.entityId.toLowerCase();
+      const fingerprint = requestFingerprint({
+        action: "entity_qualified",
+        entityId,
+        actorUserId: canonical.actor.userId,
+        actorEmail: canonical.actor.email,
+        expectedRevision: canonical.expectedRevision,
+        idempotencyKey: canonical.idempotencyKey,
+        reason: canonical.reason,
+      });
+      const result = await database.transaction(async (tx) => {
+        const [entity] = await tx
+          .select()
+          .from(globalEntities)
+          .where(eq(globalEntities.id, entityId))
+          .limit(1)
+          .for("update");
+        if (!entity) return { outcome: "not_found" as const };
+        const [existingEvent] = await tx
+          .select({ afterSafeState: globalRadarAdminEvents.afterSafeState })
+          .from(globalRadarAdminEvents)
+          .where(
+            and(
+              eq(globalRadarAdminEvents.targetType, "entity"),
+              eq(globalRadarAdminEvents.targetId, entity.id),
+              eq(
+                globalRadarAdminEvents.idempotencyKey,
+                canonical.idempotencyKey,
+              ),
+            ),
+          )
+          .limit(1);
+        if (existingEvent) {
+          return storedRequestFingerprint(existingEvent.afterSafeState) ===
+            fingerprint
+            ? { outcome: "replayed" as const, entity }
+            : { outcome: "idempotency_mismatch" as const, entity };
+        }
+        if (entity.revision !== canonical.expectedRevision) {
+          return { outcome: "revision_mismatch" as const, entity };
+        }
+        if (!isGlobalRadarEntityQualifiableStatus(entity.entityStatus)) {
+          return { outcome: "transition_not_allowed" as const, entity };
+        }
+        const [updated] = await tx
+          .update(globalEntities)
+          .set({
+            entityStatus: "qualified",
+            revision: entity.revision + 1,
+            updatedAt: canonical.now,
+          })
+          .where(eq(globalEntities.id, entity.id))
+          .returning();
+        if (!updated) {
+          throw new Error("Locked Global Radar entity disappeared.");
+        }
+        await tx.insert(globalRadarAdminEvents).values({
+          actorType: "administrator",
+          actorId: canonical.actor.userId,
+          actorEmail: canonical.actor.email,
+          targetType: "entity",
+          targetId: entity.id,
+          action: "entity_qualified",
+          reason: canonical.reason,
+          beforeSafeState: {
+            entityStatus: entity.entityStatus,
+            revision: entity.revision,
+          },
+          afterSafeState: {
+            message: "Global Radar entity explicitly qualified.",
+            requestFingerprint: fingerprint,
+            entityStatus: updated.entityStatus,
+            revision: updated.revision,
+          },
+          idempotencyKey: canonical.idempotencyKey,
+          createdAt: canonical.now,
+        });
+        return { outcome: "updated" as const, entity: updated };
+      });
+      if (result.outcome === "not_found") {
+        return { outcome: "conflict", reason: "not_found" };
+      }
+      if (
+        result.outcome === "revision_mismatch" ||
+        result.outcome === "idempotency_mismatch" ||
+        result.outcome === "transition_not_allowed"
+      ) {
+        return {
+          outcome: "conflict",
+          reason: result.outcome,
+          entity: toSafeGlobalRadarEntity(result.entity),
+        };
+      }
+      return {
+        outcome: result.outcome,
+        entity: toSafeGlobalRadarEntity(result.entity),
       };
     },
 

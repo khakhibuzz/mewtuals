@@ -40,6 +40,7 @@ export const RADAR_ALLOWED_ACTIONS = [
   "append_note",
   "merge",
   "edit_watchlist",
+  "qualify_entity",
   "promote",
   "reverse_promotion",
 ] as const;
@@ -58,7 +59,7 @@ const organisation = {
   organisationType: "company",
   sector: "robotics",
   shortDescription: "A fictional robotics manufacturer used only in tests.",
-  entityStatus: "active",
+  entityStatus: "observed",
   firstSeenAt: "2026-07-01T04:30:00.000Z",
   lastSeenAt: "2026-07-30T04:30:00.000Z",
   promotedCandidateId: "00000000-0000-4000-8000-000000000020",
@@ -123,6 +124,8 @@ type DetailOptions = {
   includePromotion?: boolean;
   includeWatchlist?: boolean;
   includePrimaryOrganisation?: boolean;
+  entityStatus?: string;
+  associatedEntityStatus?: string;
   notes?: readonly Record<string, unknown>[];
 };
 
@@ -136,6 +139,19 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
     : signalClass === "demand_precursor"
       ? "deployment"
       : "ecosystem_direction";
+  const primaryEntity = {
+    ...organisation,
+    entityStatus: options.entityStatus ?? organisation.entityStatus,
+  };
+  const associatedEntity = {
+    ...organisation,
+    id: RADAR_ASSOCIATED_ENTITY_ID,
+    canonicalName: "Fictional Partner Example",
+    entityStatus:
+      options.associatedEntityStatus ??
+      options.entityStatus ??
+      organisation.entityStatus,
+  };
   const scoreComponents = signalClass === "direct_demand"
     ? {
         demandExplicitness: 90,
@@ -175,11 +191,17 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
       title: RADAR_DETAIL_HEADINGS[0],
       data: {
         primary:
-          options.includePrimaryOrganisation === false ? null : organisation,
+          options.includePrimaryOrganisation === false ? null : primaryEntity,
         associated: {
           total: 1,
           truncated: false,
-          items: [{ role: "contributor", confidence: 75, organisation: { ...organisation, id: RADAR_ASSOCIATED_ENTITY_ID, canonicalName: "Fictional Partner Example" } }],
+          items: [
+            {
+              role: "contributor",
+              confidence: 75,
+              organisation: associatedEntity,
+            },
+          ],
         },
       },
     },

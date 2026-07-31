@@ -21,6 +21,7 @@ import {
   MAX_GLOBAL_RADAR_ADMIN_BODY_BYTES,
   globalRadarAbandonBodySchema,
   globalRadarClaimSelectorSchema,
+  globalRadarEntityQualificationBodySchema,
   globalRadarEvidenceBodySchema,
   globalRadarFailBodySchema,
   globalRadarManualRunSchema,
@@ -75,6 +76,11 @@ export type GlobalRadarAdminRouteService = Readonly<{
   ): Promise<unknown>;
   mergeSignals(actor: GlobalRadarAdminActor, value: unknown): Promise<unknown>;
   upsertWatchlist(actor: GlobalRadarAdminActor, value: unknown): Promise<unknown>;
+  qualifyEntity(
+    actor: GlobalRadarAdminActor,
+    entityId: unknown,
+    value: unknown,
+  ): Promise<unknown>;
   queueManual(actor: GlobalRadarAdminActor, value: unknown): Promise<unknown>;
   promote(actor: GlobalRadarAdminActor, value: unknown): Promise<unknown>;
   reversePromotion(actor: GlobalRadarAdminActor, value: unknown): Promise<unknown>;
@@ -580,6 +586,46 @@ export function createGlobalRadarAdminWatchlistPatchHandler(
           successOutcomes: ["created", "updated", "replayed"],
           successKeys: ["entity", "entry"],
           conflictKeys: ["entity", "entry"],
+        },
+      );
+    } catch {
+      return internalFailure();
+    }
+  };
+}
+
+export function createGlobalRadarAdminEntityQualificationPatchHandler(
+  dependencies: AdminDependencies,
+) {
+  return async function PATCH(
+    request: Request,
+    context: RouteContext<"entityId">,
+  ) {
+    try {
+      const prepared = await adminMutationRequest(dependencies, request);
+      if (!prepared.ok) return prepared.response;
+      const { entityId } = await context.params;
+      const id = globalRadarRouteUuidSchema.safeParse(entityId);
+      const parsed = globalRadarEntityQualificationBodySchema.safeParse(
+        prepared.value,
+      );
+      if (
+        !id.success ||
+        !parsed.success ||
+        parsed.data.entityId !== id.data
+      ) {
+        return adminInvalid();
+      }
+      return adminResult(
+        await prepared.service.qualifyEntity(
+          prepared.actor,
+          id.data,
+          parsed.data,
+        ),
+        {
+          successOutcomes: ["updated", "replayed"],
+          successKeys: ["entity"],
+          conflictKeys: ["entity"],
         },
       );
     } catch {

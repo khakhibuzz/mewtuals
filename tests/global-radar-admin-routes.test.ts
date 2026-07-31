@@ -2,6 +2,7 @@ import { describe, expect, it, vi, type Mock } from "vitest";
 
 import {
   createGlobalRadarAdminEvidencePostHandler,
+  createGlobalRadarAdminEntityQualificationPatchHandler,
   createGlobalRadarAdminMergePostHandler,
   createGlobalRadarAdminNotePostHandler,
   createGlobalRadarAdminPromotionPostHandler,
@@ -25,6 +26,7 @@ import { POST as evidencePostRoute } from "../app/api/admin/global-demand-radar/
 import { POST as notePostRoute } from "../app/api/admin/global-demand-radar/signals/[signalId]/notes/route";
 import { POST as mergePostRoute } from "../app/api/admin/global-demand-radar/signals/[signalId]/merge/route";
 import { PATCH as watchlistPatchRoute } from "../app/api/admin/global-demand-radar/entities/[entityId]/watchlist/route";
+import { PATCH as entityQualificationPatchRoute } from "../app/api/admin/global-demand-radar/entities/[entityId]/qualification/route";
 import { POST as promotionPostRoute } from "../app/api/admin/global-demand-radar/entities/[entityId]/promotions/route";
 import { POST as promotionReversePostRoute } from "../app/api/admin/global-demand-radar/entities/[entityId]/promotions/reverse/route";
 
@@ -95,6 +97,14 @@ function adminService(
       outcome: "updated",
       entity: safeEntity(),
       entry: safeWatchlistEntry(),
+    })),
+    qualifyEntity: vi.fn(async () => ({
+      outcome: "updated",
+      entity: {
+        ...safeEntity(),
+        entityStatus: "qualified",
+        revision: 4,
+      },
     })),
     queueManual: vi.fn(async () => ({ outcome: "queued", run: safeRun() })),
     promote: vi.fn(async () => ({
@@ -597,6 +607,7 @@ describe("Global Radar administrator HTTP adapters", () => {
       notePostRoute,
       mergePostRoute,
       watchlistPatchRoute,
+      entityQualificationPatchRoute,
       promotionPostRoute,
       promotionReversePostRoute,
     ]).toSatisfy((routes: unknown[]) =>
@@ -629,6 +640,10 @@ describe("Global Radar administrator HTTP adapters", () => {
       ),
       () => createGlobalRadarAdminWatchlistPatchHandler(deps)(
         patchRequest(`/api/admin/global-demand-radar/entities/${ENTITY_ID}/watchlist`, {}),
+        entityContext(),
+      ),
+      () => createGlobalRadarAdminEntityQualificationPatchHandler(deps)(
+        patchRequest(`/api/admin/global-demand-radar/entities/${ENTITY_ID}/qualification`, {}),
         entityContext(),
       ),
       () => createGlobalRadarAdminPromotionPostHandler(deps)(
@@ -960,6 +975,91 @@ describe("Global Radar administrator HTTP adapters", () => {
       expect(result.status).toBe(400);
     }
     expect(service.upsertWatchlist).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires an exact revisioned entity qualification at the path identity", async () => {
+    const service = adminService();
+    const handler =
+      createGlobalRadarAdminEntityQualificationPatchHandler(
+        dependencies(service),
+      );
+    const body = {
+      entityId: ENTITY_ID,
+      expectedRevision: 3,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      reason: "Public evidence supports exceptional strategic relevance.",
+    };
+    const response = await handler(
+      patchRequest(
+        `/api/admin/global-demand-radar/entities/${ENTITY_ID}/qualification`,
+        body,
+      ),
+      entityContext(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(responseBody(response)).resolves.toEqual({
+      ok: true,
+      outcome: "updated",
+      entity: {
+        ...safeEntity(),
+        entityStatus: "qualified",
+        revision: 4,
+      },
+    });
+    expect(service.qualifyEntity).toHaveBeenCalledWith(ACTOR, ENTITY_ID, body);
+
+    for (const invalid of [
+      { ...body, entityId: REQUEST_ID },
+      { ...body, expectedRevision: -1 },
+      { ...body, command: "qualify" },
+    ]) {
+      const result = await handler(
+        patchRequest(
+          `/api/admin/global-demand-radar/entities/${ENTITY_ID}/qualification`,
+          invalid,
+        ),
+        entityContext(),
+      );
+      expect(result.status).toBe(400);
+    }
+    expect(service.qualifyEntity).toHaveBeenCalledTimes(1);
+
+    const conflictService = adminService({
+      qualifyEntity: vi.fn(async () => ({
+        outcome: "conflict",
+        reason: "revision_mismatch",
+        httpStatus: 409,
+        entity: {
+          ...safeEntity(),
+          entityStatus: "qualified",
+          revision: 4,
+          workerSecret: "private",
+        },
+      })),
+    });
+    const conflictResponse =
+      await createGlobalRadarAdminEntityQualificationPatchHandler(
+        dependencies(conflictService),
+      )(
+        patchRequest(
+          `/api/admin/global-demand-radar/entities/${ENTITY_ID}/qualification`,
+          body,
+        ),
+        entityContext(),
+      );
+    expect(conflictResponse.status).toBe(409);
+    await expect(responseBody(conflictResponse)).resolves.toEqual({
+      ok: false,
+      outcome: "conflict",
+      reason: "revision_mismatch",
+      httpStatus: 409,
+      entity: {
+        ...safeEntity(),
+        entityStatus: "qualified",
+        revision: 4,
+      },
+    });
   });
 
   it("requires strict promotion and reversal identities without generic action names", async () => {

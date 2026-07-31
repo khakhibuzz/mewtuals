@@ -23,6 +23,7 @@ import {
   countGlobalRadarSignalsObservedToday,
   globalRadarAllowedActions,
   isGlobalRadarAdminSignalId,
+  isGlobalRadarEntityQualifiableStatus,
 } from "../db/repositories/global-radar-admin-read-model";
 
 const now = new Date("2026-07-30T16:00:00.000Z");
@@ -596,6 +597,21 @@ describe("Global Radar administrator safe read contracts", () => {
     expect(isGlobalRadarAdminSignalId("------------------------------------")).toBe(false);
   });
 
+  it("limits explicit entity qualification to safe pre-promotion states", () => {
+    for (const status of ["observed", "watchlisted", "monitoring"]) {
+      expect(isGlobalRadarEntityQualifiableStatus(status)).toBe(true);
+    }
+    for (const status of [
+      "qualified",
+      "archived",
+      "promoted_to_candidate",
+      "unknown",
+      null,
+    ]) {
+      expect(isGlobalRadarEntityQualifiableStatus(status)).toBe(false);
+    }
+  });
+
   it("derives actions from current safe state and disables merged history", () => {
     expect(
       globalRadarAllowedActions({
@@ -603,6 +619,7 @@ describe("Global Radar administrator safe read contracts", () => {
         status: "qualified",
         mergedIntoSignalId: null,
         hasOrganisation: true,
+        hasQualifiablePromotionEntity: true,
         hasActivePromotion: false,
       }),
     ).toEqual(
@@ -610,6 +627,7 @@ describe("Global Radar administrator safe read contracts", () => {
         "monitor",
         "edit_expiry",
         "edit_watchlist",
+        "qualify_entity",
         "promote",
       ]),
     );
@@ -637,9 +655,20 @@ describe("Global Radar administrator safe read contracts", () => {
         status: "monitoring",
         mergedIntoSignalId: null,
         hasOrganisation: true,
+        hasQualifiablePromotionEntity: true,
         hasActivePromotion: false,
       }),
     ).toContain("edit_classification");
+    expect(
+      globalRadarAllowedActions({
+        signalClass: "demand_precursor",
+        status: "monitoring",
+        mergedIntoSignalId: null,
+        hasOrganisation: true,
+        hasQualifiablePromotionEntity: true,
+        hasActivePromotion: false,
+      }),
+    ).not.toContain("qualify_entity");
     expect(
       globalRadarAllowedActions({
         signalClass: "ecosystem_momentum",
@@ -647,8 +676,9 @@ describe("Global Radar administrator safe read contracts", () => {
         mergedIntoSignalId: null,
         hasOrganisation: false,
         hasPromotionEntity: true,
+        hasQualifiablePromotionEntity: true,
         hasActivePromotion: false,
       }),
-    ).toEqual(expect.arrayContaining(["promote"]));
+    ).toEqual(expect.arrayContaining(["qualify_entity", "promote"]));
   });
 });

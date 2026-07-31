@@ -285,6 +285,7 @@ export type GlobalRadarAllowedAction =
   | "append_note"
   | "merge"
   | "edit_watchlist"
+  | "qualify_entity"
   | "promote"
   | "reverse_promotion";
 
@@ -929,12 +930,26 @@ const reviewActionsByStatus: Readonly<
   promoted: ["mark_no_india_fit"],
 };
 
+const qualifiableGlobalRadarEntityStatuses = new Set([
+  "observed",
+  "watchlisted",
+  "monitoring",
+]);
+
+export function isGlobalRadarEntityQualifiableStatus(
+  value: unknown,
+): boolean {
+  return typeof value === "string" &&
+    qualifiableGlobalRadarEntityStatuses.has(value);
+}
+
 export function globalRadarAllowedActions(input: Readonly<{
   signalClass: SignalClass;
   status: SignalStatus;
   mergedIntoSignalId: string | null;
   hasOrganisation: boolean;
   hasPromotionEntity?: boolean;
+  hasQualifiablePromotionEntity?: boolean;
   hasActivePromotion: boolean;
 }>): GlobalRadarAllowedAction[] {
   if (input.mergedIntoSignalId !== null) return [];
@@ -952,6 +967,13 @@ export function globalRadarAllowedActions(input: Readonly<{
     input.status === "qualified" &&
     !input.hasActivePromotion
   ) actions.push("promote");
+  if (
+    input.hasQualifiablePromotionEntity &&
+    input.status === "qualified" &&
+    !input.hasActivePromotion
+  ) {
+    actions.push("qualify_entity");
+  }
   if (input.status === "promoted" && input.hasActivePromotion) {
     actions.push("reverse_promotion");
   }

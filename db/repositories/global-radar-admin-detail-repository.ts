@@ -17,6 +17,7 @@ import {
 import {
   globalRadarAllowedActions,
   isGlobalRadarAdminSignalId,
+  isGlobalRadarEntityQualifiableStatus,
   toSafeGlobalRadarSignalListItem,
   type SafeGlobalRadarAdminNote,
   type SafeGlobalRadarAssociatedOrganisation,
@@ -531,6 +532,20 @@ export function createGlobalRadarAdminDetailRepository(
               associatedOrganisations.some(
                 ({ role }) => role === "contributor",
               ),
+            hasQualifiablePromotionEntity: [
+              row.organisation,
+              ...(signal.signalClass === "ecosystem_momentum"
+                ? associatedOrganisations
+                    .filter(({ role }) => role === "contributor")
+                    .map(({ organisation }) => organisation)
+                : []),
+            ].some(
+              (organisation) =>
+                organisation !== null &&
+                isGlobalRadarEntityQualifiableStatus(
+                  organisation.entityStatus,
+                ),
+            ),
             hasActivePromotion: promotion?.status === "active",
           }),
         },

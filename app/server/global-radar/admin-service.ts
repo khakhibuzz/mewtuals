@@ -87,6 +87,11 @@ const watchlistSchema = z.strictObject({
   configuration: recordSchema,
 });
 
+const entityQualificationSchema = z.strictObject({
+  entityId: uuidSchema,
+  ...envelopeShape,
+});
+
 type RepositoryResult = Readonly<Record<string, unknown>>;
 
 export type GlobalRadarAdminRepositoryPort = Readonly<{
@@ -107,6 +112,7 @@ export type GlobalRadarAdminRepositoryPort = Readonly<{
   appendNote(input: unknown): Promise<RepositoryResult>;
   mergeSignals(input: unknown): Promise<RepositoryResult>;
   upsertWatchlist(input: unknown): Promise<RepositoryResult>;
+  qualifyEntity(input: unknown): Promise<RepositoryResult>;
 }>;
 
 export type GlobalRadarAdminServiceDependencies = Readonly<{
@@ -728,6 +734,30 @@ export function createGlobalRadarAdminService(
     return { outcome: "invalid" as const };
   }
 
+  function entityMutationResult(value: unknown) {
+    const result = resultRecord(value);
+    if (result.outcome === "conflict") {
+      return {
+        outcome: "conflict" as const,
+        reason: safeMutationReason(result.reason),
+        httpStatus: 409 as const,
+        ...(result.entity
+          ? { entity: serializeGlobalRadarMutationEntity(result.entity) }
+          : {}),
+      };
+    }
+    if (
+      (result.outcome === "updated" || result.outcome === "replayed") &&
+      result.entity
+    ) {
+      return {
+        outcome: result.outcome,
+        entity: serializeGlobalRadarMutationEntity(result.entity),
+      };
+    }
+    return { outcome: "invalid" as const };
+  }
+
   function envelope(
     actor: GlobalRadarAdminActor,
     input: {
@@ -882,6 +912,30 @@ export function createGlobalRadarAdminService(
     );
   }
 
+  async function qualifyEntity(
+    actor: GlobalRadarAdminActor | null,
+    entityId: unknown,
+    value: unknown,
+  ) {
+    const admin = administrator(actor);
+    if (!admin) return { outcome: "forbidden" as const };
+    const id = uuidSchema.safeParse(entityId);
+    const parsed = entityQualificationSchema.safeParse(value);
+    if (
+      !id.success ||
+      !parsed.success ||
+      parsed.data.entityId !== id.data
+    ) {
+      return { outcome: "invalid" as const };
+    }
+    return entityMutationResult(
+      await dependencies.repository.qualifyEntity({
+        entityId: id.data,
+        ...envelope(admin, parsed.data),
+      }),
+    );
+  }
+
   async function delegate(
     actor: GlobalRadarAdminActor | null,
     input: unknown,
@@ -904,6 +958,7 @@ export function createGlobalRadarAdminService(
     appendNote,
     mergeSignals,
     upsertWatchlist,
+    qualifyEntity,
     queueManual: (actor: GlobalRadarAdminActor | null, input: unknown) =>
       delegate(actor, input, dependencies.queueManualRun),
     promote: (actor: GlobalRadarAdminActor | null, input: unknown) =>

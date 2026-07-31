@@ -216,6 +216,7 @@ function repositoryDouble(
     appendNote: vi.fn(),
     mergeSignals: vi.fn(),
     upsertWatchlist: vi.fn(),
+    qualifyEntity: vi.fn(),
     ...overrides,
   };
 }
@@ -819,6 +820,96 @@ describe("Global Radar administrator service", () => {
         /private-worker-secret|private-raw-payload/,
       );
     }
+  });
+
+  it("authorizes and serializes an explicit revisioned entity qualification", async () => {
+    const qualifyEntity = vi
+      .fn()
+      .mockResolvedValueOnce({
+        outcome: "updated",
+        entity: {
+          id: entryId(),
+          canonicalName: "Fictional Robotics",
+          headquartersCountry: "China",
+          entityStatus: "qualified",
+          revision: 4,
+          workerSecret: "private-worker-secret",
+        },
+      })
+      .mockResolvedValueOnce({
+        outcome: "conflict",
+        reason: "revision_mismatch",
+        entity: {
+          id: entryId(),
+          canonicalName: "Fictional Robotics",
+          headquartersCountry: "China",
+          entityStatus: "qualified",
+          revision: 4,
+          workerSecret: "private-worker-secret",
+        },
+      });
+    const repository = {
+      ...repositoryDouble(),
+      qualifyEntity,
+    };
+    const service = createService(repository);
+    const input = {
+      entityId: entryId(),
+      expectedRevision: 3,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      reason: "Public evidence supports exceptional strategic relevance.",
+    };
+
+    await expect(
+      service.qualifyEntity(
+        { ...ACTOR, email: "outsider@example.com" },
+        entryId(),
+        input,
+      ),
+    ).resolves.toEqual({ outcome: "forbidden" });
+    await expect(
+      service.qualifyEntity(ACTOR, entryId(), {
+        ...input,
+        entityId: SIGNAL_ID,
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    await expect(
+      service.qualifyEntity(ACTOR, entryId(), input),
+    ).resolves.toEqual({
+      outcome: "updated",
+      entity: {
+        id: entryId(),
+        canonicalName: "Fictional Robotics",
+        headquartersCountry: "China",
+        entityStatus: "qualified",
+        revision: 4,
+      },
+    });
+    await expect(
+      service.qualifyEntity(ACTOR, entryId(), input),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "revision_mismatch",
+      httpStatus: 409,
+      entity: {
+        id: entryId(),
+        canonicalName: "Fictional Robotics",
+        headquartersCountry: "China",
+        entityStatus: "qualified",
+        revision: 4,
+      },
+    });
+    expect(qualifyEntity).toHaveBeenCalledTimes(2);
+    expect(qualifyEntity).toHaveBeenNthCalledWith(1, {
+      entityId: entryId(),
+      actor: { userId: ACTOR.userId, email: "admin@example.com" },
+      envelope: {
+        expectedRevision: 3,
+        idempotencyKey: IDEMPOTENCY_KEY,
+        reason: input.reason,
+        now: NOW,
+      },
+    });
   });
 });
 

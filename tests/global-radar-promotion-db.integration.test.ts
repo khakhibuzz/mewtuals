@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
+import { createGlobalRadarAdminService } from "../app/server/global-radar/admin-service";
 import { closeDb, getDb } from "../db/client";
 import * as radarSchema from "../db/global-radar-schema";
 import {
@@ -540,7 +541,7 @@ describe("Global Demand Radar controlled promotion bridge", () => {
       "exceptional_strategic_relevance",
       {
         primaryClass: "demand_precursor",
-        entityStatus: "qualified",
+        entityStatus: "monitoring",
         primarySourceUrls: [
           "https://exceptional-a.example/public-case",
           "https://exceptional-b.example/public-case",
@@ -550,15 +551,52 @@ describe("Global Demand Radar controlled promotion bridge", () => {
   ] as const)("promotes through %s", async (eligibilityPath, options) => {
     const fixture = await seedPromotionFixture(options);
     const repository = createGlobalRadarPromotionRepository(db, configuration);
+    let promotionFixture = fixture;
+    if (eligibilityPath === "exceptional_strategic_relevance") {
+      const qualification = await createGlobalRadarAdminService({
+        repository: createGlobalRadarAdminRepository(db, configuration),
+        adminEmails: [actorEmail],
+        now: () => fixture.now,
+        queueManualRun: async () => ({ outcome: "invalid" }),
+        promote: async () => ({ outcome: "invalid" }),
+        reversePromotion: async () => ({ outcome: "invalid" }),
+      }).qualifyEntity(
+        { userId: actorUserId, email: actorEmail },
+        fixture.entity.id,
+        {
+          entityId: fixture.entity.id,
+          expectedRevision: fixture.entity.revision,
+          idempotencyKey: nextIdempotencyKey(),
+          reason:
+            "Administrator confirmed exceptional strategic relevance from public evidence.",
+        },
+      );
+      expect(qualification).toMatchObject({
+        outcome: "updated",
+        entity: { entityStatus: "qualified", revision: 1 },
+      });
+      const [qualifiedEntity] = await db
+        .select()
+        .from(globalEntities)
+        .where(eq(globalEntities.id, fixture.entity.id));
+      if (!qualifiedEntity) {
+        throw new Error("Qualified promotion entity was not persisted.");
+      }
+      promotionFixture = { ...fixture, entity: qualifiedEntity };
+    }
 
     const result = await repository.promote(
-      promotionInput(fixture, eligibilityPath),
+      promotionInput(promotionFixture, eligibilityPath),
     );
 
     expect(result).toMatchObject({
       outcome: "promoted",
       promotion: { eligibilityPath, status: "active" },
-      entity: { entityStatus: "promoted_to_candidate", revision: 1 },
+      entity: {
+        entityStatus: "promoted_to_candidate",
+        revision:
+          eligibilityPath === "exceptional_strategic_relevance" ? 2 : 1,
+      },
       primarySignal: { status: "promoted", revision: 1 },
       run: {
         campaignKey: "general_discovery",
@@ -568,13 +606,13 @@ describe("Global Demand Radar controlled promotion bridge", () => {
       },
       candidate: {
         type: "company",
-        name: fixture.entity.canonicalName,
-        category: fixture.signals[0]!.demandDomain,
-        subcategory: fixture.entity.sector,
-        geography: fixture.entity.headquartersCountry,
+        name: promotionFixture.entity.canonicalName,
+        category: promotionFixture.signals[0]!.demandDomain,
+        subcategory: promotionFixture.entity.sector,
+        geography: promotionFixture.entity.headquartersCountry,
         discoveryScore:
-          fixture.signals[0]!.directDemandScore ??
-          fixture.signals[0]!.precursorScore,
+          promotionFixture.signals[0]!.directDemandScore ??
+          promotionFixture.signals[0]!.precursorScore,
         status: "discovered",
       },
     });
@@ -582,9 +620,25 @@ describe("Global Demand Radar controlled promotion bridge", () => {
     expect(await db.select().from(globalSignalUpdates)).toMatchObject([
       { updateType: "promoted", actorType: "administrator" },
     ]);
-    expect(await db.select().from(globalRadarAdminEvents)).toMatchObject([
-      { action: "promoted_to_discovery", actorType: "administrator" },
-    ]);
+    const adminEvents = await db.select().from(globalRadarAdminEvents);
+    expect(adminEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "promoted_to_discovery",
+          actorType: "administrator",
+        }),
+      ]),
+    );
+    if (eligibilityPath === "exceptional_strategic_relevance") {
+      expect(adminEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: "entity_qualified",
+            actorType: "administrator",
+          }),
+        ]),
+      );
+    }
   });
 
   it("maps exact creator entities and preserves an existing Discovery decision and maximum score", async () => {

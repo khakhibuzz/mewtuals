@@ -937,6 +937,7 @@ describe("Global Radar run service", () => {
         appendNote: vi.fn(),
         mergeSignals: vi.fn(),
         upsertWatchlist: vi.fn(),
+        qualifyEntity: vi.fn(),
       },
       promotionRepository: {
         lookupPromotionReplay: vi.fn(),

@@ -61,6 +61,7 @@ describe("Global Radar signal actions", () => {
       "Append note",
       "Merge into this signal",
       "Save watchlist",
+      "Qualify entity",
       "Promote to India Discovery",
       "Reverse promotion",
     ]) {
@@ -689,6 +690,64 @@ describe("Global Radar signal actions", () => {
       rationale: "Qualified India-compatible direct demand.",
     });
     expect(await screen.findByRole("status")).toHaveTextContent("Promoted to India Discovery.");
+  });
+
+  it("explicitly qualifies the selected entity before exceptional promotion", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "updated",
+        entity: {
+          id: RADAR_ENTITY_ID,
+          canonicalName: "Fictional Robotics Example",
+          headquartersCountry: "China",
+          entityStatus: "qualified",
+          revision: 9,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "found",
+        detail: globalRadarDetailFixture({
+          status: "qualified",
+          revision: 4,
+          allowedActions: ["promote"],
+          entityStatus: "qualified",
+        }),
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderDetail({
+      status: "qualified",
+      allowedActions: ["qualify_entity", "promote"],
+      entityStatus: "watchlisted",
+    });
+
+    await user.type(
+      screen.getByLabelText("Entity qualification reason"),
+      "Two independent primary sources support exceptional relevance.",
+    );
+    await user.click(screen.getByRole("button", { name: "Qualify entity" }));
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `/api/admin/global-demand-radar/entities/${RADAR_ENTITY_ID}/qualification`,
+      expect.objectContaining({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entityId: RADAR_ENTITY_ID,
+          expectedRevision: 8,
+          idempotencyKey: IDEMPOTENCY_KEY,
+          reason:
+            "Two independent primary sources support exceptional relevance.",
+        }),
+      }),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Entity qualified for exceptional strategic relevance.",
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
   it("promotes qualified momentum for an explicitly selected contributor entity", async () => {

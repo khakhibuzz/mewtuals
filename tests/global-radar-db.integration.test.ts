@@ -5220,6 +5220,164 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     };
   }
 
+  it("qualifies safe entity states with optimistic idempotent audit semantics", async () => {
+    const signal = await persistedDirect("entity-qualification");
+    if (!signal.globalEntityId) {
+      throw new Error("Entity qualification fixture has no primary entity.");
+    }
+    const service = adminService();
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(signal.revision, "938"),
+        command: { type: "request_review" },
+      }),
+    ).resolves.toMatchObject({ outcome: "updated" });
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(signal.revision + 1, "939"),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toMatchObject({ outcome: "updated" });
+    await expect(adminRepository.getSignalDetail(signal.id)).resolves.toMatchObject({
+      outcome: "found",
+      detail: {
+        signal: { status: "qualified" },
+        allowedActions: expect.arrayContaining([
+          "qualify_entity",
+          "promote",
+        ]),
+      },
+    });
+    const input = {
+      entityId: signal.globalEntityId,
+      ...serviceEnvelope(0, "940"),
+      reason: "Two independent primary sources support exceptional relevance.",
+    };
+
+    await expect(
+      service.qualifyEntity(actor, signal.globalEntityId, input),
+    ).resolves.toMatchObject({
+      outcome: "updated",
+      entity: {
+        id: signal.globalEntityId,
+        entityStatus: "qualified",
+        revision: 1,
+      },
+    });
+    const detailAfterQualification = await adminRepository.getSignalDetail(
+      signal.id,
+    );
+    expect(detailAfterQualification).toMatchObject({
+      outcome: "found",
+      detail: {
+        organisation: { entityStatus: "qualified", revision: 1 },
+        allowedActions: expect.arrayContaining(["promote"]),
+      },
+    });
+    if (detailAfterQualification.outcome !== "found") {
+      throw new Error("Qualified entity detail was not found.");
+    }
+    expect(detailAfterQualification.detail.allowedActions).not.toContain(
+      "qualify_entity",
+    );
+    await expect(
+      service.qualifyEntity(actor, signal.globalEntityId, input),
+    ).resolves.toMatchObject({
+      outcome: "replayed",
+      entity: { entityStatus: "qualified", revision: 1 },
+    });
+    await expect(
+      service.qualifyEntity(actor, signal.globalEntityId, {
+        ...input,
+        reason: "Changed request must not reuse an idempotency key.",
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "idempotency_mismatch",
+      entity: { entityStatus: "qualified", revision: 1 },
+    });
+    await expect(
+      service.qualifyEntity(actor, signal.globalEntityId, {
+        ...input,
+        idempotencyKey: "00000000-0000-4000-8000-000000000941",
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "revision_mismatch",
+      entity: { entityStatus: "qualified", revision: 1 },
+    });
+
+    const events = await db
+      .select()
+      .from(globalRadarAdminEvents)
+      .where(eq(globalRadarAdminEvents.targetId, signal.globalEntityId));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      actorType: "administrator",
+      actorEmail: userEmail,
+      targetType: "entity",
+      targetId: signal.globalEntityId,
+      action: "entity_qualified",
+      reason: input.reason,
+      beforeSafeState: {
+        entityStatus: "observed",
+        revision: 0,
+      },
+      afterSafeState: {
+        entityStatus: "qualified",
+        revision: 1,
+        requestFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain("rawMetadata");
+
+    const archivedSignal = await persistedDirect(
+      "entity-qualification-archived",
+    );
+    if (!archivedSignal.globalEntityId) {
+      throw new Error("Archived entity fixture has no primary entity.");
+    }
+    await db
+      .update(globalEntities)
+      .set({ entityStatus: "archived" })
+      .where(eq(globalEntities.id, archivedSignal.globalEntityId));
+    const [archivedEntity] = await db
+      .select()
+      .from(globalEntities)
+      .where(eq(globalEntities.id, archivedSignal.globalEntityId));
+    if (!archivedEntity) {
+      throw new Error("Archived entity fixture was not persisted.");
+    }
+    const [eventCountBeforeRejectedTransition] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(globalRadarAdminEvents)
+      .where(eq(globalRadarAdminEvents.targetId, archivedSignal.globalEntityId));
+    await expect(
+      service.qualifyEntity(actor, archivedSignal.globalEntityId, {
+        entityId: archivedSignal.globalEntityId,
+        ...serviceEnvelope(archivedEntity.revision, "942"),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "transition_not_allowed",
+      entity: {
+        entityStatus: "archived",
+        revision: archivedEntity.revision,
+      },
+    });
+    const [archivedEventCount] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(globalRadarAdminEvents)
+      .where(eq(globalRadarAdminEvents.targetId, archivedSignal.globalEntityId));
+    expect(archivedEventCount?.count).toBe(
+      eventCountBeforeRejectedTransition?.count,
+    );
+  });
+
   it("rejects unsupported direct score inputs before classification writes", async () => {
     const signal = await persistedDirect("direct-score-provenance");
     await db

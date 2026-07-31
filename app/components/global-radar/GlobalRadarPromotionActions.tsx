@@ -71,6 +71,11 @@ export function GlobalRadarPromotionActions({
       numberValue(entity.revision, -1) >= 0 &&
       entities.findIndex((candidate) => candidate.id === entity.id) === index,
   );
+  const qualifiableEntities = promotionEntities.filter((entity) =>
+    ["observed", "watchlisted", "monitoring"].includes(
+      String(entity.entityStatus),
+    )
+  );
   const promotion = record(adminSection(detail).promotion);
   const revisionContext = record(promotion.revisionContext);
   const [supporting, setSupporting] = useState("");
@@ -82,6 +87,9 @@ export function GlobalRadarPromotionActions({
   const [reversalReason, setReversalReason] = useState("");
   const [reversalConfirmed, setReversalConfirmed] = useState(false);
   const [selectedEntityId, setSelectedEntityId] = useState("");
+  const [selectedQualificationEntityId, setSelectedQualificationEntityId] =
+    useState("");
+  const [qualificationReason, setQualificationReason] = useState("");
   const selectedEntity = promotionEntities.find(
     ({ id }) => id === selectedEntityId,
   ) ?? promotionEntities[0] ?? null;
@@ -90,6 +98,47 @@ export function GlobalRadarPromotionActions({
       ? selectedEntity.id
       : null;
   const entityRevision = numberValue(selectedEntity?.revision, -1);
+  const selectedQualificationEntity = qualifiableEntities.find(
+    ({ id }) => id === selectedQualificationEntityId,
+  ) ?? qualifiableEntities[0] ?? null;
+  const qualificationEntityId =
+    selectedQualificationEntity &&
+    typeof selectedQualificationEntity.id === "string"
+      ? selectedQualificationEntity.id
+      : null;
+  const qualificationEntityRevision = numberValue(
+    selectedQualificationEntity?.revision,
+    -1,
+  );
+
+  function qualifyEntity() {
+    if (
+      !qualificationEntityId ||
+      qualificationEntityRevision < 0 ||
+      !qualificationReason.trim()
+    ) {
+      validationError(
+        "Select an eligible entity and provide a qualification reason.",
+      );
+      return;
+    }
+    run({
+      key: "qualify-entity",
+      path:
+        `/api/admin/global-demand-radar/entities/${qualificationEntityId}/qualification`,
+      method: "PATCH",
+      responseMode: "refresh",
+      successOutcomes: ["updated", "replayed"],
+      successMessage:
+        "Entity qualified for exceptional strategic relevance.",
+      body: {
+        entityId: qualificationEntityId,
+        expectedRevision: qualificationEntityRevision,
+        idempotencyKey: globalThis.crypto.randomUUID(),
+        reason: qualificationReason.trim(),
+      },
+    });
+  }
 
   function promote() {
     const selected = supportingSignals(supporting);
@@ -149,6 +198,52 @@ export function GlobalRadarPromotionActions({
 
   return (
     <>
+      {allowed.has("qualify_entity") && qualifiableEntities.length > 0 ? (
+        <form
+          className={styles.actionForm}
+          onSubmit={(event) => {
+            event.preventDefault();
+            qualifyEntity();
+          }}
+        >
+          <fieldset disabled={pending}>
+            <legend>Exceptional strategic relevance</legend>
+            <p>
+              Qualifying an entity is an explicit audited decision. It is
+              required only for the exceptional strategic relevance promotion
+              path.
+            </p>
+            <label>
+              <span>Entity to qualify</span>
+              <select
+                onChange={(event) =>
+                  setSelectedQualificationEntityId(event.target.value)
+                }
+                value={qualificationEntityId ?? ""}
+              >
+                {qualifiableEntities.map((entity) => (
+                  <option key={String(entity.id)} value={String(entity.id)}>
+                    {text(entity.canonicalName)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p>Entity revision: {qualificationEntityRevision}</p>
+            <label>
+              <span>Entity qualification reason</span>
+              <textarea
+                maxLength={2_000}
+                onChange={(event) =>
+                  setQualificationReason(event.target.value)
+                }
+                required
+                value={qualificationReason}
+              />
+            </label>
+            <button type="submit">Qualify entity</button>
+          </fieldset>
+        </form>
+      ) : null}
       {allowed.has("promote") ? (
         <form className={styles.actionForm} onSubmit={(event) => { event.preventDefault(); promote(); }}>
           <fieldset disabled={pending}>

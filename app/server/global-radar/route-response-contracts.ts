@@ -491,6 +491,7 @@ const globalRadarAllowedActions = [
   "append_note",
   "merge",
   "edit_watchlist",
+  "qualify_entity",
   "promote",
   "reverse_promotion",
 ] as const;
