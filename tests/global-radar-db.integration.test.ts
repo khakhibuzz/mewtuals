@@ -1,14 +1,18 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   GLOBAL_RADAR_DEDUPE_VERSION,
+  GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
+  MAX_GLOBAL_RADAR_MOMENTUM_OBSERVATIONS,
   GLOBAL_RADAR_PROMPT_VERSION,
   GLOBAL_RADAR_SCHEMA_VERSION,
+  GLOBAL_RADAR_SCORE_VERSION,
+  assessComplianceReview,
   canonicalizeGlobalRadarPersistenceBatch,
   createEntityIdentity,
   createEvidenceFingerprint,
@@ -17,12 +21,17 @@ import {
   createGlobalRadarSignalDedupeKey,
   createGlobalRadarSignalDedupeKeyFromIdentityAnchors,
   deriveEcosystemMomentum,
+  deriveGlobalRadarReclassification,
   generateGlobalRadarQueries,
   normalizeRequirements,
   parseGlobalRadarPlanSnapshot,
+  parseActiveScoreEvidenceSnapshot,
   planGlobalRadarRun,
   persistableGlobalRadarBatchObjectSchema,
+  scoreDemandPrecursor,
   scoreDirectDemand,
+  scoreEcosystemMomentum,
+  type ActiveScoreEvidenceSnapshot,
   type PersistableGlobalRadarBatch,
   type RadarPlan,
 } from "../app/domain/global-radar";
@@ -52,6 +61,12 @@ import {
 } from "../db/repositories/global-radar-repository";
 import { createGlobalRadarAdminRepository } from "../db/repositories/global-radar-admin-repository";
 import { persistGlobalRadarBatch } from "../db/repositories/global-radar-persistence";
+import {
+  createStoredGlobalRadarScoreInputDigest,
+  rebaseStoredScoreEvidenceSnapshot,
+  storedScoreComponents,
+} from "../db/repositories/global-radar-score-evidence";
+import { validateStoredGlobalRadarScoreProvenance } from "../db/repositories/global-radar-stored-score-provenance";
 import * as coreDatabaseSchema from "../db/schema";
 import { discoveryRuns, users } from "../db/schema";
 
@@ -59,6 +74,114 @@ const db = getDb();
 const testRun = randomUUID();
 const userEmail = `global-radar-db-${testRun}@example.test`;
 const HASH_A = "a".repeat(64);
+
+async function nextGlobalRadarEvidenceIngestOrdinal(signalId: string) {
+  const [latestEvidence] = await db
+    .select({ ingestOrdinal: globalSignalEvidence.ingestOrdinal })
+    .from(globalSignalEvidence)
+    .where(eq(globalSignalEvidence.signalId, signalId))
+    .orderBy(desc(globalSignalEvidence.ingestOrdinal))
+    .limit(1);
+  return (latestEvidence?.ingestOrdinal ?? 0) + 1;
+}
+
+type MutableActiveScoreEvidenceAssociation = {
+  -readonly [Key in keyof ActiveScoreEvidenceSnapshot["componentEvidence"][number]]:
+    Key extends "evidence"
+      ? Array<
+          ActiveScoreEvidenceSnapshot["componentEvidence"][number]["evidence"][number]
+        >
+      : ActiveScoreEvidenceSnapshot["componentEvidence"][number][Key];
+};
+type MutableActiveScoreEvidenceSnapshot = {
+  -readonly [Key in keyof ActiveScoreEvidenceSnapshot]:
+    Key extends "componentEvidence"
+      ? MutableActiveScoreEvidenceAssociation[]
+      : ActiveScoreEvidenceSnapshot[Key];
+};
+
+async function rebaseGlobalRadarFixtureSignal(
+  signalId: string,
+  overrides: Partial<typeof globalRadarSignals.$inferSelect>,
+) {
+  const [signal] = await db
+    .select()
+    .from(globalRadarSignals)
+    .where(eq(globalRadarSignals.id, signalId));
+  if (!signal) throw new Error("Score-input rebase fixture signal is missing.");
+  const provenance = await validateStoredGlobalRadarScoreProvenance(db, signal);
+  if (!provenance.valid) {
+    throw new Error(`Score-input rebase fixture is invalid: ${provenance.reason}.`);
+  }
+  const associations = await db
+    .select({
+      globalEntityId: globalRadarSignalEntities.globalEntityId,
+      role: globalRadarSignalEntities.role,
+    })
+    .from(globalRadarSignalEntities)
+    .where(eq(globalRadarSignalEntities.signalId, signal.id));
+  const entityIds = [
+    ...new Set([
+      ...(signal.globalEntityId === null ? [] : [signal.globalEntityId]),
+      ...associations.map(({ globalEntityId }) => globalEntityId),
+      ...provenance.evaluationEvidence.flatMap(({ globalEntityId }) =>
+        globalEntityId === null ? [] : [globalEntityId],
+      ),
+    ]),
+  ];
+  const entities = entityIds.length
+    ? await db
+        .select({
+          id: globalEntities.id,
+          canonicalCorporateGroupId: globalEntities.canonicalCorporateGroupId,
+        })
+        .from(globalEntities)
+        .where(inArray(globalEntities.id, entityIds))
+    : [];
+  if (entities.length !== entityIds.length) {
+    throw new Error("Score-input rebase fixture entity mapping is invalid.");
+  }
+  const nextSignal = { ...signal, ...overrides };
+  const actionabilityInput =
+    signal.signalClass === "direct_demand"
+      ? (provenance.snapshot.componentEvidence.find(
+          ({ component }) => component === "actionability",
+        )?.inputValue ?? null)
+      : null;
+  const scoreInputDigest = createStoredGlobalRadarScoreInputDigest({
+    scoreAsOf: new Date(provenance.snapshot.scoreAsOf),
+    signal: nextSignal,
+    actionabilityInput,
+    associations,
+    entities,
+  });
+  const scoreEvidenceSnapshot = rebaseStoredScoreEvidenceSnapshot({
+    existingSnapshot: signal.scoreEvidenceSnapshot,
+    signalClass: signal.signalClass,
+    signalType: signal.signalType,
+    currentIndiaRelevanceType: signal.indiaRelevanceType,
+    nextIndiaRelevanceType: signal.indiaRelevanceType,
+    scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+    momentumPolicyVersion:
+      signal.signalClass === "ecosystem_momentum"
+        ? GLOBAL_RADAR_MOMENTUM_POLICY_VERSION
+        : null,
+    currentComponents: storedScoreComponents(signal),
+    nextComponents: storedScoreComponents(signal),
+    replacementComponents: [],
+    momentumContributorEntityIds: provenance.momentumContributorEntityIds,
+    announcedAt: signal.announcedAt,
+    effectiveFrom: signal.effectiveFrom,
+    existingEvidence: provenance.evaluationEvidence,
+    evidence: provenance.evaluationEvidence,
+    scoreInputDigest,
+  });
+  await db
+    .update(globalRadarSignals)
+    .set({ ...overrides, scoreEvidenceSnapshot })
+    .where(eq(globalRadarSignals.id, signal.id));
+}
+
 function testRadarPlan(
   scanMode: QueueGlobalRadarRunInput["scanMode"] = "daily",
   administratorRequestId?: string,
@@ -268,6 +391,68 @@ const ALL_UNKNOWN_SENSITIVE_DATA = {
   export_controls: null,
 } as const;
 
+function persistenceFixtureCandidateEvidence(
+  signal: PersistableGlobalRadarBatch["signals"][number],
+) {
+  return signal.evidence.map((item) => ({
+    sourceUrl: item.sourceUrl,
+    canonicalSourceUrl: item.canonicalSourceUrl,
+    sourceKind: "original" as const,
+    sourceLanguage: item.sourceLanguage,
+    originalText: item.claim,
+    englishSummary: item.englishSummary,
+    publishedAt: item.publishedAt,
+    observedAt: item.observedAt,
+    evidenceConfidence: item.evidenceConfidence,
+    translationConfidence: item.translationConfidence,
+    isPrimarySource: item.isPrimarySource,
+    isOfficialProcurementSource:
+      item.sourceFamily === "public_procurement_and_rfp_portals",
+    supportsDirectDemand: item.supportsDirectDemand,
+    isSyndicated: item.isSyndicated,
+    organizationId: item.contributorEntityRef ?? item.evidenceFingerprint,
+    corporateGroupId: "group:acme-robotics",
+    supportedFieldPaths: item.supportedFieldPaths,
+  }));
+}
+
+function deriveDirectPersistenceFixtureScore(
+  signal: PersistableGlobalRadarBatch["signals"][number],
+) {
+  if (signal.signalClass !== "direct_demand") {
+    throw new Error("Direct persistence fixture was not produced.");
+  }
+  const derived = deriveGlobalRadarReclassification({
+    signalClass: "direct_demand",
+    signalType: signal.signalType,
+    currentStatus: signal.initialStatus,
+    indiaRelevanceType: signal.indiaRelevance.relevanceType,
+    announcedAt: signal.announcedAt,
+    effectiveFrom: signal.effectiveFrom,
+    observedAt: signal.observedAt,
+    expiresAt: signal.expiresAt,
+    responsePath: signal.responsePath,
+    sensitiveDataAndCompliance: signal.sensitiveDataAndCompliance,
+    assessments: {
+      actionability: signal.actionabilityInput,
+      commercialPotential: signal.score.components.commercialPotential,
+      repeatability: signal.score.components.repeatability,
+      strategicLearning: signal.score.components.strategicLearning,
+      complianceComplexity: signal.score.components.complianceComplexity,
+    },
+    evidence: persistenceFixtureCandidateEvidence(signal),
+    now: new Date(signal.scoreAsOf),
+  });
+  if (!derived.valid || derived.signalClass !== "direct_demand") {
+    throw new Error(
+      `Direct persistence fixture score did not derive: ${
+        "reason" in derived ? derived.reason : derived.signalClass
+      }.`,
+    );
+  }
+  return derived.score;
+}
+
 function validPersistenceBatch(
   runId: string,
   options: {
@@ -400,12 +585,14 @@ function validPersistenceBatch(
             complianceComplexity: 20,
           },
         },
+        actionabilityInput: 90,
         announcedAt: "2026-07-29T00:00:00.000Z",
         effectiveFrom: "2026-07-29T00:00:00.000Z",
         expiresAt: "2026-08-29T00:00:00.000Z",
         evergreen: false,
         reobserveBy: null,
         observedAt,
+        scoreAsOf: observedAt,
         initialStatus: "newly_discovered",
         responsePath: {
           type: "supplier_or_partner_registration",
@@ -462,7 +649,7 @@ function validPersistenceBatch(
             sourceCountry: "United States",
             sourceFamily: "official_company_material",
             claim:
-              "Acme requests teleoperated robot trajectories from eligible Indian operators.",
+              "Acme requests eligible Indian operators to collect teleoperated robot trajectories at https://acme.example/suppliers.",
             sourceExcerpt: "Seeking teleoperation partners in India.",
             englishSummary:
               "Acme is seeking eligible Indian operators for teleoperated robot data.",
@@ -482,7 +669,15 @@ function validPersistenceBatch(
             }),
             supportedFieldPaths: [
               "signal.title",
-              "signal.indiaRelevance.relevanceType",
+              "signal.announcedAt",
+              "directDemandAsk.data_collection_request",
+              "indiaRelevance.explicit_India.collection",
+              "responsePath",
+              "scoreComponents.actionability",
+              "scoreComponents.commercialPotential",
+              "scoreComponents.repeatability",
+              "scoreComponents.strategicLearning",
+              "scoreComponents.complianceComplexity",
             ],
           },
         ],
@@ -491,6 +686,11 @@ function validPersistenceBatch(
     sourceErrors: [],
     rejections: {},
   };
+  const signal = batch.signals[0];
+  if (!signal || signal.signalClass !== "direct_demand") {
+    throw new Error("Direct persistence fixture was not produced.");
+  }
+  signal.score = deriveDirectPersistenceFixtureScore(signal);
   return rehashPersistenceBatch(batch);
 }
 
@@ -596,6 +796,7 @@ function validMomentumPersistenceBatch(
   );
   if (!derived.valid) throw new Error("Momentum fixture did not derive.");
   const direct = batch.signals[0]!;
+  delete (direct as { actionabilityInput?: number | null }).actionabilityInput;
   batch.signals = [
     {
       ...direct,
@@ -644,6 +845,7 @@ function validMomentumPersistenceBatch(
       evergreen: null,
       reobserveBy: null,
       observedAt: "2026-07-31T14:00:00.000Z",
+      scoreAsOf: "2026-07-31T14:00:00.000Z",
       responsePath: null,
       partnerApplicationUrl: null,
       systemsContext: null,
@@ -665,7 +867,11 @@ function validMomentumPersistenceBatch(
             canonicalSourceUrl: firstUrl,
             isPrimarySource: true,
           }),
-          supportedFieldPaths: ["signal.factualSummary"],
+          supportedFieldPaths: [
+            "signal.factualSummary",
+            "momentumMetrics.taxonomyConsistency",
+            "momentumMetrics.evidenceQuality",
+          ],
         },
         {
           ...direct.evidence[0]!,
@@ -687,7 +893,11 @@ function validMomentumPersistenceBatch(
             canonicalSourceUrl: secondUrl,
             isPrimarySource: false,
           }),
-          supportedFieldPaths: ["signal.factualSummary"],
+          supportedFieldPaths: [
+            "signal.factualSummary",
+            "momentumMetrics.taxonomyConsistency",
+            "momentumMetrics.evidenceQuality",
+          ],
         },
         {
           ...direct.evidence[0]!,
@@ -723,6 +933,7 @@ function validPrecursorPersistenceBatch(
 ): PersistableGlobalRadarBatch {
   const batch = structuredClone(validPersistenceBatch(runId));
   const direct = batch.signals[0]!;
+  delete (direct as { actionabilityInput?: number | null }).actionabilityInput;
   direct.externalSignalId = "signal-acme-precursor";
   direct.signalClass = "demand_precursor";
   direct.signalType = "funding";
@@ -735,7 +946,7 @@ function validPrecursorPersistenceBatch(
     valid: true,
     signalClass: "demand_precursor",
     scoreVersion: "global-radar-score-v1",
-    score: 72,
+    score: 74,
     scoreCoverage: 100,
     qualificationGatesPassed: true,
     components: {
@@ -748,6 +959,7 @@ function validPrecursorPersistenceBatch(
       strategicRelevance: 70,
     },
   };
+  direct.effectiveFrom = "2026-09-15T00:00:00.000Z";
   direct.expiresAt = null;
   direct.evergreen = null;
   direct.reobserveBy = null;
@@ -756,12 +968,50 @@ function validPrecursorPersistenceBatch(
   direct.evidence = direct.evidence.map((evidence) => ({
     ...evidence,
     sourceType: "official_funding_announcement",
-    claim: "Acme announced funding for a dated robot-learning programme.",
-    sourceExcerpt: "New funding supports the robot-learning programme.",
+    claim:
+      "Acme announced funding for a dated robot-learning programme that will collect data in India.",
+    sourceExcerpt:
+      "New funding supports an India data-collection programme.",
     englishSummary:
-      "Acme announced a funded robot-learning programme without an external request.",
+      "Acme announced a funded India data-collection programme without an external request.",
     supportsDirectDemand: false,
+    supportedFieldPaths: [
+      "signal.title",
+      "signal.effectiveFrom",
+      "precursorDevelopment.funding",
+      "indiaRelevance.explicit_India.collection",
+      "scoreComponents.proximityToExternalDemand",
+      "scoreComponents.fundingDeploymentMomentum",
+      "scoreComponents.likelyDataHardwareIntensity",
+      "scoreComponents.strategicRelevance",
+    ],
   }));
+  const derived = deriveGlobalRadarReclassification({
+    signalClass: "demand_precursor",
+    signalType: direct.signalType,
+    currentStatus: direct.initialStatus,
+    indiaRelevanceType: direct.indiaRelevance.relevanceType,
+    announcedAt: direct.announcedAt,
+    effectiveFrom: direct.effectiveFrom,
+    observedAt: direct.observedAt,
+    responsePath: direct.responsePath,
+    sensitiveDataAndCompliance: direct.sensitiveDataAndCompliance,
+    assessments: {
+      proximityToExternalDemand:
+        direct.score.components.proximityToExternalDemand,
+      fundingDeploymentMomentum:
+        direct.score.components.fundingDeploymentMomentum,
+      likelyDataHardwareIntensity:
+        direct.score.components.likelyDataHardwareIntensity,
+      strategicRelevance: direct.score.components.strategicRelevance,
+    },
+    evidence: persistenceFixtureCandidateEvidence(direct),
+    now: new Date(direct.scoreAsOf),
+  });
+  if (!derived.valid || derived.signalClass !== "demand_precursor") {
+    throw new Error("Precursor persistence fixture score did not derive.");
+  }
+  direct.score = structuredClone(derived.score);
   return rehashPersistenceBatch(batch);
 }
 
@@ -1007,7 +1257,10 @@ describe("PostgreSQL Global Radar repository queue", () => {
           scanMode: "manual",
         }),
       ),
-    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "invalid_input",
+    });
     await expect(
       repository.queueRun(
         queueInput("nonmanual-manual-mode", { scanMode: "manual" }),
@@ -1374,6 +1627,46 @@ describe("PostgreSQL Global Radar repository claiming", () => {
 });
 
 describe("PostgreSQL Global Radar repository failure and abandonment", () => {
+  it("rejects sensitive terminal diagnostics without mutating the running row", async () => {
+    const now = new Date("2026-07-29T13:00:00.000Z");
+    await repository.queueRun(queueInput("sensitive-terminal-diagnostics", { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+    const before = await runningPersistenceSnapshot(claim.run.id);
+
+    for (const reason of [
+      `Adapter stopped after ${claim.privateClaim.leaseToken}.`,
+      "Authorization: Bearer private-worker-token-value",
+      "claim_path=/private/tmp/global-radar-claim.json",
+      "rejectedPayload={private}",
+    ]) {
+      await expect(
+        repository.failRun({
+          runId: claim.run.id,
+          leaseToken: claim.privateClaim.leaseToken,
+          now: new Date(now.getTime() + 1_000),
+          reason,
+        }),
+      ).resolves.toMatchObject({ outcome: "conflict", reason: "invalid_input" });
+      expect(await runningPersistenceSnapshot(claim.run.id)).toEqual(before);
+    }
+
+    for (const reason of [
+      "Authorization: Bearer private-worker-token-value",
+      "claim_path=/private/tmp/global-radar-claim.json",
+      "request_payload={private}",
+    ]) {
+      await expect(
+        repository.abandonRun({
+          runId: claim.run.id,
+          now: new Date(now.getTime() + 1_000),
+          reason,
+        }),
+      ).resolves.toMatchObject({ outcome: "conflict", reason: "invalid_input" });
+      expect(await runningPersistenceSnapshot(claim.run.id)).toEqual(before);
+    }
+  });
+
   it("rejects pre-start fail and abandon clocks without lifecycle writes", async () => {
     const startedAt = new Date("2026-07-29T13:30:00.000Z");
     await repository.queueRun(queueInput("pre-start-terminal-clock", { now: startedAt }));
@@ -1615,6 +1908,32 @@ describe("PostgreSQL Global Radar repository failure and abandonment", () => {
 });
 
 describe("PostgreSQL Global Radar repository completion and safe reads", () => {
+  it("rejects an exact lease token embedded in an otherwise valid batch without writes", async () => {
+    const now = new Date("2026-07-29T17:10:00.000Z");
+    await repository.queueRun(queueInput("sensitive-completion-batch", { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+    const before = await runningPersistenceSnapshot(claim.run.id);
+    const batch = structuredClone(validPersistenceBatch(claim.run.id));
+    batch.entities[0]!.shortDescription =
+      `Public company summary followed by ${claim.privateClaim.leaseToken}.`;
+    const rehashed = rehashPersistenceBatch(batch);
+
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          claim.run.id,
+          claim.privateClaim.leaseToken,
+          new Date(now.getTime() + 1_000),
+        ),
+        batch: rehashed,
+        submissionHash: rehashed.canonicalSubmissionHash,
+        batchFingerprint: rehashed.canonicalSubmissionHash,
+      }),
+    ).resolves.toMatchObject({ outcome: "conflict", reason: "invalid_input" });
+    expect(await runningPersistenceSnapshot(claim.run.id)).toEqual(before);
+  });
+
   it("rejects a pre-start completion clock for an honest-zero batch without writes", async () => {
     const startedAt = new Date("2026-07-29T17:15:00.000Z");
     await repository.queueRun(queueInput("complete-pre-start", { now: startedAt }));
@@ -2154,6 +2473,55 @@ describe("PostgreSQL Global Radar repository completion and safe reads", () => {
       numberSourceErrors: 50,
       errorSummary: { sourceErrors },
     });
+  });
+
+  it("allows a public technology source name while rejecting SQL diagnostics", async () => {
+    const now = new Date("2026-07-30T00:05:00.000Z");
+    await repository.queueRun(queueInput("public-technology-source-name", { now }));
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+    const batch = structuredClone(validPersistenceBatch(claim.run.id));
+    batch.sourceErrors = [
+      {
+        sourceName: "PostgreSQL official documentation",
+        message: "Temporarily unavailable",
+        queryFingerprint: null,
+      },
+    ];
+    const canonicalBatch = rehashPersistenceBatch(batch);
+
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          claim.run.id,
+          claim.privateClaim.leaseToken,
+          new Date(now.getTime() + 1_000),
+        ),
+        submissionHash: canonicalBatch.canonicalSubmissionHash,
+        batchFingerprint: canonicalBatch.canonicalSubmissionHash,
+        batch: canonicalBatch,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "completed",
+      run: {
+        sourceErrors: [
+          {
+            sourceName: "PostgreSQL official documentation",
+            message: "Temporarily unavailable",
+          },
+        ],
+      },
+    });
+
+    const unsafe = structuredClone(validPersistenceBatch(claim.run.id));
+    unsafe.sourceErrors = [
+      {
+        sourceName: "PostgreSQL official documentation",
+        message: "SELECT secret FROM private_table WHERE id = 1",
+        queryFingerprint: null,
+      },
+    ];
+    expect(() => rehashPersistenceBatch(unsafe)).toThrow();
   });
 
   it("rejects fifty-one source errors without mutating the running row", async () => {
@@ -2850,6 +3218,165 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
     );
   });
 
+  it("recomputes rediscovery from the complete ordinal evidence prefix when the new proposal omits historical evidence", async () => {
+    const firstNow = new Date("2026-07-30T05:35:00.000Z");
+    await repository.queueRun(
+      queueInput("full-prefix-rediscovery-first", { now: firstNow }),
+    );
+    const firstClaim = await repository.claimRun({ now: firstNow });
+    if (firstClaim.outcome !== "claimed") {
+      throw new Error("First full-prefix fixture was not claimed.");
+    }
+    const first = structuredClone(
+      validPersistenceBatch(firstClaim.run.id, {
+        observedAt: "2026-07-30T05:35:30.000Z",
+        sourceUrl: "https://acme.example/full-prefix-primary",
+      }),
+    );
+    const firstSignal = first.signals[0]!;
+    const identityEvidence = firstSignal.evidence[0]!;
+    identityEvidence.evidenceConfidence = 80;
+    const historicalSourceUrl = "https://acme.example/full-prefix-old";
+    const historicalEvidence = {
+      ...structuredClone(identityEvidence),
+      sourceUrl: historicalSourceUrl,
+      canonicalSourceUrl: historicalSourceUrl,
+      sourceName: "Historical supporting source",
+      claim: "A historical supporting source confirms the public request.",
+      englishSummary:
+        "A historical supporting source confirms the public request.",
+      evidenceConfidence: 60,
+      isPrimarySource: false,
+      supportedFieldPaths: ["signal.factualSummary"],
+      evidenceFingerprint: createEvidenceFingerprint({
+        sourceUrl: historicalSourceUrl,
+        canonicalSourceUrl: historicalSourceUrl,
+        isPrimarySource: false,
+      }),
+    };
+    firstSignal.evidence = [identityEvidence, historicalEvidence].sort(
+      (left, right) =>
+        left.evidenceFingerprint.localeCompare(right.evidenceFingerprint),
+    );
+    firstSignal.score = deriveDirectPersistenceFixtureScore(firstSignal);
+    const firstBatch = rehashPersistenceBatch(first);
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          firstClaim.run.id,
+          firstClaim.privateClaim.leaseToken,
+          new Date("2026-07-30T05:36:00.000Z"),
+        ),
+        submissionHash: firstBatch.canonicalSubmissionHash,
+        batch: firstBatch,
+      }),
+    ).resolves.toMatchObject({ outcome: "completed", run: { numberNew: 1 } });
+    const initialEvidence = await db
+      .select({
+        evidenceFingerprint: globalSignalEvidence.evidenceFingerprint,
+        ingestOrdinal: globalSignalEvidence.ingestOrdinal,
+      })
+      .from(globalSignalEvidence)
+      .orderBy(asc(globalSignalEvidence.ingestOrdinal));
+    const identityOrdinal = initialEvidence.find(
+      ({ evidenceFingerprint }) =>
+        evidenceFingerprint === identityEvidence.evidenceFingerprint,
+    )?.ingestOrdinal;
+    expect(identityOrdinal).toBeDefined();
+
+    const secondNow = new Date("2026-07-31T05:35:00.000Z");
+    await repository.queueRun(
+      queueInput("full-prefix-rediscovery-second", { now: secondNow }),
+    );
+    const secondClaim = await repository.claimRun({ now: secondNow });
+    if (secondClaim.outcome !== "claimed") {
+      throw new Error("Second full-prefix fixture was not claimed.");
+    }
+    const second = structuredClone(
+      validPersistenceBatch(secondClaim.run.id, {
+        observedAt: "2026-07-31T05:35:30.000Z",
+        sourceUrl: "https://acme.example/full-prefix-primary",
+      }),
+    );
+    const secondSignal = second.signals[0]!;
+    const currentSourceUrl = "https://acme.example/full-prefix-new";
+    const currentEvidence = {
+      ...structuredClone(identityEvidence),
+      sourceUrl: currentSourceUrl,
+      canonicalSourceUrl: currentSourceUrl,
+      sourceName: "Current supporting source",
+      claim: "A current supporting source confirms the public request.",
+      englishSummary: "A current supporting source confirms the public request.",
+      observedAt: secondSignal.observedAt,
+      evidenceConfidence: 100,
+      isPrimarySource: false,
+      supportedFieldPaths: ["signal.factualSummary"],
+      evidenceFingerprint: createEvidenceFingerprint({
+        sourceUrl: currentSourceUrl,
+        canonicalSourceUrl: currentSourceUrl,
+        isPrimarySource: false,
+      }),
+    };
+    secondSignal.evidence = [
+      structuredClone(identityEvidence),
+      currentEvidence,
+    ].sort((left, right) =>
+      left.evidenceFingerprint.localeCompare(right.evidenceFingerprint),
+    );
+    secondSignal.score = deriveDirectPersistenceFixtureScore(secondSignal);
+    const secondBatch = rehashPersistenceBatch(second);
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          secondClaim.run.id,
+          secondClaim.privateClaim.leaseToken,
+          new Date("2026-07-31T05:36:00.000Z"),
+        ),
+        submissionHash: secondBatch.canonicalSubmissionHash,
+        batch: secondBatch,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "completed",
+      run: { numberUpdated: 1, numberNew: 0 },
+    });
+
+    const [stored] = await db.select().from(globalRadarSignals);
+    if (!stored) throw new Error("Full-prefix signal was not stored.");
+    expect(stored.evidenceConfidence).toBe(80);
+    expect(stored.scoreEvidenceSnapshot).toMatchObject({
+      evidenceBoundaryOrdinal: 3,
+      evidenceSetCount: 3,
+    });
+    const storedEvidence = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, stored.id))
+      .orderBy(asc(globalSignalEvidence.ingestOrdinal));
+    expect(storedEvidence.map(({ ingestOrdinal }) => ingestOrdinal)).toEqual([
+      1, 2, 3,
+    ]);
+    expect(
+      storedEvidence.find(
+        ({ evidenceFingerprint }) =>
+          evidenceFingerprint === identityEvidence.evidenceFingerprint,
+      )?.ingestOrdinal,
+    ).toBe(identityOrdinal);
+    const adminRepository = createGlobalRadarAdminRepository(db, {
+      scoreVersion: GLOBAL_RADAR_SCORE_VERSION,
+      thresholds: {
+        direct_demand: 70,
+        demand_precursor: 65,
+        ecosystem_momentum: 70,
+      },
+    });
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "direct_demand",
+        filters: { page: 1 },
+      }),
+    ).resolves.toMatchObject({ outcome: "listed", total: 1 });
+  });
+
   it("rediscovery updates the active owner when a merged row retains the same dedupe key", async () => {
     const firstNow = new Date("2026-07-30T05:40:00.000Z");
     await repository.queueRun(queueInput("active-dedupe-owner-first", { now: firstNow }));
@@ -2946,14 +3473,11 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
     const [createdSignal] = await db.select().from(globalRadarSignals);
     if (!createdSignal) throw new Error("Signal was not persisted.");
     const humanExpiry = new Date("2026-08-15T00:00:00.000Z");
-    await db
-      .update(globalRadarSignals)
-      .set({
-        status: "qualified",
-        expiresAt: humanExpiry,
-        revision: 9,
-      })
-      .where(eq(globalRadarSignals.id, createdSignal.id));
+    await rebaseGlobalRadarFixtureSignal(createdSignal.id, {
+      status: "qualified",
+      expiresAt: humanExpiry,
+      revision: 9,
+    });
     const [note] = await db
       .insert(globalSignalUpdates)
       .values({
@@ -2979,6 +3503,9 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
       }),
     );
     const signal = secondBatch.signals[0]!;
+    if (signal.signalClass !== "direct_demand") {
+      throw new Error("Mirrored evidence fixture was not direct demand.");
+    }
     signal.factualSummary =
       "Acme expanded its public request to cover a second reviewed workflow.";
     signal.interpretationSummary =
@@ -3003,20 +3530,24 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
       "Reviewed local operations are now named.",
     ];
     signal.indiaRelevance.confidence = 95;
+    signal.sensitiveDataAndCompliance.sensitiveDataFlags.faces = "possible";
+    signal.sensitiveDataAndCompliance.complianceFacts.consent = true;
+    const reviewedActionability = assessComplianceReview({
+      currentStatus: "newly_discovered",
+      actionability: signal.actionabilityInput,
+      assessment: signal.sensitiveDataAndCompliance,
+    });
+    if (!reviewedActionability.valid) {
+      throw new Error("Refreshed compliance review was invalid.");
+    }
     const refreshedScore = scoreDirectDemand({
       ...signal.score.components,
       freshness: 95,
-      actionability: 90,
+      actionability: reviewedActionability.actionability,
       indiaFit: 92,
     });
     if (!refreshedScore.valid) throw new Error("Refreshed score was invalid.");
     signal.score = structuredClone(refreshedScore);
-    signal.responsePath = {
-      ...signal.responsePath!,
-      url: "https://acme.example/partners/robot-learning",
-    };
-    signal.partnerApplicationUrl =
-      "https://acme.example/partners/robot-learning";
     const refreshedSystemsSummary = Array.from(
       { length: 80 },
       (_, index) => `refreshed-context-${index}`,
@@ -3033,8 +3564,6 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
       ],
       systemsContextSummary: refreshedSystemsSummary,
     };
-    signal.sensitiveDataAndCompliance.sensitiveDataFlags.faces = "possible";
-    signal.sensitiveDataAndCompliance.complianceFacts.consent = true;
     signal.rawMetadata = { refreshSource: "official_request_v2" };
     signal.expiresAt = "2026-09-30T00:00:00.000Z";
     const mirrorUrl = "https://industry.example/acme-request-report";
@@ -3059,6 +3588,9 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
       supportedFieldPaths: ["signal.factualSummary"],
     });
     const rehashed = rehashPersistenceBatch(secondBatch);
+    expect(canonicalizeGlobalRadarPersistenceBatch(rehashed)).toMatchObject({
+      valid: true,
+    });
     const result = await repository.completeRun({
       ...completionInput(
         secondClaim.run.id,
@@ -3091,13 +3623,13 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
       deliveryGeographies: ["Global", "Asia"],
       industry: "robotics and embodied AI",
       targetModelOrSystem: "multimodal robot-learning model",
-      freshness: 95,
-      actionability: 90,
-      indiaFit: 92,
-      directDemandScore: refreshedScore.score,
+      freshness: 100,
+      actionability: reviewedActionability.actionability,
+      indiaFit: 100,
+      directDemandScore: 90,
       scoreCoverage: refreshedScore.scoreCoverage,
       indiaFitConfidence: 95,
-      responsePathUrl: "https://acme.example/partners/robot-learning",
+      responsePathUrl: "https://acme.example/suppliers",
       systemsContextSummary: refreshedSystemsSummary,
       faces: "possible",
       consent: true,
@@ -3135,7 +3667,7 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
           automated: {
             factualSummary:
               "Acme published a current request for teleoperated robot trajectories.",
-            scoring: { freshness: 80, directDemandScore: 80 },
+            scoring: { freshness: 100, directDemandScore: 90 },
             compliance: { faces: null, consent: null },
           },
         },
@@ -3156,13 +3688,13 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
             factualSummary:
               "Acme expanded its public request to cover a second reviewed workflow.",
             scoring: {
-              freshness: 95,
-              actionability: 90,
-              indiaFit: 92,
-              directDemandScore: refreshedScore.score,
+              freshness: 100,
+              actionability: reviewedActionability.actionability,
+              indiaFit: 100,
+              directDemandScore: 90,
             },
             response: {
-              url: "https://acme.example/partners/robot-learning",
+              url: "https://acme.example/suppliers",
             },
             compliance: { faces: "possible", consent: true },
           },
@@ -3184,7 +3716,7 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
     });
   });
 
-  it("preserves an administrator no-India-fit decision while refreshing every signal in the worker transaction", async () => {
+  it("preserves and safely supersedes an administrator no-India-fit decision during worker rediscovery", async () => {
     const adminRepository = createGlobalRadarAdminRepository(db, {
       scoreVersion: "global-radar-score-v1",
       thresholds: {
@@ -3198,7 +3730,14 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
     function twoSignalBatch(
       runId: string,
       observedAt: string,
-      phase: "initial" | "rediscovered",
+      phase:
+        | "initial"
+        | "repeated"
+        | "unrelated"
+        | "positive"
+        | "worker_no_fit"
+        | "worker_no_fit_repeat",
+      newEvidenceSuffix: string = phase,
     ) {
       const primaryUrl = "https://acme.example/primary-request";
       const batch = structuredClone(
@@ -3209,6 +3748,97 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
         phase === "initial"
           ? "Acme primary request"
           : "Acme refreshed primary request";
+      for (let index = 0; index < 10; index += 1) {
+        const legacyEvidence = structuredClone(primary.evidence[0]!);
+        const legacyEvidenceUrl =
+          `https://acme.example/z-legacy-india-evidence-${index}`;
+        legacyEvidence.sourceUrl = legacyEvidenceUrl;
+        legacyEvidence.canonicalSourceUrl = legacyEvidenceUrl;
+        legacyEvidence.sourceName = `Legacy India evidence ${index}`;
+        legacyEvidence.claim =
+          "Acme's official request explicitly accepts collection operations in India.";
+        legacyEvidence.sourceExcerpt =
+          "Collection operations in India are explicitly eligible.";
+        legacyEvidence.englishSummary =
+          "The official request explicitly accepts collection operations in India.";
+        legacyEvidence.isPrimarySource = false;
+        legacyEvidence.supportsDirectDemand = false;
+        legacyEvidence.evidenceFingerprint = createEvidenceFingerprint({
+          sourceUrl: legacyEvidenceUrl,
+          canonicalSourceUrl: legacyEvidenceUrl,
+          isPrimarySource: false,
+        });
+        legacyEvidence.supportedFieldPaths = [
+          "indiaRelevance.explicit_India.collection",
+        ];
+        primary.evidence.push(legacyEvidence);
+      }
+      if (
+        phase === "unrelated" ||
+        phase === "positive" ||
+        phase === "worker_no_fit" ||
+        phase === "worker_no_fit_repeat"
+      ) {
+        const addedEvidence = structuredClone(primary.evidence[0]!);
+        const addedEvidenceUrl =
+          `https://acme.example/z-${newEvidenceSuffix}-primary-request`;
+        addedEvidence.sourceUrl = addedEvidenceUrl;
+        addedEvidence.canonicalSourceUrl = addedEvidenceUrl;
+        addedEvidence.evidenceFingerprint = createEvidenceFingerprint({
+          sourceUrl: addedEvidenceUrl,
+          canonicalSourceUrl: addedEvidenceUrl,
+          isPrimarySource: true,
+        });
+        addedEvidence.observedAt = observedAt;
+        if (phase === "unrelated") {
+          addedEvidence.claim =
+            "Acme published a technical update about teleoperation workflows.";
+          addedEvidence.englishSummary =
+            "The update contains no new public India relevance statement.";
+          addedEvidence.sourceExcerpt = "Teleoperation workflow update.";
+          addedEvidence.supportsIndiaRelevance = false;
+          addedEvidence.supportedFieldPaths = addedEvidence.supportedFieldPaths.filter(
+            (path) => !path.startsWith("indiaRelevance."),
+          );
+        } else if (
+          phase === "worker_no_fit" ||
+          phase === "worker_no_fit_repeat"
+        ) {
+          addedEvidence.claim =
+            "Acme's current public eligibility terms explicitly exclude India.";
+          addedEvidence.englishSummary =
+            "The current supplier eligibility terms explicitly exclude India.";
+          addedEvidence.sourceExcerpt =
+            "Supplier applications are not currently accepted from India.";
+          addedEvidence.supportedFieldPaths = [
+            "indiaRelevance.no_current_India_fit.requirement_access",
+          ];
+        }
+        primary.evidence.push(addedEvidence);
+      }
+      if (phase === "worker_no_fit" || phase === "worker_no_fit_repeat") {
+        primary.indiaRelevance = {
+          ...primary.indiaRelevance,
+          relevanceType: "no_current_India_fit",
+          basis: "no_current_fit",
+          rationale:
+            phase === "worker_no_fit"
+              ? "New public eligibility terms establish no current India fit."
+              : "A later worker review reconfirmed no current India fit from the public terms.",
+          reasons: [],
+          constraints: ["The current public eligibility terms exclude India."],
+          unknowns: ["Future eligibility may change."],
+          confidence: 95,
+        };
+        const noFitScore = scoreDirectDemand({
+          ...primary.score.components,
+          indiaFit: 0,
+        });
+        if (!noFitScore.valid) {
+          throw new Error("Worker no-India-fit score fixture was invalid.");
+        }
+        primary.score = structuredClone(noFitScore);
+      }
 
       const secondary = structuredClone(primary);
       const secondaryUrl = "https://acme.example/secondary-request";
@@ -3319,6 +3949,71 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
         },
       },
     });
+    const [administratorMarkedPrimary] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, primary.id));
+    if (!administratorMarkedPrimary) {
+      throw new Error("Administrator no-India-fit score bundle was not persisted.");
+    }
+    const administratorScoreBundle = {
+      demandExplicitness: administratorMarkedPrimary.demandExplicitness,
+      evidenceConfidence: administratorMarkedPrimary.evidenceConfidence,
+      freshness: administratorMarkedPrimary.freshness,
+      actionability: administratorMarkedPrimary.actionability,
+      indiaFit: administratorMarkedPrimary.indiaFit,
+      commercialPotential: administratorMarkedPrimary.commercialPotential,
+      repeatability: administratorMarkedPrimary.repeatability,
+      responseAccessibility: administratorMarkedPrimary.responseAccessibility,
+      strategicLearning: administratorMarkedPrimary.strategicLearning,
+      complianceComplexity: administratorMarkedPrimary.complianceComplexity,
+      directDemandScore: administratorMarkedPrimary.directDemandScore,
+      scoreCoverage: administratorMarkedPrimary.scoreCoverage,
+      scorePolicyVersion: administratorMarkedPrimary.scorePolicyVersion,
+    };
+    const administratorScoreEvidenceSnapshot =
+      administratorMarkedPrimary.scoreEvidenceSnapshot;
+    const administratorRelevanceBundle = {
+      indiaRelevanceType: administratorMarkedPrimary.indiaRelevanceType,
+      indiaRelevanceRationale:
+        administratorMarkedPrimary.indiaRelevanceRationale,
+      indiaFitReasons: administratorMarkedPrimary.indiaFitReasons,
+      indiaFitConstraints: administratorMarkedPrimary.indiaFitConstraints,
+      indiaFitUnknowns: administratorMarkedPrimary.indiaFitUnknowns,
+      indiaFitConfidence: administratorMarkedPrimary.indiaFitConfidence,
+      indiaRegulatoryFacts: administratorMarkedPrimary.indiaRegulatoryFacts,
+      indiaLogisticsFacts: administratorMarkedPrimary.indiaLogisticsFacts,
+    };
+    const administratorScoreInputBundle = {
+      announcedAt: administratorMarkedPrimary.announcedAt,
+      effectiveFrom: administratorMarkedPrimary.effectiveFrom,
+      responsePathType: administratorMarkedPrimary.responsePathType,
+      responsePathUrl: administratorMarkedPrimary.responsePathUrl,
+      responseBusinessEmail: administratorMarkedPrimary.responseBusinessEmail,
+      partnerApplicationUrl: administratorMarkedPrimary.partnerApplicationUrl,
+      faces: administratorMarkedPrimary.faces,
+      voices: administratorMarkedPrimary.voices,
+      biometrics: administratorMarkedPrimary.biometrics,
+      gaze: administratorMarkedPrimary.gaze,
+      health: administratorMarkedPrimary.health,
+      children: administratorMarkedPrimary.children,
+      homeInteriors: administratorMarkedPrimary.homeInteriors,
+      workplaceMonitoring: administratorMarkedPrimary.workplaceMonitoring,
+      preciseLocation: administratorMarkedPrimary.preciseLocation,
+      roadUsers: administratorMarkedPrimary.roadUsers,
+      employeeData: administratorMarkedPrimary.employeeData,
+      industrialSecrets: administratorMarkedPrimary.industrialSecrets,
+      defenceOrDualUse: administratorMarkedPrimary.defenceOrDualUse,
+      copyrightedMaterial: administratorMarkedPrimary.copyrightedMaterial,
+      exportControls: administratorMarkedPrimary.exportControls,
+      consent: administratorMarkedPrimary.consent,
+      deIdentification: administratorMarkedPrimary.deIdentification,
+      legalReview: administratorMarkedPrimary.legalReview,
+      knownResidencyRequirements:
+        administratorMarkedPrimary.knownResidencyRequirements,
+      participantRightsComplexity:
+        administratorMarkedPrimary.participantRightsComplexity,
+    };
 
     const secondNow = new Date("2026-07-30T07:30:00.000Z");
     await repository.queueRun(
@@ -3331,16 +4026,37 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
     const secondBatch = twoSignalBatch(
       secondClaim.run.id,
       "2026-07-30T07:31:00.000Z",
-      "rediscovered",
+      "repeated",
     );
+    // Keep the identity's fixed seven-day announcement bucket stable while
+    // proving that an automated refresh cannot rewrite reviewed score inputs.
+    secondBatch.signals[0]!.announcedAt = "2026-07-29T12:00:00.000Z";
+    secondBatch.signals[0]!.effectiveFrom = "2026-07-30T07:00:00.000Z";
+    secondBatch.signals[0]!.responsePath = {
+      ...secondBatch.signals[0]!.responsePath!,
+      url: "https://acme.example/refreshed-suppliers",
+    };
+    secondBatch.signals[0]!.partnerApplicationUrl =
+      "https://acme.example/refreshed-suppliers";
+    secondBatch.signals[0]!.sensitiveDataAndCompliance = {
+      sensitiveDataFlags: {
+        ...secondBatch.signals[0]!.sensitiveDataAndCompliance.sensitiveDataFlags,
+        faces: "not_observed",
+      },
+      complianceFacts: {
+        ...secondBatch.signals[0]!.sensitiveDataAndCompliance.complianceFacts,
+        consent: false,
+      },
+    };
+    const rehashedSecondBatch = rehashPersistenceBatch(secondBatch);
     const completed = await repository.completeRun({
       ...completionInput(
         secondClaim.run.id,
         secondClaim.privateClaim.leaseToken,
         new Date("2026-07-30T07:32:00.000Z"),
       ),
-      submissionHash: secondBatch.canonicalSubmissionHash,
-      batch: secondBatch,
+      submissionHash: rehashedSecondBatch.canonicalSubmissionHash,
+      batch: rehashedSecondBatch,
     });
     expect(completed).toMatchObject({
       outcome: "completed",
@@ -3362,6 +4078,74 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
       revision: 1,
       mostRecentRunId: secondClaim.run.id,
     });
+    expect({
+      demandExplicitness: refreshedPrimary?.demandExplicitness,
+      evidenceConfidence: refreshedPrimary?.evidenceConfidence,
+      freshness: refreshedPrimary?.freshness,
+      actionability: refreshedPrimary?.actionability,
+      indiaFit: refreshedPrimary?.indiaFit,
+      commercialPotential: refreshedPrimary?.commercialPotential,
+      repeatability: refreshedPrimary?.repeatability,
+      responseAccessibility: refreshedPrimary?.responseAccessibility,
+      strategicLearning: refreshedPrimary?.strategicLearning,
+      complianceComplexity: refreshedPrimary?.complianceComplexity,
+      directDemandScore: refreshedPrimary?.directDemandScore,
+      scoreCoverage: refreshedPrimary?.scoreCoverage,
+      scorePolicyVersion: refreshedPrimary?.scorePolicyVersion,
+    }).toEqual(administratorScoreBundle);
+    expect(refreshedPrimary?.scoreEvidenceSnapshot.componentEvidence).toEqual(
+      administratorScoreEvidenceSnapshot.componentEvidence,
+    );
+    expect(refreshedPrimary?.scoreEvidenceSnapshot).toMatchObject({
+      scoreAsOf: administratorScoreEvidenceSnapshot.scoreAsOf,
+      evidenceBoundaryOrdinal:
+        administratorScoreEvidenceSnapshot.evidenceBoundaryOrdinal,
+      evidenceSetCount: administratorScoreEvidenceSnapshot.evidenceSetCount,
+      evidenceSetDigest: administratorScoreEvidenceSnapshot.evidenceSetDigest,
+      assessmentAuthority:
+        administratorScoreEvidenceSnapshot.assessmentAuthority,
+    });
+    expect(refreshedPrimary?.scoreEvidenceSnapshot.scoreInputDigest).not.toBe(
+      administratorScoreEvidenceSnapshot.scoreInputDigest,
+    );
+    expect({
+      indiaRelevanceType: refreshedPrimary?.indiaRelevanceType,
+      indiaRelevanceRationale: refreshedPrimary?.indiaRelevanceRationale,
+      indiaFitReasons: refreshedPrimary?.indiaFitReasons,
+      indiaFitConstraints: refreshedPrimary?.indiaFitConstraints,
+      indiaFitUnknowns: refreshedPrimary?.indiaFitUnknowns,
+      indiaFitConfidence: refreshedPrimary?.indiaFitConfidence,
+      indiaRegulatoryFacts: refreshedPrimary?.indiaRegulatoryFacts,
+      indiaLogisticsFacts: refreshedPrimary?.indiaLogisticsFacts,
+    }).toEqual(administratorRelevanceBundle);
+    expect({
+      announcedAt: refreshedPrimary?.announcedAt,
+      effectiveFrom: refreshedPrimary?.effectiveFrom,
+      responsePathType: refreshedPrimary?.responsePathType,
+      responsePathUrl: refreshedPrimary?.responsePathUrl,
+      responseBusinessEmail: refreshedPrimary?.responseBusinessEmail,
+      partnerApplicationUrl: refreshedPrimary?.partnerApplicationUrl,
+      faces: refreshedPrimary?.faces,
+      voices: refreshedPrimary?.voices,
+      biometrics: refreshedPrimary?.biometrics,
+      gaze: refreshedPrimary?.gaze,
+      health: refreshedPrimary?.health,
+      children: refreshedPrimary?.children,
+      homeInteriors: refreshedPrimary?.homeInteriors,
+      workplaceMonitoring: refreshedPrimary?.workplaceMonitoring,
+      preciseLocation: refreshedPrimary?.preciseLocation,
+      roadUsers: refreshedPrimary?.roadUsers,
+      employeeData: refreshedPrimary?.employeeData,
+      industrialSecrets: refreshedPrimary?.industrialSecrets,
+      defenceOrDualUse: refreshedPrimary?.defenceOrDualUse,
+      copyrightedMaterial: refreshedPrimary?.copyrightedMaterial,
+      exportControls: refreshedPrimary?.exportControls,
+      consent: refreshedPrimary?.consent,
+      deIdentification: refreshedPrimary?.deIdentification,
+      legalReview: refreshedPrimary?.legalReview,
+      knownResidencyRequirements: refreshedPrimary?.knownResidencyRequirements,
+      participantRightsComplexity: refreshedPrimary?.participantRightsComplexity,
+    }).toEqual(administratorScoreInputBundle);
     expect(refreshedSecondary).toMatchObject({
       title: "Acme refreshed secondary request",
       status: "newly_discovered",
@@ -3369,12 +4153,418 @@ describe("PostgreSQL Global Radar signal deduplication and history", () => {
       revision: 0,
       mostRecentRunId: secondClaim.run.id,
     });
+
+    async function completeRediscoveryRun(input: Readonly<{
+      suffix: string;
+      now: string;
+      observedAt: string;
+      phase:
+        | "unrelated"
+        | "positive"
+        | "worker_no_fit"
+        | "worker_no_fit_repeat";
+      evidenceSuffix: string;
+    }>) {
+      const now = new Date(input.now);
+      await repository.queueRun(queueInput(input.suffix, { now }));
+      const claim = await repository.claimRun({ now });
+      if (claim.outcome !== "claimed") {
+        throw new Error("No-India-fit rediscovery fixture was not claimed.");
+      }
+      const batch = twoSignalBatch(
+        claim.run.id,
+        input.observedAt,
+        input.phase,
+        input.evidenceSuffix,
+      );
+      await expect(
+        repository.completeRun({
+          ...completionInput(
+            claim.run.id,
+            claim.privateClaim.leaseToken,
+            new Date(Date.parse(input.observedAt) + 60_000),
+          ),
+          submissionHash: batch.canonicalSubmissionHash,
+          batch,
+        }),
+      ).resolves.toMatchObject({
+        outcome: "completed",
+        run: { numberUpdated: 2, numberNew: 0 },
+      });
+      return claim.run.id;
+    }
+
+    const unrelatedRunId = await completeRediscoveryRun({
+      suffix: "administrator-no-india-fit-unrelated",
+      now: "2026-07-30T08:30:00.000Z",
+      observedAt: "2026-07-30T08:31:00.000Z",
+      phase: "unrelated",
+      evidenceSuffix: "unrelated-update",
+    });
+    const [afterUnrelatedEvidence] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, primary.id));
+    expect(afterUnrelatedEvidence).toMatchObject({
+      status: "monitoring",
+      indiaRelevanceType: "no_current_India_fit",
+      revision: 1,
+      mostRecentRunId: unrelatedRunId,
+    });
+    expect({
+      indiaRelevanceType: afterUnrelatedEvidence?.indiaRelevanceType,
+      indiaRelevanceRationale: afterUnrelatedEvidence?.indiaRelevanceRationale,
+      indiaFitReasons: afterUnrelatedEvidence?.indiaFitReasons,
+      indiaFitConstraints: afterUnrelatedEvidence?.indiaFitConstraints,
+      indiaFitUnknowns: afterUnrelatedEvidence?.indiaFitUnknowns,
+      indiaFitConfidence: afterUnrelatedEvidence?.indiaFitConfidence,
+      indiaRegulatoryFacts: afterUnrelatedEvidence?.indiaRegulatoryFacts,
+      indiaLogisticsFacts: afterUnrelatedEvidence?.indiaLogisticsFacts,
+    }).toEqual(administratorRelevanceBundle);
+    expect({
+      demandExplicitness: afterUnrelatedEvidence?.demandExplicitness,
+      evidenceConfidence: afterUnrelatedEvidence?.evidenceConfidence,
+      freshness: afterUnrelatedEvidence?.freshness,
+      actionability: afterUnrelatedEvidence?.actionability,
+      indiaFit: afterUnrelatedEvidence?.indiaFit,
+      commercialPotential: afterUnrelatedEvidence?.commercialPotential,
+      repeatability: afterUnrelatedEvidence?.repeatability,
+      responseAccessibility: afterUnrelatedEvidence?.responseAccessibility,
+      strategicLearning: afterUnrelatedEvidence?.strategicLearning,
+      complianceComplexity: afterUnrelatedEvidence?.complianceComplexity,
+      directDemandScore: afterUnrelatedEvidence?.directDemandScore,
+      scoreCoverage: afterUnrelatedEvidence?.scoreCoverage,
+      scorePolicyVersion: afterUnrelatedEvidence?.scorePolicyVersion,
+    }).toEqual(administratorScoreBundle);
+    expect(
+      afterUnrelatedEvidence?.scoreEvidenceSnapshot.componentEvidence,
+    ).toEqual(administratorScoreEvidenceSnapshot.componentEvidence);
+    expect(afterUnrelatedEvidence?.scoreEvidenceSnapshot).toMatchObject({
+      scoreAsOf: administratorScoreEvidenceSnapshot.scoreAsOf,
+      evidenceBoundaryOrdinal:
+        administratorScoreEvidenceSnapshot.evidenceBoundaryOrdinal,
+      evidenceSetCount: administratorScoreEvidenceSnapshot.evidenceSetCount,
+      evidenceSetDigest: administratorScoreEvidenceSnapshot.evidenceSetDigest,
+      assessmentAuthority:
+        administratorScoreEvidenceSnapshot.assessmentAuthority,
+    });
+    expect(
+      afterUnrelatedEvidence?.scoreEvidenceSnapshot.scoreInputDigest,
+    ).not.toBe(refreshedPrimary?.scoreEvidenceSnapshot.scoreInputDigest);
+    await expect(
+      adminRepository.getSignalDetail(primary.id),
+    ).resolves.toMatchObject({
+      outcome: "found",
+      detail: {
+        signal: {
+          status: "monitoring",
+          indiaRelevanceType: "no_current_India_fit",
+          revision: 1,
+        },
+      },
+    });
+
+    const positiveRunId = await completeRediscoveryRun({
+      suffix: "administrator-no-india-fit-positive",
+      now: "2026-07-30T09:30:00.000Z",
+      observedAt: "2026-07-30T09:31:00.000Z",
+      phase: "positive",
+      evidenceSuffix: "positive-india-evidence",
+    });
+    const [afterPositiveEvidence] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, primary.id));
+    expect(afterPositiveEvidence).toMatchObject({
+      status: "needs_review",
+      indiaRelevanceType: "explicit_India",
+      indiaRelevanceRationale:
+        "The official request explicitly includes India.",
+      indiaFitReasons: ["India is named as an eligible collection geography."],
+      indiaFitConstraints: [],
+      indiaFitUnknowns: [],
+      indiaFitConfidence: 90,
+      indiaFit: 100,
+      directDemandScore: 90,
+      revision: 2,
+      mostRecentRunId: positiveRunId,
+    });
+    expect(afterPositiveEvidence?.scoreEvidenceSnapshot).toMatchObject({
+      signalClass: "direct_demand",
+      signalType: "data_collection_request",
+      indiaRelevanceType: "explicit_India",
+      assessmentAuthority: "worker",
+    });
+    const positiveEvidenceUrl =
+      "https://acme.example/z-positive-india-evidence-primary-request";
+    const positiveEvidenceFingerprint = createEvidenceFingerprint({
+      sourceUrl: positiveEvidenceUrl,
+      canonicalSourceUrl: positiveEvidenceUrl,
+      isPrimarySource: true,
+    });
+    expect(
+      afterPositiveEvidence?.scoreEvidenceSnapshot.componentEvidence
+        .find(({ component }) => component === "indiaFit")
+        ?.evidence.map(({ evidenceFingerprint }) => evidenceFingerprint),
+    ).toContain(positiveEvidenceFingerprint);
+
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: primary.id,
+        actor,
+        envelope: {
+          expectedRevision: 2,
+          idempotencyKey: "30000000-0000-4000-8000-000000000002",
+          reason:
+            "Administrator reviewed the new evidence and again found no current India fit.",
+          now: new Date("2026-07-30T09:33:00.000Z"),
+        },
+        command: { type: "mark_no_india_fit" },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "updated",
+      detail: {
+        signal: {
+          status: "monitoring",
+          indiaRelevanceType: "no_current_India_fit",
+          revision: 3,
+        },
+      },
+    });
+    await rebaseGlobalRadarFixtureSignal(primary.id, { status: "promoted" });
+
+    const promotedRunId = await completeRediscoveryRun({
+      suffix: "administrator-no-india-fit-promoted-positive",
+      now: "2026-07-30T10:30:00.000Z",
+      observedAt: "2026-07-30T10:31:00.000Z",
+      phase: "positive",
+      evidenceSuffix: "positive-india-evidence-promoted",
+    });
+    const [afterPromotedPositiveEvidence] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, primary.id));
+    expect(afterPromotedPositiveEvidence).toMatchObject({
+      status: "promoted",
+      indiaRelevanceType: "explicit_India",
+      indiaFit: 100,
+      revision: 4,
+      mostRecentRunId: promotedRunId,
+    });
+
+    const workerNoFitRunId = await completeRediscoveryRun({
+      suffix: "administrator-no-india-fit-worker-no-fit",
+      now: "2026-07-30T11:30:00.000Z",
+      observedAt: "2026-07-30T11:31:00.000Z",
+      phase: "worker_no_fit",
+      evidenceSuffix: "worker-no-fit-evidence",
+    });
+    const [afterWorkerNoFit] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, primary.id));
+    expect(afterWorkerNoFit).toMatchObject({
+      status: "promoted",
+      indiaRelevanceType: "no_current_India_fit",
+      indiaRelevanceRationale:
+        "New public eligibility terms establish no current India fit.",
+      indiaFit: 0,
+      revision: 4,
+      mostRecentRunId: workerNoFitRunId,
+    });
+
+    const repeatedWorkerNoFitRunId = await completeRediscoveryRun({
+      suffix: "administrator-no-india-fit-worker-no-fit-repeat",
+      now: "2026-07-30T12:30:00.000Z",
+      observedAt: "2026-07-30T12:31:00.000Z",
+      phase: "worker_no_fit_repeat",
+      evidenceSuffix: "worker-no-fit-evidence",
+    });
+    const [afterRepeatedWorkerNoFit] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, primary.id));
+    expect(afterRepeatedWorkerNoFit).toMatchObject({
+      status: "promoted",
+      indiaRelevanceType: "no_current_India_fit",
+      indiaRelevanceRationale:
+        "A later worker review reconfirmed no current India fit from the public terms.",
+      indiaFit: 0,
+      revision: 4,
+      mostRecentRunId: repeatedWorkerNoFitRunId,
+    });
     expect(
       await db
         .select()
         .from(globalRadarAdminEvents)
         .where(eq(globalRadarAdminEvents.action, "mark_no_india_fit")),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
+  });
+
+  it("rejects rediscovery that reuses an evidence fingerprint with changed canonical field provenance", async () => {
+    const firstNow = new Date("2026-07-30T11:30:00.000Z");
+    await repository.queueRun(
+      queueInput("evidence-fingerprint-provenance-first", { now: firstNow }),
+    );
+    const firstClaim = await repository.claimRun({ now: firstNow });
+    if (firstClaim.outcome !== "claimed") {
+      throw new Error("First evidence-provenance fixture was not claimed.");
+    }
+    const sourceUrl = "https://acme.example/stable-evidence-source";
+    const firstBatch = validPersistenceBatch(firstClaim.run.id, {
+      observedAt: "2026-07-30T11:31:00.000Z",
+      sourceUrl,
+    });
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          firstClaim.run.id,
+          firstClaim.privateClaim.leaseToken,
+          new Date("2026-07-30T11:32:00.000Z"),
+        ),
+        submissionHash: firstBatch.canonicalSubmissionHash,
+        batch: firstBatch,
+      }),
+    ).resolves.toMatchObject({ outcome: "completed", run: { numberNew: 1 } });
+    const [storedBefore] = await db.select().from(globalRadarSignals).limit(1);
+    if (!storedBefore) throw new Error("Evidence-provenance signal was not stored.");
+    const evidenceBefore = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, storedBefore.id));
+
+    const secondNow = new Date("2026-07-30T12:30:00.000Z");
+    await repository.queueRun(
+      queueInput("evidence-fingerprint-provenance-second", { now: secondNow }),
+    );
+    const secondClaim = await repository.claimRun({ now: secondNow });
+    if (secondClaim.outcome !== "claimed") {
+      throw new Error("Second evidence-provenance fixture was not claimed.");
+    }
+    const changed = structuredClone(
+      validPersistenceBatch(secondClaim.run.id, {
+        observedAt: "2026-07-30T12:31:00.000Z",
+        sourceUrl,
+      }),
+    );
+    changed.signals[0]!.title = "Changed title must not bypass stored provenance.";
+    changed.signals[0]!.evidence[0]!.supportedFieldPaths =
+      changed.signals[0]!.evidence[0]!.supportedFieldPaths.filter(
+        (path) => path !== "signal.title",
+      );
+    const changedBatch = rehashPersistenceBatch(changed);
+
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          secondClaim.run.id,
+          secondClaim.privateClaim.leaseToken,
+          new Date("2026-07-30T12:32:00.000Z"),
+        ),
+        submissionHash: changedBatch.canonicalSubmissionHash,
+        batch: changedBatch,
+      }),
+    ).resolves.toMatchObject({ outcome: "conflict", reason: "invalid_input" });
+    await expect(
+      db.select().from(globalRadarSignals).where(eq(globalRadarSignals.id, storedBefore.id)),
+    ).resolves.toEqual([storedBefore]);
+    await expect(
+      db
+        .select()
+        .from(globalSignalEvidence)
+        .where(eq(globalSignalEvidence.signalId, storedBefore.id)),
+    ).resolves.toEqual(evidenceBefore);
+  });
+
+  it("rejects a reused fingerprint that would move canonical observed-at score evidence", async () => {
+    const firstNow = new Date("2026-07-30T13:30:00.000Z");
+    await repository.queueRun(
+      queueInput("evidence-observed-at-provenance-first", { now: firstNow }),
+    );
+    const firstClaim = await repository.claimRun({ now: firstNow });
+    if (firstClaim.outcome !== "claimed") {
+      throw new Error("First observed-at provenance fixture was not claimed.");
+    }
+    const sourceUrl = "https://acme.example/undated-stable-evidence";
+    const initial = structuredClone(
+      validPersistenceBatch(firstClaim.run.id, {
+        observedAt: "2026-07-30T13:31:00.000Z",
+        sourceUrl,
+      }),
+    );
+    initial.signals[0]!.announcedAt = null;
+    initial.signals[0]!.effectiveFrom = null;
+    initial.signals[0]!.evidence[0]!.publishedAt = null;
+    initial.signals[0]!.evidence[0]!.supportedFieldPaths =
+      initial.signals[0]!.evidence[0]!.supportedFieldPaths.map((path) =>
+        path === "signal.announcedAt" ? "evidence.observedAt" : path,
+      );
+    const initialBatch = rehashPersistenceBatch(initial);
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          firstClaim.run.id,
+          firstClaim.privateClaim.leaseToken,
+          new Date("2026-07-30T13:32:00.000Z"),
+        ),
+        submissionHash: initialBatch.canonicalSubmissionHash,
+        batch: initialBatch,
+      }),
+    ).resolves.toMatchObject({ outcome: "completed", run: { numberNew: 1 } });
+    const [storedBefore] = await db.select().from(globalRadarSignals).limit(1);
+    if (!storedBefore) {
+      throw new Error("Observed-at provenance signal was not stored.");
+    }
+    const evidenceBefore = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, storedBefore.id));
+
+    const secondNow = new Date("2026-07-30T14:30:00.000Z");
+    await repository.queueRun(
+      queueInput("evidence-observed-at-provenance-second", { now: secondNow }),
+    );
+    const secondClaim = await repository.claimRun({ now: secondNow });
+    if (secondClaim.outcome !== "claimed") {
+      throw new Error("Second observed-at provenance fixture was not claimed.");
+    }
+    const repeated = structuredClone(
+      validPersistenceBatch(secondClaim.run.id, {
+        observedAt: "2026-07-30T14:31:00.000Z",
+        sourceUrl,
+      }),
+    );
+    repeated.signals[0]!.announcedAt = null;
+    repeated.signals[0]!.effectiveFrom = null;
+    repeated.signals[0]!.evidence[0]!.publishedAt = null;
+    repeated.signals[0]!.evidence[0]!.supportedFieldPaths =
+      repeated.signals[0]!.evidence[0]!.supportedFieldPaths.map((path) =>
+        path === "signal.announcedAt" ? "evidence.observedAt" : path,
+      );
+    const repeatedBatch = rehashPersistenceBatch(repeated);
+    await expect(
+      repository.completeRun({
+        ...completionInput(
+          secondClaim.run.id,
+          secondClaim.privateClaim.leaseToken,
+          new Date("2026-07-30T14:32:00.000Z"),
+        ),
+        submissionHash: repeatedBatch.canonicalSubmissionHash,
+        batch: repeatedBatch,
+      }),
+    ).resolves.toMatchObject({ outcome: "conflict", reason: "invalid_input" });
+    await expect(
+      db
+        .select()
+        .from(globalRadarSignals)
+        .where(eq(globalRadarSignals.id, storedBefore.id)),
+    ).resolves.toEqual([storedBefore]);
+    await expect(
+      db
+        .select()
+        .from(globalSignalEvidence)
+        .where(eq(globalSignalEvidence.signalId, storedBefore.id)),
+    ).resolves.toEqual(evidenceBefore);
   });
 
   it("uses material requirements and target geography in the versioned signal identity", async () => {
@@ -3498,11 +4688,10 @@ describe("PostgreSQL Global Radar full graph persistence", () => {
     const [evidence] = await db.select().from(globalSignalEvidence);
     expect(evidence).toMatchObject({
       runId: claim.run.id,
-      supportedFieldPaths: [
-        "signal.title",
-        "signal.indiaRelevance.relevanceType",
-      ],
     });
+    expect(evidence?.supportedFieldPaths).toEqual(
+      rehashed.signals[0]!.evidence[0]!.supportedFieldPaths,
+    );
     expect(await db.select().from(globalSignalUpdates)).toHaveLength(1);
     const [storedRun] = await db
       .select()
@@ -3722,11 +4911,24 @@ describe("PostgreSQL Global Radar full graph persistence", () => {
     batch.signals.push(structuredClone(batch.signals[0]!));
     batch.signals[1]!.externalSignalId = "invalid-second-signal";
     mutate(batch);
-    const submittedBatch = rehash
-      ? rehashPersistenceBatch(batch as unknown as PersistableGlobalRadarBatch)
-      : ({ ...batch, canonicalSubmissionHash: HASH_A } as unknown as PersistableGlobalRadarBatch);
     const graphBefore = await graphRowCounts();
     const runBefore = await runningPersistenceSnapshot(claim.run.id);
+    if (rehash) {
+      expect(() =>
+        rehashPersistenceBatch(
+          batch as unknown as PersistableGlobalRadarBatch,
+        ),
+      ).toThrow();
+      expect(await graphRowCounts()).toEqual(graphBefore);
+      expect(await runningPersistenceSnapshot(claim.run.id)).toEqual(
+        runBefore,
+      );
+      return;
+    }
+    const submittedBatch = {
+      ...batch,
+      canonicalSubmissionHash: HASH_A,
+    } as unknown as PersistableGlobalRadarBatch;
 
     await expect(
       repository.completeRun({
@@ -3768,6 +4970,13 @@ describe("PostgreSQL Global Radar graph replay and bounded summaries", () => {
       outcome: "completed",
     });
     const graphBeforeReplay = await graphRowCounts();
+    const evidenceOrdinalsBeforeReplay = await db
+      .select({
+        evidenceFingerprint: globalSignalEvidence.evidenceFingerprint,
+        ingestOrdinal: globalSignalEvidence.ingestOrdinal,
+      })
+      .from(globalSignalEvidence)
+      .orderBy(asc(globalSignalEvidence.ingestOrdinal));
     const [runBeforeReplay] = await db
       .select()
       .from(globalRadarRuns)
@@ -3781,6 +4990,15 @@ describe("PostgreSQL Global Radar graph replay and bounded summaries", () => {
       }),
     ).resolves.toMatchObject({ outcome: "replayed" });
     expect(await graphRowCounts()).toEqual(graphBeforeReplay);
+    expect(
+      await db
+        .select({
+          evidenceFingerprint: globalSignalEvidence.evidenceFingerprint,
+          ingestOrdinal: globalSignalEvidence.ingestOrdinal,
+        })
+        .from(globalSignalEvidence)
+        .orderBy(asc(globalSignalEvidence.ingestOrdinal)),
+    ).toEqual(evidenceOrdinalsBeforeReplay);
     const [runAfterReplay] = await db
       .select()
       .from(globalRadarRuns)
@@ -4116,10 +5334,9 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
       .from(globalRadarSignals)
       .where(eq(globalRadarSignals.expiresAt, new Date("2026-07-31T00:00:00.000Z")));
     if (!qualified) throw new Error("Known-deadline signal was not created.");
-    await db
-      .update(globalRadarSignals)
-      .set({ status: "qualified" })
-      .where(eq(globalRadarSignals.id, qualified.id));
+    await rebaseGlobalRadarFixtureSignal(qualified.id, {
+      status: "qualified",
+    });
 
     const first = await repository.expireDirectDemand({
       now: new Date("2026-07-31T00:00:00.000Z"),
@@ -4277,10 +5494,11 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
     const [created] = await db.select().from(globalRadarSignals);
     if (!created) throw new Error("Evergreen signal was not created.");
     const humanExpiry = new Date("2026-09-30T00:00:00.000Z");
-    await db
-      .update(globalRadarSignals)
-      .set({ status: "qualified", expiresAt: humanExpiry, revision: 11 })
-      .where(eq(globalRadarSignals.id, created.id));
+    await rebaseGlobalRadarFixtureSignal(created.id, {
+      status: "qualified",
+      expiresAt: humanExpiry,
+      revision: 11,
+    });
 
     const secondNow = new Date("2026-07-30T17:00:00.000Z");
     await repository.queueRun(queueInput("evergreen-reobserve-second", { now: secondNow }));
@@ -4467,9 +5685,33 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
       momentumQualificationGatesPassed: true,
     });
     if (!initialSignal) throw new Error("Momentum signal was not persisted.");
+    const administratorSnapshot = structuredClone(
+      initialSignal.scoreEvidenceSnapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    administratorSnapshot.assessmentAuthority = "administrator";
+    for (const component of administratorSnapshot.componentEvidence) {
+      if (
+        component.component === "taxonomyConsistency" ||
+        component.component === "evidenceQuality"
+      ) {
+        component.basis = "administrator_assessed";
+        component.rationale =
+          "Administrator metric is supported by public evidence cited for this momentum input.";
+      }
+      if (component.component === "volume7Days") component.value = 0;
+    }
+    const assessedAssociations = structuredClone(
+      administratorSnapshot.componentEvidence.filter(
+        ({ component }) =>
+          component === "taxonomyConsistency" || component === "evidenceQuality",
+      ),
+    );
     await db
       .update(globalRadarSignals)
-      .set({ momentumVolume7Days: 0 })
+      .set({
+        momentumVolume7Days: 0,
+        scoreEvidenceSnapshot: administratorSnapshot,
+      })
       .where(eq(globalRadarSignals.id, initialSignal.id));
 
     const first = await repository.recomputeMomentum({
@@ -4490,6 +5732,19 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
       momentumPolicyVersion: MOMENTUM_POLICY.version,
     });
     expect(signal?.status).not.toBe("qualified");
+    const refreshedSnapshot = signal?.scoreEvidenceSnapshot;
+    expect(refreshedSnapshot?.assessmentAuthority).toBe("administrator");
+    expect(
+      refreshedSnapshot?.componentEvidence.filter(
+        ({ component }) =>
+          component === "taxonomyConsistency" || component === "evidenceQuality",
+      ),
+    ).toEqual(assessedAssociations);
+    expect(
+      refreshedSnapshot?.componentEvidence.find(
+        ({ component }) => component === "volume7Days",
+      ),
+    ).toMatchObject({ value: 2, basis: "server_derived" });
     expect(
       await db
         .select()
@@ -4497,17 +5752,538 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
         .where(eq(globalSignalUpdates.updateType, "momentum_recomputed")),
     ).toHaveLength(1);
 
+    const snapshotBeforeScoreNeutralAppend = signal?.scoreEvidenceSnapshot;
+    const revisionBeforeScoreNeutralAppend = signal?.revision;
+    const [evidenceTemplate] = evidence;
+    if (!evidenceTemplate || !signal) {
+      throw new Error("Score-neutral momentum append fixture is missing.");
+    }
+    const {
+      id: _evidenceId,
+      ingestOrdinal: _ingestOrdinal,
+      evidenceFingerprint: _evidenceFingerprint,
+      sourceUrl: _sourceUrl,
+      canonicalSourceUrl: _canonicalSourceUrl,
+      ...scoreNeutralEvidence
+    } = evidenceTemplate;
+    void _evidenceId;
+    void _ingestOrdinal;
+    void _evidenceFingerprint;
+    void _sourceUrl;
+    void _canonicalSourceUrl;
+    const scoreNeutralUrl =
+      "https://momentum-projection.example/syndicated-context";
+    await db.insert(globalSignalEvidence).values({
+      ...scoreNeutralEvidence,
+      ingestOrdinal: 4,
+      runId: null,
+      sourceUrl: scoreNeutralUrl,
+      canonicalSourceUrl: scoreNeutralUrl,
+      evidenceFingerprint: createEvidenceFingerprint({
+        sourceUrl: scoreNeutralUrl,
+        canonicalSourceUrl: scoreNeutralUrl,
+        isPrimarySource: false,
+      }),
+      isPrimarySource: false,
+      isSyndicated: true,
+      observedAt: new Date("2026-07-31T13:59:00.000Z"),
+      createdAt: new Date("2026-07-31T14:00:01.000Z"),
+    });
+    const refreshedAt = new Date("2026-07-31T14:00:01.000Z");
     const second = await repository.recomputeMomentum({
-      now: new Date("2026-07-31T14:00:00.000Z"),
+      now: refreshedAt,
       policy: MOMENTUM_POLICY,
     });
-    expect(second).toEqual({ outcome: "completed", recomputed: 0, unchanged: 1 });
+    expect(second).toEqual({ outcome: "completed", recomputed: 1, unchanged: 0 });
+    const [unchangedSignal] = await db
+      .select({
+        revision: globalRadarSignals.revision,
+        scoreEvidenceSnapshot: globalRadarSignals.scoreEvidenceSnapshot,
+      })
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, initialSignal.id));
+    expect(unchangedSignal?.revision).toBe(revisionBeforeScoreNeutralAppend! + 1);
+    expect(unchangedSignal?.scoreEvidenceSnapshot).toMatchObject({
+      scoreAsOf: refreshedAt.toISOString(),
+      evidenceBoundaryOrdinal: 4,
+      evidenceSetCount: 4,
+    });
+    expect(unchangedSignal?.scoreEvidenceSnapshot).not.toEqual(
+      snapshotBeforeScoreNeutralAppend,
+    );
     expect(
       await db
         .select()
         .from(globalSignalUpdates)
         .where(eq(globalSignalUpdates.updateType, "momentum_recomputed")),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
+
+    const third = await repository.recomputeMomentum({
+      now: refreshedAt,
+      policy: MOMENTUM_POLICY,
+    });
+    expect(third).toEqual({ outcome: "completed", recomputed: 0, unchanged: 1 });
+  });
+
+  it("preserves administrator-assessed momentum components while advancing an aged evaluation snapshot", async () => {
+    const queueAt = new Date("2026-07-30T16:15:00.000Z");
+    await repository.queueRun(
+      queueInput("momentum-aged-assessed-citation", { now: queueAt }),
+    );
+    const claim = await repository.claimRun({ now: queueAt });
+    if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+    const batch = validMomentumPersistenceBatch(claim.run.id);
+    await repository.completeRun({
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(queueAt.getTime() + 1_000),
+      ),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    const [signal] = await db.select().from(globalRadarSignals);
+    if (!signal) throw new Error("Momentum signal was not persisted.");
+    const administratorSnapshot = structuredClone(
+      signal.scoreEvidenceSnapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    administratorSnapshot.assessmentAuthority = "administrator";
+    for (const component of administratorSnapshot.componentEvidence) {
+      if (
+        component.component === "taxonomyConsistency" ||
+        component.component === "evidenceQuality"
+      ) {
+        component.basis = "administrator_assessed";
+        component.rationale =
+          "Administrator metric is supported by public evidence cited for this momentum input.";
+      }
+    }
+    const assessedCitationFingerprint =
+      administratorSnapshot.componentEvidence.find(
+        ({ component }) => component === "taxonomyConsistency",
+      )?.evidence[0]?.evidenceFingerprint;
+    if (!assessedCitationFingerprint) {
+      throw new Error("Assessed momentum citation fixture was incomplete.");
+    }
+    const [citedEvidence] = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(
+        sql`${globalSignalEvidence.signalId} = ${signal.id}
+          AND ${globalSignalEvidence.evidenceFingerprint} = ${assessedCitationFingerprint}`,
+      );
+    if (!citedEvidence) {
+      throw new Error("Assessed momentum evidence row was not persisted.");
+    }
+    const { id: _citedEvidenceId, ...replacementEvidence } = citedEvidence;
+    void _citedEvidenceId;
+    const replacementUrl = "https://evidence.example/active-replacement";
+    const replacementIngestOrdinal =
+      await nextGlobalRadarEvidenceIngestOrdinal(signal.id);
+    await db.transaction(async (transaction) => {
+      await transaction
+        .update(globalRadarSignals)
+        .set({ scoreEvidenceSnapshot: administratorSnapshot })
+        .where(eq(globalRadarSignals.id, signal.id));
+      await transaction
+        .update(globalSignalEvidence)
+        .set({
+          observedAt: new Date("2026-01-01T00:00:00.000Z"),
+          publishedAt: new Date("2026-01-01T00:00:00.000Z"),
+        })
+        .where(eq(globalSignalEvidence.id, citedEvidence.id));
+      await transaction.insert(globalSignalEvidence).values({
+        ...replacementEvidence,
+        ingestOrdinal: replacementIngestOrdinal,
+        sourceUrl: replacementUrl,
+        canonicalSourceUrl: replacementUrl,
+        observedAt: new Date("2026-08-01T00:00:00.000Z"),
+        publishedAt: new Date("2026-08-01T00:00:00.000Z"),
+        evidenceFingerprint: createEvidenceFingerprint({
+          sourceUrl: replacementUrl,
+          canonicalSourceUrl: replacementUrl,
+          isPrimarySource: replacementEvidence.isPrimarySource,
+        }),
+      });
+    });
+    const administratorAssessmentsBefore =
+      administratorSnapshot.componentEvidence.filter(
+        ({ component }) =>
+          component === "taxonomyConsistency" ||
+          component === "evidenceQuality",
+      );
+    const snapshotBefore = JSON.stringify(administratorSnapshot);
+
+    await expect(
+      repository.recomputeMomentum({
+        now: new Date("2026-08-02T00:00:00.000Z"),
+        policy: MOMENTUM_POLICY,
+      }),
+    ).resolves.toEqual({ outcome: "completed", recomputed: 1, unchanged: 0 });
+
+    const [recomputed] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    expect(
+      recomputed?.scoreEvidenceSnapshot.componentEvidence.filter(
+        ({ component }) =>
+          component === "taxonomyConsistency" ||
+          component === "evidenceQuality",
+      ),
+    ).toEqual(administratorAssessmentsBefore);
+    expect(recomputed?.scoreEvidenceSnapshot).toMatchObject({
+      scoreAsOf: "2026-08-02T00:00:00.000Z",
+      evidenceBoundaryOrdinal: replacementIngestOrdinal,
+      evidenceSetCount: replacementIngestOrdinal,
+      assessmentAuthority: "administrator",
+    });
+    expect(JSON.stringify(recomputed?.scoreEvidenceSnapshot)).not.toBe(
+      snapshotBefore,
+    );
+    expect(recomputed?.revision).toBe(signal.revision + 1);
+  });
+
+  it("recomputes an all-aged momentum window to zero without reciting aged evidence", async () => {
+    const queueAt = new Date("2026-07-30T16:18:00.000Z");
+    await repository.queueRun(
+      queueInput("momentum-all-evidence-aged", { now: queueAt }),
+    );
+    const claim = await repository.claimRun({ now: queueAt });
+    if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+    const batch = validMomentumPersistenceBatch(claim.run.id);
+    await repository.completeRun({
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(queueAt.getTime() + 1_000),
+      ),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    const [signal] = await db.select().from(globalRadarSignals);
+    if (!signal) throw new Error("Momentum signal was not persisted.");
+    const administratorSnapshot = structuredClone(
+      signal.scoreEvidenceSnapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    administratorSnapshot.assessmentAuthority = "administrator";
+    for (const component of administratorSnapshot.componentEvidence) {
+      if (
+        component.component === "taxonomyConsistency" ||
+        component.component === "evidenceQuality"
+      ) {
+        component.basis = "administrator_assessed";
+        component.rationale =
+          "Administrator metric is supported by public evidence cited for this momentum input.";
+      }
+    }
+    const assessedAssociations = structuredClone(
+      administratorSnapshot.componentEvidence.filter(
+        ({ component }) =>
+          component === "taxonomyConsistency" || component === "evidenceQuality",
+      ),
+    );
+    const agedFingerprints = new Set(
+      administratorSnapshot.componentEvidence.flatMap(({ evidence }) =>
+        evidence.map(({ evidenceFingerprint }) => evidenceFingerprint),
+      ),
+    );
+    await db.transaction(async (transaction) => {
+      await transaction
+        .update(globalRadarSignals)
+        .set({ scoreEvidenceSnapshot: administratorSnapshot })
+        .where(eq(globalRadarSignals.id, signal.id));
+      await transaction
+        .update(globalSignalEvidence)
+        .set({
+          observedAt: new Date("2026-01-01T00:00:00.000Z"),
+          publishedAt: null,
+        })
+        .where(eq(globalSignalEvidence.signalId, signal.id));
+    });
+
+    const recomputedAt = new Date("2026-08-02T00:00:00.000Z");
+    await expect(
+      repository.recomputeMomentum({
+        now: recomputedAt,
+        policy: MOMENTUM_POLICY,
+      }),
+    ).resolves.toEqual({ outcome: "completed", recomputed: 1, unchanged: 0 });
+
+    const [recomputed] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    expect(recomputed).toMatchObject({
+      momentumIndependentEntityCount: 0,
+      momentumPrimarySourceCount: 0,
+      momentumSourceFamilyCount: 0,
+      momentumVolume7Days: 0,
+      momentumVolume30Days: 0,
+      momentumVolume90Days: 0,
+      momentumIndependentEntityBreadth: 0,
+      momentumPrimarySourceDepth: 0,
+      momentumSourceDiversity: 0,
+      momentumWeightedVolume: 0,
+      momentumGrowthVsPreviousPeriod: 0,
+      momentumQualificationGatesPassed: false,
+      revision: signal.revision + 1,
+    });
+    const refreshedSnapshot = recomputed?.scoreEvidenceSnapshot;
+    expect(refreshedSnapshot?.assessmentAuthority).toBe("administrator");
+    expect(refreshedSnapshot?.emptyMomentumEvidenceWindow).toEqual({
+      asOf: recomputedAt.toISOString(),
+      maximumAgeDays: 180,
+      eligibleEvidenceCount: 0,
+    });
+    expect(
+      refreshedSnapshot?.componentEvidence.filter(
+        ({ component }) =>
+          component === "taxonomyConsistency" || component === "evidenceQuality",
+      ),
+    ).toEqual(assessedAssociations);
+    const derivedAssociations =
+      refreshedSnapshot?.componentEvidence.filter(
+        ({ basis }) => basis === "server_derived",
+      ) ?? [];
+    expect(derivedAssociations).toHaveLength(11);
+    expect(
+      derivedAssociations.every(
+        ({ value, evidence }) =>
+          value === 0 &&
+          evidence.length === 0 &&
+          evidence.every(
+            ({ evidenceFingerprint }) =>
+              !agedFingerprints.has(evidenceFingerprint),
+          ),
+      ),
+    ).toBe(true);
+
+    const adminRepository = createGlobalRadarAdminRepository(db, {
+      scoreVersion: GLOBAL_RADAR_SCORE_VERSION,
+      thresholds: {
+        direct_demand: 70,
+        demand_precursor: 65,
+        ecosystem_momentum: 70,
+      },
+    });
+    await db
+      .update(globalRadarSignals)
+      .set({ updatedAt: new Date("2026-12-01T00:00:00.000Z") })
+      .where(eq(globalRadarSignals.id, signal.id));
+    await expect(
+      adminRepository.getSignalDetail(signal.id),
+    ).resolves.toMatchObject({ outcome: "found" });
+
+    const [agedEvidence] = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(
+        and(
+          eq(globalSignalEvidence.signalId, signal.id),
+          eq(globalSignalEvidence.isSyndicated, false),
+        ),
+      )
+      .orderBy(asc(globalSignalEvidence.ingestOrdinal))
+      .limit(1);
+    if (!agedEvidence) throw new Error("Aged evidence fixture was not persisted.");
+    const { id: _agedEvidenceId, ...activeEvidence } = agedEvidence;
+    void _agedEvidenceId;
+    const activeUrl = "https://evidence.example/uncited-active-window-tamper";
+    const activeIngestOrdinal =
+      await nextGlobalRadarEvidenceIngestOrdinal(signal.id);
+    await db.insert(globalSignalEvidence).values({
+      ...activeEvidence,
+      ingestOrdinal: activeIngestOrdinal,
+      sourceUrl: activeUrl,
+      canonicalSourceUrl: activeUrl,
+      evidenceFingerprint: createEvidenceFingerprint({
+        sourceUrl: activeUrl,
+        canonicalSourceUrl: activeUrl,
+        isPrimarySource: activeEvidence.isPrimarySource,
+      }),
+      observedAt: new Date("2026-08-01T00:00:00.000Z"),
+      publishedAt: new Date("2026-08-01T00:00:00.000Z"),
+    });
+    await expect(adminRepository.getSignalDetail(signal.id)).rejects.toThrow(
+      "Invalid stored Global Radar empty momentum evidence window.",
+    );
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: signal.id,
+        actor: { userId: administratorUserId, email: userEmail },
+        envelope: {
+          expectedRevision: signal.revision + 1,
+          idempotencyKey: "30000000-0000-4000-8000-000000000040",
+          reason: "Confirm the persisted empty evidence-window proof.",
+          now: new Date("2026-12-01T00:01:00.000Z"),
+        },
+        command: { type: "request_review" },
+      }),
+    ).rejects.toThrow(
+      "Invalid stored Global Radar empty momentum evidence window.",
+    );
+  });
+
+  it.each([
+    {
+      boundary: "missing",
+      mutate: async (evidenceId: string) => {
+        await db
+          .update(globalSignalUpdates)
+          .set({ evidenceId: null })
+          .where(eq(globalSignalUpdates.evidenceId, evidenceId));
+        await db
+          .delete(globalSignalEvidence)
+          .where(eq(globalSignalEvidence.id, evidenceId));
+      },
+    },
+    {
+      boundary: "syndicated",
+      mutate: async (evidenceId: string) => {
+        await db
+          .update(globalSignalEvidence)
+          .set({ isSyndicated: true })
+          .where(eq(globalSignalEvidence.id, evidenceId));
+      },
+    },
+    {
+      boundary: "detached from a contributor",
+      mutate: async (evidenceId: string) => {
+        await db
+          .update(globalSignalEvidence)
+          .set({ globalEntityId: null })
+          .where(eq(globalSignalEvidence.id, evidenceId));
+      },
+    },
+  ])(
+    "fails closed without signal or history writes when cited momentum evidence is $boundary",
+    async ({ boundary, mutate }) => {
+      const queueAt = new Date("2026-07-30T16:20:00.000Z");
+      await repository.queueRun(
+        queueInput(`momentum-cited-evidence-${boundary}`, { now: queueAt }),
+      );
+      const claim = await repository.claimRun({ now: queueAt });
+      if (claim.outcome !== "claimed") {
+        throw new Error("Fixture was not claimed.");
+      }
+      const batch = validMomentumPersistenceBatch(claim.run.id);
+      await repository.completeRun({
+        ...completionInput(
+          claim.run.id,
+          claim.privateClaim.leaseToken,
+          new Date(queueAt.getTime() + 1_000),
+        ),
+        submissionHash: batch.canonicalSubmissionHash,
+        batch,
+      });
+      const [signal] = await db.select().from(globalRadarSignals);
+      const citedFingerprint =
+        signal?.scoreEvidenceSnapshot.componentEvidence[0]?.evidence[0]
+          ?.evidenceFingerprint;
+      if (!signal || !citedFingerprint) {
+        throw new Error("Momentum citation fixture was incomplete.");
+      }
+      const [citedEvidence] = await db
+        .select({ id: globalSignalEvidence.id })
+        .from(globalSignalEvidence)
+        .where(
+          sql`${globalSignalEvidence.signalId} = ${signal.id}
+            AND ${globalSignalEvidence.evidenceFingerprint} = ${citedFingerprint}`,
+        );
+      if (!citedEvidence) {
+        throw new Error("Cited momentum evidence row was not persisted.");
+      }
+      await mutate(citedEvidence.id);
+      const [before] = await db
+        .select()
+        .from(globalRadarSignals)
+        .where(eq(globalRadarSignals.id, signal.id));
+      const updatesBefore = await db
+        .select()
+        .from(globalSignalUpdates)
+        .where(eq(globalSignalUpdates.signalId, signal.id));
+
+      await expect(
+        repository.recomputeMomentum({
+          now: new Date("2026-07-31T14:00:00.000Z"),
+          policy: MOMENTUM_POLICY,
+        }),
+      ).rejects.toThrow("Invalid stored Global Radar score-evidence citations.");
+
+      const [after] = await db
+        .select()
+        .from(globalRadarSignals)
+        .where(eq(globalRadarSignals.id, signal.id));
+      const updatesAfter = await db
+        .select()
+        .from(globalSignalUpdates)
+        .where(eq(globalSignalUpdates.signalId, signal.id));
+      expect(after).toEqual(before);
+      expect(updatesAfter).toEqual(updatesBefore);
+    },
+  );
+
+  it("fails closed and rolls back momentum maintenance when stored score provenance is malformed", async () => {
+    const queueAt = new Date("2026-07-30T16:30:00.000Z");
+    await repository.queueRun(
+      queueInput("momentum-malformed-score-provenance", { now: queueAt }),
+    );
+    const claim = await repository.claimRun({ now: queueAt });
+    if (claim.outcome !== "claimed") throw new Error("Fixture was not claimed.");
+    const batch = validMomentumPersistenceBatch(claim.run.id);
+    await repository.completeRun({
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(queueAt.getTime() + 1_000),
+      ),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    const [signal] = await db.select().from(globalRadarSignals);
+    if (!signal) throw new Error("Momentum signal was not persisted.");
+    const malformedSnapshot = structuredClone(
+      signal.scoreEvidenceSnapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    const volume7Days = malformedSnapshot.componentEvidence.find(
+      ({ component }) => component === "volume7Days",
+    );
+    if (!volume7Days) throw new Error("Momentum provenance fixture was incomplete.");
+    volume7Days.value = 99;
+    await db
+      .update(globalRadarSignals)
+      .set({
+        momentumVolume7Days: 0,
+        scoreEvidenceSnapshot: malformedSnapshot,
+      })
+      .where(eq(globalRadarSignals.id, signal.id));
+    const [before] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    const updatesBefore = await db
+      .select()
+      .from(globalSignalUpdates)
+      .where(eq(globalSignalUpdates.signalId, signal.id));
+
+    await expect(
+      repository.recomputeMomentum({
+        now: new Date("2026-07-31T14:00:00.000Z"),
+        policy: MOMENTUM_POLICY,
+      }),
+    ).rejects.toThrow("Invalid stored Global Radar score-evidence snapshot.");
+
+    const [after] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    const updatesAfter = await db
+      .select()
+      .from(globalSignalUpdates)
+      .where(eq(globalSignalUpdates.signalId, signal.id));
+    expect(after).toEqual(before);
+    expect(updatesAfter).toEqual(updatesBefore);
   });
 
   it("recomputes every eligible item in the full 180-day horizon without a newest-100 cutoff", async () => {
@@ -4536,9 +6312,12 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
     }
     const { id: _templateId, ...templateValues } = template;
     void _templateId;
+    const firstSyntheticIngestOrdinal =
+      await nextGlobalRadarEvidenceIngestOrdinal(signal.id);
     const syntheticEvidence = [
       ...Array.from({ length: 101 }, (_, index) => ({
         ...templateValues,
+        ingestOrdinal: firstSyntheticIngestOrdinal + index,
         sourceUrl: `https://evidence.example/recent-${index}`,
         canonicalSourceUrl: `https://evidence.example/recent-${index}`,
         observedAt: new Date("2026-08-01T00:00:00.000Z"),
@@ -4551,6 +6330,7 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
       })),
       ...Array.from({ length: 5 }, (_, index) => ({
         ...templateValues,
+        ingestOrdinal: firstSyntheticIngestOrdinal + 101 + index,
         sourceUrl: `https://evidence.example/aged-out-${index}`,
         canonicalSourceUrl: `https://evidence.example/aged-out-${index}`,
         observedAt: new Date("2026-01-01T00:00:00.000Z"),
@@ -4604,10 +6384,10 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
     });
     const [created] = await db.select().from(globalRadarSignals);
     if (!created) throw new Error("Momentum signal was not persisted.");
-    await db
-      .update(globalRadarSignals)
-      .set({ status: "qualified", revision: 7 })
-      .where(eq(globalRadarSignals.id, created.id));
+    await rebaseGlobalRadarFixtureSignal(created.id, {
+      status: "qualified",
+      revision: 7,
+    });
 
     const recomputeAt = new Date("2027-02-01T00:00:00.000Z");
     await expect(
@@ -4745,17 +6525,12 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
     await persistClassFixture("filters", "direct");
     const [owner] = await db.select().from(globalRadarSignals);
     if (!owner) throw new Error("Admin direct fixture was not persisted.");
-    const duplicateId = randomUUID();
+    const duplicateId = "ffffffff-ffff-4fff-bfff-ffffffffffff";
     await db.insert(globalRadarSignals).values({
       ...owner,
       id: duplicateId,
-      title: "Earlier tie",
+      title: "Later lexical tie",
       dedupeKey: "d".repeat(64),
-      observedAt: new Date(owner.observedAt.getTime() - 1_000),
-      firstSeenAt: new Date(owner.firstSeenAt.getTime() - 1_000),
-      lastSeenAt: new Date(owner.lastSeenAt.getTime() - 1_000),
-      createdAt: new Date(owner.createdAt.getTime() - 1_000),
-      updatedAt: new Date(owner.updatedAt.getTime() - 1_000),
     });
     const [requirementTemplate] = await db
       .select()
@@ -4768,6 +6543,16 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
       ...requirementValues,
       signalId: duplicateId,
     });
+    const ownerEvidence = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, owner.id));
+    await db.insert(globalSignalEvidence).values(
+      ownerEvidence.map(({ id, ...evidence }) => {
+        void id;
+        return { ...evidence, signalId: duplicateId };
+      }),
+    );
     const mergedId = randomUUID();
     await db.insert(globalRadarSignals).values({
       ...owner,
@@ -4801,37 +6586,14 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
     expect(JSON.stringify(listed)).not.toContain("rawMetadata");
     expect(JSON.stringify(listed)).not.toContain("note_appended");
 
-    const precursorId = randomUUID();
-    await db.insert(globalRadarSignals).values({
-      ...owner,
-      id: precursorId,
-      signalClass: "demand_precursor",
-      title: "Acme funds a robot-learning programme",
-      signalType: "funding",
-      dedupeKey: "f".repeat(64),
-      demandExplicitness: null,
-      freshness: null,
-      actionability: null,
-      commercialPotential: null,
-      repeatability: null,
-      responseAccessibility: null,
-      strategicLearning: null,
-      complianceComplexity: null,
-      directDemandScore: null,
-      proximityToExternalDemand: 70,
-      fundingDeploymentMomentum: 80,
-      likelyDataHardwareIntensity: 70,
-      estimatedTimeHorizon: 80,
-      strategicRelevance: 70,
-      precursorScore: 72,
-      expiresAt: null,
-      evergreen: null,
-      reobserveBy: null,
-      responsePathType: null,
-      responsePathUrl: null,
-      responseBusinessEmail: null,
-      partnerApplicationUrl: null,
-    });
+    await persistClassFixture("filters-precursor", "precursor");
+    const [precursorSignal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.signalClass, "demand_precursor"));
+    if (!precursorSignal) {
+      throw new Error("Admin precursor filter fixture was not persisted.");
+    }
     const precursor = await adminRepository.listSignals({
       signalClass: "demand_precursor",
       filters: { horizon: "days_31_to_90", page: 1 },
@@ -4839,7 +6601,7 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
     expect(precursor).toMatchObject({
       outcome: "listed",
       total: 1,
-      items: [{ id: precursorId }],
+      items: [{ id: precursorSignal.id }],
     });
 
     await persistClassFixture("theme", "momentum");
@@ -4988,23 +6750,83 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
       .from(globalSignalRequirements)
       .where(eq(globalSignalRequirements.signalId, signal.id));
     if (!detailRequirement) throw new Error("Detail requirement fixture was not persisted.");
+    const [detailEvidence] = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, signal.id));
+    if (!detailEvidence) throw new Error("Detail evidence fixture was not persisted.");
+    const citedEvidenceFingerprint =
+      signal.scoreEvidenceSnapshot.componentEvidence[0]?.evidence[0]
+        ?.evidenceFingerprint;
+    if (!citedEvidenceFingerprint) {
+      throw new Error("Detail score evidence fixture was not persisted.");
+    }
+    expect(citedEvidenceFingerprint).toBe(detailEvidence.evidenceFingerprint);
+    const scoreEvidenceSnapshotBefore = JSON.stringify(
+      signal.scoreEvidenceSnapshot,
+    );
     const { id: _detailRequirementId, ...detailRequirementValues } = detailRequirement;
+    const { id: _detailEvidenceId, ...detailEvidenceValues } = detailEvidence;
     void _detailRequirementId;
+    void _detailEvidenceId;
+    const firstDetailEvidenceIngestOrdinal =
+      await nextGlobalRadarEvidenceIngestOrdinal(signal.id);
     await db.insert(globalSignalRequirements).values(
       Array.from({ length: 101 }, (_, index) => ({
         ...detailRequirementValues,
         requirementFingerprint: plainSha256(`detail-requirement-${index}`),
       })),
     );
+    await db.insert(globalSignalEvidence).values(
+      Array.from({ length: 101 }, (_, index) => {
+        const sourceUrl = `https://detail-evidence-${index}.example/update`;
+        return {
+          ...detailEvidenceValues,
+          ingestOrdinal: firstDetailEvidenceIngestOrdinal + index,
+          sourceUrl,
+          canonicalSourceUrl: sourceUrl,
+          sourceName: `Detail evidence ${index}`,
+          evidenceClaim: `Newer uncited detail evidence ${index}.`,
+          englishSummary: `Newer uncited detail evidence ${index}.`,
+          publishedAt: new Date("2026-07-30T10:00:00.000Z"),
+          observedAt: new Date("2026-07-30T11:00:00.000Z"),
+          evidenceFingerprint: plainSha256(`detail-evidence-${index}`),
+        };
+      }),
+    );
     const cappedDetail = await adminRepository.getSignalDetail(signal.id);
     expect(cappedDetail).toMatchObject({
       outcome: "found",
       detail: {
         requirements: { total: 102, truncated: true },
+        evidence: { total: 102, truncated: true },
       },
     });
     if (cappedDetail.outcome !== "found") throw new Error("Detail was not found.");
     expect(cappedDetail.detail.requirements.items).toHaveLength(100);
+    expect(cappedDetail.detail.evidence.items).toHaveLength(100);
+    expect(
+      cappedDetail.detail.evidence.items.some(
+        ({ id }) => id === detailEvidence.id,
+      ),
+    ).toBe(false);
+    expect(
+      cappedDetail.detail.scoreRationale.componentEvidence.flatMap(
+        ({ evidence }) => evidence,
+      ),
+    ).toContainEqual({
+      id: detailEvidence.id,
+      sourceUrl: detailEvidence.sourceUrl,
+      sourceName: detailEvidence.sourceName,
+      matchedFieldPaths: expect.any(Array),
+    });
+    const [signalAfterDetailReads] = await db
+      .select({ scoreEvidenceSnapshot: globalRadarSignals.scoreEvidenceSnapshot })
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    expect(JSON.stringify(signalAfterDetailReads?.scoreEvidenceSnapshot)).toBe(
+      scoreEvidenceSnapshotBefore,
+    );
     await db
       .update(globalRadarSignals)
       .set({ mergedIntoSignalId: randomUUID() })
@@ -5050,6 +6872,869 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
       adminRepository.getWatchlistByEntityId(signal.globalEntityId),
     ).resolves.toEqual({ outcome: "not_found" });
   });
+
+  it("validates cited momentum ownership across the bounded association set and rejects semantic tampering", async () => {
+    await persistClassFixture("detail-ownership", "momentum");
+    const [signal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.signalClass, "ecosystem_momentum"));
+    const [entityTemplate] = await db.select().from(globalEntities).limit(1);
+    const evidenceRows = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, signal?.id ?? randomUUID()));
+    const evidenceTemplate = evidenceRows.find(
+      ({ isSyndicated, supportedFieldPaths }) =>
+        !isSyndicated &&
+        supportedFieldPaths.includes("momentumMetrics.taxonomyConsistency"),
+    );
+    if (!signal || !entityTemplate || !evidenceTemplate) {
+      throw new Error("Momentum detail ownership fixture was not persisted.");
+    }
+    const dummyEntities = await db
+      .insert(globalEntities)
+      .values(
+        Array.from({ length: 46 }, (_, index) => {
+          const id = randomUUID();
+          const websiteUrl = `https://detail-owner-${index}.example`;
+          return {
+            ...entityTemplate,
+            id,
+            canonicalName: `Detail owner ${index}`,
+            normalizedName: `detail owner ${index}`,
+            canonicalDomain: `detail-owner-${index}.example`,
+            websiteUrl,
+            linkedinUrl: null,
+            stablePublicIdentifiers: [`fixture:detail-owner-${index}`],
+            publicIdentityAnchor: plainSha256(
+              `detail-owner-anchor-${index}`,
+            ),
+            canonicalCorporateGroupId: `group:detail-owner-${index}`,
+          };
+        }),
+      )
+      .returning({ id: globalEntities.id });
+    await db.insert(globalRadarSignalEntities).values(
+      dummyEntities.map(({ id }, index) => ({
+        id: `00000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`,
+        signalId: signal.id,
+        globalEntityId: id,
+        role: "contributor" as const,
+        confidence: 80,
+        createdAt: signal.observedAt,
+      })),
+    );
+    const [citedOwner] = await db
+      .insert(globalEntities)
+      .values({
+        ...entityTemplate,
+        id: randomUUID(),
+        canonicalName: "Cited owner beyond display limit",
+        normalizedName: "cited owner beyond display limit",
+        canonicalDomain: "cited-owner-beyond-limit.example",
+        websiteUrl: "https://cited-owner-beyond-limit.example",
+        linkedinUrl: null,
+        stablePublicIdentifiers: ["fixture:cited-owner-beyond-limit"],
+        publicIdentityAnchor: plainSha256("cited-owner-beyond-limit"),
+        canonicalCorporateGroupId: "group:cited-owner-beyond-limit",
+      })
+      .returning();
+    if (!citedOwner) throw new Error("Cited detail owner was not persisted.");
+    await db.insert(globalRadarSignalEntities).values({
+      id: "ffffffff-ffff-4fff-bfff-ffffffffffff",
+      signalId: signal.id,
+      globalEntityId: citedOwner.id,
+      role: "contributor",
+      confidence: 95,
+      createdAt: signal.observedAt,
+    });
+    const { id: _evidenceTemplateId, ...evidenceTemplateValues } =
+      evidenceTemplate;
+    void _evidenceTemplateId;
+    const citedEvidence = evidenceTemplate;
+    const citedFingerprint = citedEvidence.evidenceFingerprint;
+    const manuallyCitedSnapshot = structuredClone(
+      signal.scoreEvidenceSnapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    const taxonomyAssociation = manuallyCitedSnapshot.componentEvidence.find(
+      ({ component }) => component === "taxonomyConsistency",
+    );
+    if (!taxonomyAssociation) {
+      throw new Error("Momentum taxonomy provenance was not persisted.");
+    }
+    taxonomyAssociation.evidence = [
+      {
+        evidenceFingerprint: citedFingerprint,
+        matchedFieldPaths: ["momentumMetrics.taxonomyConsistency"],
+      },
+    ];
+    const associations = await db
+      .select({
+        globalEntityId: globalRadarSignalEntities.globalEntityId,
+        role: globalRadarSignalEntities.role,
+      })
+      .from(globalRadarSignalEntities)
+      .where(eq(globalRadarSignalEntities.signalId, signal.id));
+    const entityIds = [
+      ...new Set(associations.map(({ globalEntityId }) => globalEntityId)),
+    ];
+    const entities = await db
+      .select({
+        id: globalEntities.id,
+        canonicalCorporateGroupId: globalEntities.canonicalCorporateGroupId,
+      })
+      .from(globalEntities)
+      .where(inArray(globalEntities.id, entityIds));
+    const evaluationEvidence = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, signal.id))
+      .orderBy(asc(globalSignalEvidence.ingestOrdinal));
+    const scoreAsOf = new Date(manuallyCitedSnapshot.scoreAsOf);
+    const scoreInputDigest = createStoredGlobalRadarScoreInputDigest({
+      scoreAsOf,
+      signal,
+      actionabilityInput: null,
+      associations,
+      entities,
+    });
+    const snapshot = rebaseStoredScoreEvidenceSnapshot({
+      scoreInputDigest,
+      scoreAsOf,
+      existingSnapshot: manuallyCitedSnapshot,
+      signalClass: "ecosystem_momentum",
+      signalType: signal.signalType,
+      currentIndiaRelevanceType: signal.indiaRelevanceType,
+      nextIndiaRelevanceType: signal.indiaRelevanceType,
+      scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+      momentumPolicyVersion: GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
+      currentComponents: storedScoreComponents(signal),
+      nextComponents: storedScoreComponents(signal),
+      replacementComponents: [],
+      momentumContributorEntityIds: associations.map(
+        ({ globalEntityId }) => globalEntityId,
+      ),
+      announcedAt: signal.announcedAt,
+      effectiveFrom: signal.effectiveFrom,
+      existingEvidence: evaluationEvidence,
+      evidence: evaluationEvidence,
+      evaluationEvidence,
+    });
+    await db
+      .update(globalRadarSignals)
+      .set({ scoreEvidenceSnapshot: snapshot })
+      .where(eq(globalRadarSignals.id, signal.id));
+
+    const detail = await adminRepository.getSignalDetail(signal.id);
+    expect(detail).toMatchObject({
+      outcome: "found",
+      detail: {
+        associatedOrganisations: { total: 50, truncated: false },
+        scoreRationale: {
+          componentEvidence: expect.arrayContaining([
+            expect.objectContaining({
+              component: "taxonomyConsistency",
+              evidence: [
+                expect.objectContaining({ id: citedEvidence.id }),
+              ],
+            }),
+          ]),
+        },
+      },
+    });
+    if (detail.outcome !== "found") throw new Error("Detail was not found.");
+    expect(detail.detail.associatedOrganisations.items).toHaveLength(50);
+    expect(
+      detail.detail.associatedOrganisations.items.some(
+        ({ organisation }) => organisation.id === citedOwner.id,
+      ),
+    ).toBe(true);
+
+    const wrongPathSnapshot = structuredClone(
+      snapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    const wrongPathAssociation = wrongPathSnapshot.componentEvidence.find(
+      ({ component }) => component === "taxonomyConsistency",
+    );
+    if (!wrongPathAssociation) {
+      throw new Error("Momentum tamper fixture was not persisted.");
+    }
+    wrongPathAssociation.evidence[0] = {
+      evidenceFingerprint: citedFingerprint,
+      matchedFieldPaths: ["momentumMetrics.evidenceQuality"],
+    };
+    await db
+      .update(globalRadarSignals)
+      .set({ scoreEvidenceSnapshot: wrongPathSnapshot })
+      .where(eq(globalRadarSignals.id, signal.id));
+    await expect(adminRepository.getSignalDetail(signal.id)).rejects.toThrow(
+      "Invalid stored Global Radar score provenance: citation_semantics_mismatch.",
+    );
+
+    const unrelatedUrl = "https://cited-owner-beyond-limit.example/unrelated";
+    const unrelatedFingerprint = createEvidenceFingerprint({
+      sourceUrl: unrelatedUrl,
+      canonicalSourceUrl: unrelatedUrl,
+      isPrimarySource: true,
+    });
+    const unrelatedIngestOrdinal =
+      await nextGlobalRadarEvidenceIngestOrdinal(signal.id);
+    await db.insert(globalSignalEvidence).values({
+      ...evidenceTemplateValues,
+      ingestOrdinal: unrelatedIngestOrdinal,
+      globalEntityId: citedOwner.id,
+      sourceUrl: unrelatedUrl,
+      canonicalSourceUrl: unrelatedUrl,
+      sourceName: "Unrelated same-signal evidence",
+      evidenceClaim: "The source reports an unrelated operational update.",
+      englishSummary: "An unrelated operational update.",
+      isPrimarySource: true,
+      isSyndicated: false,
+      evidenceFingerprint: unrelatedFingerprint,
+      supportedFieldPaths: ["signal.factualSummary"],
+    });
+    const wrongFingerprintSnapshot = structuredClone(
+      snapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    const wrongFingerprintAssociation =
+      wrongFingerprintSnapshot.componentEvidence.find(
+        ({ component }) => component === "taxonomyConsistency",
+      );
+    if (!wrongFingerprintAssociation) {
+      throw new Error("Momentum fingerprint tamper fixture was not persisted.");
+    }
+    wrongFingerprintAssociation.evidence[0] = {
+      evidenceFingerprint: unrelatedFingerprint,
+      matchedFieldPaths: ["momentumMetrics.taxonomyConsistency"],
+    };
+    await db
+      .update(globalRadarSignals)
+      .set({ scoreEvidenceSnapshot: wrongFingerprintSnapshot })
+      .where(eq(globalRadarSignals.id, signal.id));
+    await expect(adminRepository.getSignalDetail(signal.id)).rejects.toThrow(
+      "Invalid stored Global Radar score provenance: cited_evidence_unresolved.",
+    );
+
+    const overflowEntityId = randomUUID();
+    await db.insert(globalEntities).values({
+      ...entityTemplate,
+      id: overflowEntityId,
+      canonicalName: "Overflow association owner",
+      normalizedName: "overflow association owner",
+      canonicalDomain: "overflow-association-owner.example",
+      websiteUrl: "https://overflow-association-owner.example",
+      linkedinUrl: null,
+      stablePublicIdentifiers: ["fixture:overflow-association-owner"],
+      publicIdentityAnchor: plainSha256("overflow-association-owner"),
+      canonicalCorporateGroupId: "group:overflow-association-owner",
+    });
+    await db.insert(globalRadarSignalEntities).values({
+      id: "ffffffff-ffff-4fff-bfff-fffffffffffe",
+      signalId: signal.id,
+      globalEntityId: overflowEntityId,
+      role: "contributor",
+      confidence: 80,
+      createdAt: signal.observedAt,
+    });
+    await expect(adminRepository.getSignalDetail(signal.id)).rejects.toThrow(
+      "Invalid stored Global Radar score provenance: score_input_mismatch.",
+    );
+  });
+
+  it("rejects precursor detail hydration when the scored horizon loses its date anchor", async () => {
+    await persistClassFixture("detail-horizon", "precursor");
+    const [signal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.signalClass, "demand_precursor"));
+    if (!signal) throw new Error("Precursor detail fixture was not persisted.");
+    await db
+      .update(globalRadarSignals)
+      .set({ effectiveFrom: null })
+      .where(eq(globalRadarSignals.id, signal.id));
+
+    await expect(adminRepository.getSignalDetail(signal.id)).rejects.toThrow(
+      "Invalid stored Global Radar score provenance: score_input_mismatch.",
+    );
+  });
+});
+
+describe("PostgreSQL Global Radar score provenance on aggregate reads", () => {
+  const adminRepository = createGlobalRadarAdminRepository(db, {
+    scoreVersion: GLOBAL_RADAR_SCORE_VERSION,
+    thresholds: {
+      direct_demand: 70,
+      demand_precursor: 65,
+      ecosystem_momentum: 70,
+    },
+  });
+  const readAt = new Date("2026-07-30T14:00:00.000Z");
+
+  async function persistReadProvenanceFixture(
+    suffix: string,
+    signalClass:
+      | "direct_demand"
+      | "demand_precursor"
+      | "ecosystem_momentum",
+  ) {
+    const queuedAt = new Date("2026-07-30T12:00:00.000Z");
+    await repository.queueRun(
+      queueInput(`read-provenance-${suffix}`, { now: queuedAt }),
+    );
+    const claim = await repository.claimRun({ now: queuedAt });
+    if (claim.outcome !== "claimed") {
+      throw new Error("Read provenance fixture was not claimed.");
+    }
+    const batch =
+      signalClass === "direct_demand"
+        ? validPersistenceBatch(claim.run.id, {
+            externalSignalId: `read-provenance-${suffix}`,
+            observedAt: queuedAt.toISOString(),
+            sourceUrl: `https://read-provenance-${suffix}.example/direct`,
+            stableIdentifierValue: `read-provenance-${suffix}`,
+            websiteUrl: `https://read-provenance-${suffix}.example`,
+            linkedinOrganizationUrl: null,
+          })
+        : signalClass === "demand_precursor"
+          ? validPrecursorPersistenceBatch(claim.run.id)
+          : validMomentumPersistenceBatch(claim.run.id);
+    const completed = await repository.completeRun({
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(queuedAt.getTime() + 1_000),
+      ),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    if (completed.outcome !== "completed") {
+      throw new Error("Read provenance fixture did not complete.");
+    }
+    const [signal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.signalClass, signalClass));
+    if (!signal) throw new Error("Read provenance signal was not persisted.");
+    return signal;
+  }
+
+  it("uses bounded keyset aggregate scans and max-plus-one score-prefix reads", async () => {
+    await persistReadProvenanceFixture("bounded-query-recording", "direct_demand");
+    const recordedQueries: Array<{
+      query: string;
+      params: readonly unknown[];
+    }> = [];
+    const recordingClient = postgres(process.env.DATABASE_URL!, {
+      max: 1,
+      prepare: false,
+      connect_timeout: 5,
+      idle_timeout: 0,
+    });
+    const recordingDb = drizzle(recordingClient, {
+      schema: { ...coreDatabaseSchema, ...globalRadarDatabaseSchema },
+      logger: {
+        logQuery(query, params) {
+          recordedQueries.push({ query, params });
+        },
+      },
+    });
+    const recordingRepository = createGlobalRadarAdminRepository(
+      recordingDb,
+      {
+        scoreVersion: GLOBAL_RADAR_SCORE_VERSION,
+        thresholds: {
+          direct_demand: 70,
+          demand_precursor: 65,
+          ecosystem_momentum: 70,
+        },
+      },
+    );
+    try {
+      await expect(
+        recordingRepository.getClassMetrics({
+          signalClass: "direct_demand",
+          filters: {},
+          now: readAt,
+        }),
+      ).resolves.toMatchObject({ outcome: "listed" });
+      await expect(
+        recordingRepository.getOverviewMetrics({ now: readAt }),
+      ).resolves.toMatchObject({ outcome: "listed" });
+    } finally {
+      await recordingClient.end({ timeout: 5 });
+    }
+
+    const signalReads = recordedQueries.filter(({ query }) =>
+      /select[\s\S]+from "global_radar_signals"/i.test(query),
+    );
+    expect(signalReads.length).toBeGreaterThanOrEqual(2);
+    expect(signalReads.every(({ query }) => /order by[\s\S]+"id" asc[\s\S]+limit/i.test(query))).toBe(true);
+    expect(
+      signalReads.every(({ params }) =>
+        params.some(
+          (value) => Number(value) === 100,
+        ),
+      ),
+    ).toBe(true);
+    const prefixReads = recordedQueries.filter(({ query }) =>
+      /from "global_signal_evidence"[\s\S]+"ingest_ordinal"[\s\S]+limit/i.test(
+        query,
+      ),
+    );
+    expect(prefixReads.length).toBeGreaterThan(0);
+    expect(
+      prefixReads.every(({ params }) =>
+        params.some(
+          (value) =>
+            Number(value) ===
+            MAX_GLOBAL_RADAR_MOMENTUM_OBSERVATIONS + 1,
+        ),
+      ),
+    ).toBe(true);
+    const associationReads = recordedQueries.filter(({ query }) =>
+      /from "global_radar_signal_entities"[\s\S]+order by[\s\S]+"signal_id" asc[\s\S]+"global_entity_id" asc[\s\S]+limit/i.test(
+        query,
+      ),
+    );
+    expect(associationReads.length).toBeGreaterThan(0);
+    expect(
+      associationReads.every(({ params }) =>
+        params.some((value) => Number(value) === 51),
+      ),
+    ).toBe(true);
+  });
+
+  const cases = [
+    { surface: "list", signalClass: "direct_demand" },
+    { surface: "class metrics", signalClass: "direct_demand" },
+    { surface: "overview", signalClass: "demand_precursor" },
+    { surface: "watchlist enrichment", signalClass: "direct_demand" },
+  ] as const;
+  const tampers = ["aggregate", "citation"] as const;
+
+  it.each(
+    cases.flatMap((readCase) =>
+      tampers.map((tamper) => ({ ...readCase, tamper })),
+    ),
+  )(
+    "rejects $tamper score tampering for the $surface without returning partial numbers",
+    async ({ surface, signalClass, tamper }) => {
+      const signal = await persistReadProvenanceFixture(
+        `${surface.replaceAll(" ", "-")}-${tamper}`,
+        signalClass,
+      );
+      if (tamper === "aggregate") {
+        const storedScore =
+          signalClass === "direct_demand"
+            ? signal.directDemandScore
+            : signal.precursorScore;
+        if (storedScore === null) {
+          throw new Error("Read provenance aggregate was not persisted.");
+        }
+        await db
+          .update(globalRadarSignals)
+          .set(
+            signalClass === "direct_demand"
+              ? { directDemandScore: storedScore === 100 ? 99 : storedScore + 1 }
+              : { precursorScore: storedScore === 100 ? 99 : storedScore + 1 },
+          )
+          .where(eq(globalRadarSignals.id, signal.id));
+      } else {
+        const snapshot = structuredClone(
+          signal.scoreEvidenceSnapshot,
+        ) as unknown as MutableActiveScoreEvidenceSnapshot;
+        const association = snapshot.componentEvidence[0];
+        if (!association) {
+          throw new Error("Read provenance citation was not persisted.");
+        }
+        association.rationale = "Tampered active score citation rationale.";
+        await db
+          .update(globalRadarSignals)
+          .set({ scoreEvidenceSnapshot: snapshot })
+          .where(eq(globalRadarSignals.id, signal.id));
+      }
+
+      const read =
+        surface === "list"
+          ? adminRepository.listSignals({
+              signalClass: "direct_demand",
+              filters: { page: 1 },
+            })
+          : surface === "class metrics"
+            ? adminRepository.getClassMetrics({
+                signalClass: "direct_demand",
+                filters: {},
+                now: readAt,
+              })
+            : surface === "overview"
+              ? adminRepository.getOverviewMetrics({ now: readAt })
+              : adminRepository.getWatchlistEnrichment({
+                  globalEntityIds: signal.globalEntityId
+                    ? [signal.globalEntityId]
+                    : [],
+                  now: readAt,
+                });
+      const outcome = await read;
+      expect(outcome).toEqual({
+        outcome: "conflict",
+        reason: "score_provenance_invalid",
+      });
+      expect(JSON.stringify(outcome)).not.toMatch(
+        /aggregate_score_mismatch|citation_semantics_mismatch|"metrics"|"items"|"score":/,
+      );
+    },
+  );
+
+  function differentScore(value: number | null): number {
+    if (value === null) throw new Error("Deterministic score input is missing.");
+    return value === 100 ? 99 : value + 1;
+  }
+
+  it("rejects one-second score clock drift even when the evidence set is unchanged", async () => {
+    const signal = await persistReadProvenanceFixture(
+      "score-clock-drift",
+      "direct_demand",
+    );
+    const snapshot = structuredClone(
+      signal.scoreEvidenceSnapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    snapshot.scoreAsOf = new Date(
+      new Date(snapshot.scoreAsOf).getTime() + 1_000,
+    ).toISOString();
+    await db
+      .update(globalRadarSignals)
+      .set({ scoreEvidenceSnapshot: snapshot })
+      .where(eq(globalRadarSignals.id, signal.id));
+
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "direct_demand",
+        filters: { page: 1 },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
+  });
+
+  it.each([
+    {
+      label: "announced-at anchor",
+      values: (signal: typeof globalRadarSignals.$inferSelect) => ({
+        announcedAt: new Date(signal.announcedAt!.getTime() + 1_000),
+      }),
+    },
+    {
+      label: "professional response URL",
+      values: () => ({
+        responsePathUrl: "https://alternate-response.example/respond",
+      }),
+    },
+  ])("rejects unilateral direct-demand $label drift", async ({ label, values }) => {
+    const signal = await persistReadProvenanceFixture(
+      `direct.${label.toLowerCase().replaceAll(" ", ".")}`,
+      "direct_demand",
+    );
+    if (signal.announcedAt === null || signal.responsePathUrl === null) {
+      throw new Error("Direct score-input drift fixture is incomplete.");
+    }
+    await db
+      .update(globalRadarSignals)
+      .set(values(signal))
+      .where(eq(globalRadarSignals.id, signal.id));
+
+    await expect(adminRepository.getSignalDetail(signal.id)).rejects.toThrow(
+      "Invalid stored Global Radar score provenance: score_input_mismatch.",
+    );
+  });
+
+  it("rejects one-second precursor horizon-anchor drift on overview", async () => {
+    const signal = await persistReadProvenanceFixture(
+      "precursor-horizon-anchor-drift",
+      "demand_precursor",
+    );
+    if (signal.effectiveFrom === null) {
+      throw new Error("Precursor score-input drift fixture has no horizon anchor.");
+    }
+    await db
+      .update(globalRadarSignals)
+      .set({
+        effectiveFrom: new Date(signal.effectiveFrom.getTime() + 1_000),
+      })
+      .where(eq(globalRadarSignals.id, signal.id));
+
+    await expect(
+      adminRepository.getOverviewMetrics({ now: readAt }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
+  });
+
+  it("rejects unilateral momentum taxonomy drift", async () => {
+    const signal = await persistReadProvenanceFixture(
+      "momentum-taxonomy-drift",
+      "ecosystem_momentum",
+    );
+    await db
+      .update(globalRadarSignals)
+      .set({ demandDomain: `${signal.demandDomain}-tampered` })
+      .where(eq(globalRadarSignals.id, signal.id));
+
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "ecosystem_momentum",
+        filters: { page: 1 },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
+  });
+
+  it("rejects unilateral momentum corporate-group mapping drift", async () => {
+    const signal = await persistReadProvenanceFixture(
+      "momentum-corporate-group-drift",
+      "ecosystem_momentum",
+    );
+    const [contributor] = await db
+      .select({
+        id: globalEntities.id,
+        canonicalCorporateGroupId: globalEntities.canonicalCorporateGroupId,
+      })
+      .from(globalRadarSignalEntities)
+      .innerJoin(
+        globalEntities,
+        eq(globalRadarSignalEntities.globalEntityId, globalEntities.id),
+      )
+      .where(eq(globalRadarSignalEntities.signalId, signal.id))
+      .limit(1);
+    if (!contributor) {
+      throw new Error("Momentum corporate-group drift fixture has no contributor.");
+    }
+    await db
+      .update(globalEntities)
+      .set({
+        canonicalCorporateGroupId:
+          contributor.canonicalCorporateGroupId === contributor.id
+            ? null
+            : contributor.id,
+      })
+      .where(eq(globalEntities.id, contributor.id));
+
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "ecosystem_momentum",
+        filters: { page: 1 },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
+  });
+
+  it.each([
+    {
+      component: "demandExplicitness",
+      column: "demandExplicitness",
+      scoreKey: "explicitness",
+    },
+    {
+      component: "evidenceConfidence",
+      column: "evidenceConfidence",
+      scoreKey: "evidenceConfidence",
+    },
+    { component: "freshness", column: "freshness", scoreKey: "freshness" },
+    { component: "indiaFit", column: "indiaFit", scoreKey: "indiaFit" },
+    {
+      component: "responseAccessibility",
+      column: "responseAccessibility",
+      scoreKey: "responseAccessibility",
+    },
+  ] as const)(
+    "rejects coordinated direct $component row, aggregate, and snapshot tampering",
+    async ({ component, column, scoreKey }) => {
+      const signal = await persistReadProvenanceFixture(
+        `coordinated-direct-${component.toLowerCase()}`,
+        "direct_demand",
+      );
+      const components = {
+        explicitness: signal.demandExplicitness,
+        evidenceConfidence: signal.evidenceConfidence,
+        freshness: signal.freshness,
+        actionability: signal.actionability,
+        indiaFit: signal.indiaFit,
+        commercialPotential: signal.commercialPotential,
+        repeatability: signal.repeatability,
+        responseAccessibility: signal.responseAccessibility,
+        strategicLearning: signal.strategicLearning,
+        complianceComplexity: signal.complianceComplexity,
+      };
+      const tampered = differentScore(components[scoreKey]);
+      components[scoreKey] = tampered;
+      const recomputed = scoreDirectDemand(components);
+      if (!recomputed.valid) throw new Error("Direct tamper did not rescore.");
+      const snapshot = structuredClone(
+        signal.scoreEvidenceSnapshot,
+      ) as unknown as MutableActiveScoreEvidenceSnapshot;
+      const association = snapshot.componentEvidence.find(
+        (item) => item.component === component,
+      );
+      if (!association) throw new Error("Direct score association is missing.");
+      association.value = tampered;
+      await db
+        .update(globalRadarSignals)
+        .set({
+          [column]: tampered,
+          directDemandScore: recomputed.score,
+          scoreCoverage: recomputed.scoreCoverage,
+          momentumQualificationGatesPassed: null,
+          scoreEvidenceSnapshot: snapshot,
+        })
+        .where(eq(globalRadarSignals.id, signal.id));
+
+      await expect(
+        adminRepository.listSignals({
+          signalClass: "direct_demand",
+          filters: { page: 1 },
+        }),
+      ).resolves.toEqual({
+        outcome: "conflict",
+        reason: "score_provenance_invalid",
+      });
+    },
+  );
+
+  it.each([
+    { component: "evidenceConfidence", column: "evidenceConfidence" },
+    { component: "indiaFit", column: "indiaFit" },
+    {
+      component: "estimatedTimeHorizon",
+      column: "estimatedTimeHorizon",
+    },
+  ] as const)(
+    "rejects coordinated precursor $component row, aggregate, and snapshot tampering",
+    async ({ component, column }) => {
+      const signal = await persistReadProvenanceFixture(
+        `coordinated-precursor-${component}`,
+        "demand_precursor",
+      );
+      const components = {
+        evidenceConfidence: signal.evidenceConfidence,
+        proximityToExternalDemand: signal.proximityToExternalDemand,
+        fundingDeploymentMomentum: signal.fundingDeploymentMomentum,
+        likelyDataHardwareIntensity: signal.likelyDataHardwareIntensity,
+        indiaFit: signal.indiaFit,
+        estimatedTimeHorizon: signal.estimatedTimeHorizon,
+        strategicRelevance: signal.strategicRelevance,
+      };
+      const tampered = differentScore(components[component]);
+      components[component] = tampered;
+      const recomputed = scoreDemandPrecursor(components);
+      if (!recomputed.valid) throw new Error("Precursor tamper did not rescore.");
+      const snapshot = structuredClone(
+        signal.scoreEvidenceSnapshot,
+      ) as unknown as MutableActiveScoreEvidenceSnapshot;
+      const association = snapshot.componentEvidence.find(
+        (item) => item.component === component,
+      );
+      if (!association) {
+        throw new Error("Precursor score association is missing.");
+      }
+      association.value = tampered;
+      await db
+        .update(globalRadarSignals)
+        .set({
+          [column]: tampered,
+          precursorScore: recomputed.score,
+          scoreCoverage: recomputed.scoreCoverage,
+          scoreEvidenceSnapshot: snapshot,
+        })
+        .where(eq(globalRadarSignals.id, signal.id));
+
+      await expect(
+        adminRepository.listSignals({
+          signalClass: "demand_precursor",
+          filters: { page: 1 },
+        }),
+      ).resolves.toEqual({
+        outcome: "conflict",
+        reason: "score_provenance_invalid",
+      });
+    },
+  );
+
+  it.each([
+    {
+      component: "independentEntityCount",
+      column: "momentumIndependentEntityCount",
+      componentColumn: null,
+    },
+    {
+      component: "volume7Days",
+      column: "momentumVolume7Days",
+      componentColumn: null,
+    },
+    {
+      component: "independentEntityBreadth",
+      column: "momentumIndependentEntityBreadth",
+      componentColumn: "independentEntityBreadth",
+    },
+  ] as const)(
+    "rejects coordinated momentum $component row, aggregate, and snapshot tampering",
+    async ({ component, column, componentColumn }) => {
+      const signal = await persistReadProvenanceFixture(
+        `coordinated-momentum-${component}`,
+        "ecosystem_momentum",
+      );
+      const current = signal[column];
+      const tampered = differentScore(
+        typeof current === "number" ? current : null,
+      );
+      const scoreComponents = {
+        independentEntityBreadth: signal.momentumIndependentEntityBreadth,
+        primarySourceDepth: signal.momentumPrimarySourceDepth,
+        sourceDiversity: signal.momentumSourceDiversity,
+        weightedVolume: signal.momentumWeightedVolume,
+        growthVsPreceding: signal.momentumGrowthVsPreviousPeriod,
+        taxonomyConsistency: signal.momentumTaxonomyConsistency,
+        evidenceQuality: signal.momentumEvidenceQuality,
+      };
+      if (componentColumn !== null) scoreComponents[componentColumn] = tampered;
+      const recomputed = scoreEcosystemMomentum(scoreComponents);
+      if (!recomputed.valid) throw new Error("Momentum tamper did not rescore.");
+      const snapshot = structuredClone(
+        signal.scoreEvidenceSnapshot,
+      ) as unknown as MutableActiveScoreEvidenceSnapshot;
+      const association = snapshot.componentEvidence.find(
+        (item) => item.component === component,
+      );
+      if (!association) {
+        throw new Error("Momentum score association is missing.");
+      }
+      association.value = tampered;
+      await db
+        .update(globalRadarSignals)
+        .set({
+          [column]: tampered,
+          momentumScore: recomputed.score,
+          scoreCoverage: recomputed.scoreCoverage,
+          scoreEvidenceSnapshot: snapshot,
+        })
+        .where(eq(globalRadarSignals.id, signal.id));
+
+      await expect(
+        adminRepository.listSignals({
+          signalClass: "ecosystem_momentum",
+          filters: { page: 1 },
+        }),
+      ).resolves.toEqual({
+        outcome: "conflict",
+        reason: "score_provenance_invalid",
+      });
+    },
+  );
 });
 
 describe("PostgreSQL Global Radar optimistic administrator review", () => {
@@ -5152,6 +7837,36 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     return signal;
   }
 
+  async function persistedPrecursor(suffix: string) {
+    const now = new Date("2026-07-30T13:00:00.000Z");
+    await repository.queueRun(
+      queueInput(`admin-precursor-${suffix}`, { now }),
+    );
+    const claim = await repository.claimRun({ now });
+    if (claim.outcome !== "claimed") {
+      throw new Error("Admin precursor fixture was not claimed.");
+    }
+    const batch = validPrecursorPersistenceBatch(claim.run.id);
+    const completed = await repository.completeRun({
+      ...completionInput(
+        claim.run.id,
+        claim.privateClaim.leaseToken,
+        new Date(now.getTime() + 1_000),
+      ),
+      submissionHash: batch.canonicalSubmissionHash,
+      batch,
+    });
+    if (completed.outcome !== "completed") {
+      throw new Error("Admin precursor fixture failed.");
+    }
+    const [signal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.firstRunId, claim.run.id));
+    if (!signal) throw new Error("Admin precursor signal was not persisted.");
+    return signal;
+  }
+
   function envelope(
     expectedRevision: number,
     suffix: string,
@@ -5182,14 +7897,22 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     return value;
   }
 
-  function expectedWorkerEvidence(paths: readonly string[]) {
+  function expectedAdministratorEvidence(paths: readonly string[]) {
     return paths.map((path) =>
       expect.objectContaining({
         component: path.split(".")[1],
-        basis: "worker_evidence",
-        evidence: [
-          expect.objectContaining({ matchedFieldPaths: [path] }),
-        ],
+        basis:
+          path === "scoreComponents.actionability"
+            ? "server_adjusted"
+            : "administrator_assessed",
+        ...(path === "scoreComponents.actionability"
+          ? { assessmentBasis: "administrator_assessed", inputValue: 80 }
+          : {}),
+        evidence: expect.arrayContaining([
+          expect.objectContaining({
+            matchedFieldPaths: expect.arrayContaining([path]),
+          }),
+        ]),
       }),
     );
   }
@@ -5219,6 +7942,17 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       events: events[0]?.count ?? 0,
       promotions: promotions[0]?.count ?? 0,
     };
+  }
+
+  async function setConsistentFixtureStatus(
+    signalId: string,
+    status: (typeof globalRadarSignals.$inferSelect)["status"],
+    revision?: number,
+  ) {
+    await rebaseGlobalRadarFixtureSignal(signalId, {
+      status,
+      ...(revision === undefined ? {} : { revision }),
+    });
   }
 
   it("qualifies safe entity states with optimistic idempotent audit semantics", async () => {
@@ -5379,12 +8113,71 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     );
   });
 
-  it("rejects unsupported direct score inputs before classification writes", async () => {
-    const signal = await persistedDirect("direct-score-provenance");
+  it("rejects an ordinary status review when stored score provenance is semantically invalid", async () => {
+    const signal = await persistedDirect("status-provenance-rollback");
+    const tamperedSnapshot = structuredClone(
+      signal.scoreEvidenceSnapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    const [association] = tamperedSnapshot.componentEvidence;
+    if (!association) {
+      throw new Error("Status review provenance fixture has no association.");
+    }
+    association.rationale = "Tampered stored score rationale.";
     await db
       .update(globalRadarSignals)
-      .set({ status: "monitoring" })
+      .set({ scoreEvidenceSnapshot: tamperedSnapshot })
       .where(eq(globalRadarSignals.id, signal.id));
+    const before = await signalWriteSnapshot(signal.id);
+
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(signal.revision, "9490"),
+        command: { type: "monitor" },
+      }),
+    ).rejects.toThrow(
+      "Invalid stored Global Radar score provenance: citation_semantics_mismatch.",
+    );
+    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
+  });
+
+  it("rejects an expiry edit when stored score provenance is semantically invalid", async () => {
+    const signal = await persistedDirect("expiry-provenance-rollback");
+    const tamperedSnapshot = structuredClone(
+      signal.scoreEvidenceSnapshot,
+    ) as unknown as MutableActiveScoreEvidenceSnapshot;
+    const [association] = tamperedSnapshot.componentEvidence;
+    if (!association) {
+      throw new Error("Expiry provenance fixture has no association.");
+    }
+    association.rationale = "Tampered stored score rationale.";
+    await db
+      .update(globalRadarSignals)
+      .set({ scoreEvidenceSnapshot: tamperedSnapshot })
+      .where(eq(globalRadarSignals.id, signal.id));
+    const before = await signalWriteSnapshot(signal.id);
+
+    await expect(
+      adminRepository.editDirectDemandExpiry({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(signal.revision, "9491"),
+        expiry: {
+          evergreen: false,
+          expiresAt: "2026-09-30T00:00:00.000Z",
+          reobserveBy: null,
+        },
+      }),
+    ).rejects.toThrow(
+      "Invalid stored Global Radar score provenance: citation_semantics_mismatch.",
+    );
+    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
+  });
+
+  it("rejects unsupported direct score inputs before classification writes", async () => {
+    const signal = await persistedDirect("direct-score-provenance");
+    await rebaseGlobalRadarFixtureSignal(signal.id, { status: "monitoring" });
     const before = await signalWriteSnapshot(signal.id);
 
     await expect(
@@ -5394,15 +8187,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "direct_demand",
           signalType: "procurement",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            explicitness: 90,
-            evidenceConfidence: 85,
-            freshness: 80,
+          assessments: {
             actionability: 80,
-            indiaFit: 75,
             commercialPotential: 75,
             repeatability: 70,
-            responseAccessibility: 70,
             strategicLearning: 70,
             complianceComplexity: 20,
           },
@@ -5423,18 +8211,19 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
 
   it("rejects direct reclassification without exact subtype evidence", async () => {
     const signal = await persistedDirect("direct-subtype-provenance", (batch) => {
-      batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
-        ...directWorkerScorePaths,
-        "signal.announcedAt",
-        "signal.effectiveFrom",
-        "indiaRelevance.explicit_India.collection",
-        "responsePath",
-      );
+      const evidence = batch.signals[0]!.evidence[0]!;
+      evidence.supportedFieldPaths = [
+        ...new Set([
+          ...evidence.supportedFieldPaths,
+          ...directWorkerScorePaths,
+          "signal.announcedAt",
+          "signal.effectiveFrom",
+          "indiaRelevance.explicit_India.collection",
+          "responsePath",
+        ]),
+      ];
     });
-    await db
-      .update(globalRadarSignals)
-      .set({ status: "monitoring" })
-      .where(eq(globalRadarSignals.id, signal.id));
+    await rebaseGlobalRadarFixtureSignal(signal.id, { status: "monitoring" });
     const before = await signalWriteSnapshot(signal.id);
 
     await expect(
@@ -5444,15 +8233,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "direct_demand",
           signalType: "procurement",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            explicitness: 90,
-            evidenceConfidence: 85,
-            freshness: 80,
+          assessments: {
             actionability: 80,
-            indiaFit: 75,
             commercialPotential: 75,
             repeatability: 70,
-            responseAccessibility: 70,
             strategicLearning: 70,
             complianceComplexity: 20,
           },
@@ -5471,25 +8255,22 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     expect(await signalWriteSnapshot(signal.id)).toEqual(before);
   });
 
-  it("rejects unsupported precursor scores without writes or qualification", async () => {
+  it("persists a below-threshold precursor score without auto-qualification", async () => {
     const signal = await persistedDirect("precursor-score-provenance", (batch) => {
       const direct = batch.signals[0];
       if (!direct || direct.signalClass !== "direct_demand") {
         throw new Error("Direct provenance fixture was not classified.");
       }
-      const lowScore = scoreDirectDemand({
-        ...direct.score.components,
-        explicitness: 60,
-      });
-      if (!lowScore.valid) throw new Error("Low direct score did not derive.");
-      direct.score = lowScore;
-      direct.evidence[0]!.supportedFieldPaths.push(...directWorkerScorePaths);
+      direct.evidence[0]!.supportedFieldPaths = [
+        ...new Set([
+          ...direct.evidence[0]!.supportedFieldPaths,
+          ...precursorWorkerScorePaths,
+          "precursorDevelopment.funding",
+          "signal.effectiveFrom",
+        ]),
+      ];
     });
-    await db
-      .update(globalRadarSignals)
-      .set({ status: "monitoring" })
-      .where(eq(globalRadarSignals.id, signal.id));
-    const before = await signalWriteSnapshot(signal.id);
+    await rebaseGlobalRadarFixtureSignal(signal.id, { status: "monitoring" });
     const service = adminService();
 
     await expect(
@@ -5499,33 +8280,33 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "demand_precursor",
           signalType: "funding",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            evidenceConfidence: 80,
-            proximityToExternalDemand: 70,
-            fundingDeploymentMomentum: 80,
-            likelyDataHardwareIntensity: 70,
-            indiaFit: 80,
-            estimatedTimeHorizon: 80,
-            strategicRelevance: 75,
+          assessments: {
+            proximityToExternalDemand: 0,
+            fundingDeploymentMomentum: 0,
+            likelyDataHardwareIntensity: 0,
+            strategicRelevance: 0,
           },
         },
       }),
-    ).resolves.toEqual({
-      outcome: "conflict",
-      reason: "classification_requirements_not_met",
-      httpStatus: 409,
+    ).resolves.toMatchObject({
+      outcome: "updated",
+      detail: {
+        signalClass: "demand_precursor",
+        status: "monitoring",
+        revision: 1,
+      },
     });
-    await expect(
-      service.reviewSignal(actor, signal.id, {
-        ...serviceEnvelope(0, "903"),
-        command: { type: "qualify" },
-      }),
-    ).resolves.toEqual({
-      outcome: "conflict",
-      reason: "qualification_requirements_not_met",
-      httpStatus: 409,
+    const [stored] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    expect(stored).toMatchObject({
+      signalClass: "demand_precursor",
+      status: "monitoring",
+      directDemandScore: null,
+      precursorScore: 35,
+      revision: 1,
     });
-    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
   });
 
   it("rejects precursor reclassification without exact subtype evidence", async () => {
@@ -5535,14 +8316,12 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
         batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
           ...precursorWorkerScorePaths,
           "signal.effectiveFrom",
-          "indiaRelevance.explicit_India.collection",
         );
+        batch.signals[0]!.evidence[0]!.claim +=
+          " Apply at https://acme.example/suppliers.";
       },
     );
-    await db
-      .update(globalRadarSignals)
-      .set({ status: "monitoring" })
-      .where(eq(globalRadarSignals.id, signal.id));
+    await rebaseGlobalRadarFixtureSignal(signal.id, { status: "monitoring" });
     const before = await signalWriteSnapshot(signal.id);
 
     await expect(
@@ -5552,13 +8331,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "demand_precursor",
           signalType: "funding",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            evidenceConfidence: 80,
+          assessments: {
             proximityToExternalDemand: 70,
             fundingDeploymentMomentum: 80,
             likelyDataHardwareIntensity: 70,
-            indiaFit: 80,
-            estimatedTimeHorizon: 80,
             strategicRelevance: 75,
           },
         },
@@ -5579,17 +8355,15 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           ...precursorWorkerScorePaths,
           "precursorDevelopment.funding",
           "signal.effectiveFrom",
-          "indiaRelevance.explicit_India.collection",
         );
+        batch.signals[0]!.evidence[0]!.claim +=
+          " Apply at https://acme.example/suppliers.";
       },
     );
     if (!signal.globalEntityId) {
       throw new Error("Classification alias fixture has no primary entity.");
     }
-    await db
-      .update(globalRadarSignals)
-      .set({ status: "monitoring" })
-      .where(eq(globalRadarSignals.id, signal.id));
+    await rebaseGlobalRadarFixtureSignal(signal.id, { status: "monitoring" });
     const [entityRow, requirements, evidenceRows] = await Promise.all([
       db
         .select({ publicIdentityAnchor: globalEntities.publicIdentityAnchor })
@@ -5646,13 +8420,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "demand_precursor",
           signalType: "funding",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            evidenceConfidence: 80,
+          assessments: {
             proximityToExternalDemand: 70,
             fundingDeploymentMomentum: 80,
             likelyDataHardwareIntensity: 70,
-            indiaFit: 80,
-            estimatedTimeHorizon: 80,
             strategicRelevance: 75,
           },
         },
@@ -5681,12 +8452,63 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     ]);
   });
 
-  it("rejects unsupported momentum metrics before classification writes", async () => {
-    const signal = await persistedMomentum("momentum-score-provenance");
+  it.each(["syndicated", "unrelated"] as const)(
+    "rejects momentum assessments supported only by %s evidence before classification writes",
+    async (ineligibleKind) => {
+    const signal = await persistedMomentum(
+      `momentum-score-provenance-${ineligibleKind}`,
+    );
+    await rebaseGlobalRadarFixtureSignal(signal.id, { status: "monitoring" });
+    const evidenceRows = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, signal.id));
+    for (const evidence of evidenceRows) {
+      await db
+        .update(globalSignalEvidence)
+        .set({
+          supportedFieldPaths: evidence.supportedFieldPaths.filter(
+            (path) => path !== "momentumMetrics.evidenceQuality",
+          ),
+        })
+        .where(eq(globalSignalEvidence.id, evidence.id));
+    }
+    const carrier =
+      evidenceRows.find(({ isSyndicated }) => isSyndicated) ?? evidenceRows[0];
+    if (!carrier) throw new Error("Momentum metric carrier was not persisted.");
+    let carrierEntityId = carrier.globalEntityId;
+    if (ineligibleKind === "unrelated") {
+      const [entity] = await db.select().from(globalEntities).limit(1);
+      if (!entity) throw new Error("Momentum entity fixture was not persisted.");
+      carrierEntityId = randomUUID();
+      await db.insert(globalEntities).values({
+        ...entity,
+        id: carrierEntityId,
+        canonicalName: "Unrelated Metric Carrier",
+        normalizedName: "unrelated metric carrier",
+        canonicalDomain: "unrelated-metric-carrier.example",
+        websiteUrl: "https://unrelated-metric-carrier.example",
+        linkedinUrl: null,
+        stablePublicIdentifiers: [
+          "official_registry:unrelated-metric-carrier",
+        ],
+        publicIdentityAnchor: plainSha256("unrelated-metric-carrier"),
+        canonicalCorporateGroupId: "group:unrelated-metric-carrier",
+      });
+    }
     await db
-      .update(globalRadarSignals)
-      .set({ status: "monitoring" })
-      .where(eq(globalRadarSignals.id, signal.id));
+      .update(globalSignalEvidence)
+      .set({
+        globalEntityId: carrierEntityId,
+        isSyndicated: ineligibleKind === "syndicated",
+        supportedFieldPaths: [
+          ...carrier.supportedFieldPaths.filter(
+            (path) => path !== "momentumMetrics.evidenceQuality",
+          ),
+          "momentumMetrics.evidenceQuality",
+        ],
+      })
+      .where(eq(globalSignalEvidence.id, carrier.id));
     const before = await signalWriteSnapshot(signal.id);
 
     await expect(
@@ -5699,7 +8521,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
             signalClass: "ecosystem_momentum",
             signalType: "ecosystem_direction",
             demandDomain: "robot_learning_and_manipulation",
-            components: {
+            assessments: {
               taxonomyConsistency: 85,
               evidenceQuality: 80,
             },
@@ -5716,6 +8538,11 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
 
   it("enforces allowed transitions, derives qualification, and preserves promoted no-India-fit status", async () => {
     const signal = await persistedDirect("transitions");
+    const initialScoreInputDigest =
+      signal.scoreEvidenceSnapshot.scoreInputDigest;
+    const originalActionabilityEvidence = signal.scoreEvidenceSnapshot.componentEvidence.find(
+      ({ component }) => component === "actionability",
+    );
     const review = await adminRepository.reviewSignal({
       signalId: signal.id,
       actor,
@@ -5723,6 +8550,13 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       command: { type: "request_review" },
     });
     expect(review).toMatchObject({ outcome: "updated", detail: { signal: { status: "needs_review", revision: 1 } } });
+    const [reviewedSignal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    expect(reviewedSignal?.scoreEvidenceSnapshot.scoreInputDigest).not.toBe(
+      initialScoreInputDigest,
+    );
     const qualify = await adminRepository.reviewSignal({
       signalId: signal.id,
       actor,
@@ -5737,6 +8571,13 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       command: { type: "monitor" },
     });
     expect(monitor).toMatchObject({ outcome: "updated", detail: { signal: { status: "monitoring", revision: 3 } } });
+    const [monitoredSignal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    expect(monitoredSignal?.scoreEvidenceSnapshot.scoreInputDigest).not.toBe(
+      reviewedSignal?.scoreEvidenceSnapshot.scoreInputDigest,
+    );
     const dismiss = await adminRepository.reviewSignal({
       signalId: signal.id,
       actor,
@@ -5752,7 +8593,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     });
     expect(reopen).toMatchObject({ outcome: "updated", detail: { signal: { status: "needs_review", revision: 5 } } });
 
-    await db.update(globalRadarSignals).set({ status: "promoted", revision: 10 }).where(eq(globalRadarSignals.id, signal.id));
+    await setConsistentFixtureStatus(signal.id, "promoted", 10);
     const noFit = await adminRepository.reviewSignal({
       signalId: signal.id,
       actor,
@@ -5763,6 +8604,52 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       outcome: "updated",
       detail: { signal: { status: "promoted", indiaRelevanceType: "no_current_India_fit", revision: 11 } },
     });
+    const [storedNoFit] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    if (!storedNoFit) throw new Error("No-India-fit signal was not stored.");
+    expect(storedNoFit).toMatchObject({
+      indiaRelevanceRationale:
+        "An administrator reviewed the public evidence and marked this signal as having no current India fit.",
+      indiaFitReasons: [
+        "No current India fit was confirmed in the administrator review.",
+      ],
+      indiaFitConstraints: [],
+      indiaFitUnknowns: [
+        "India fit may change if new public evidence is added.",
+      ],
+      indiaFitConfidence: 100,
+      indiaRegulatoryFacts: null,
+      indiaLogisticsFacts: null,
+      indiaFit: 0,
+    });
+    expect(storedNoFit.directDemandScore).not.toBe(signal.directDemandScore);
+    const noFitSnapshot = parseActiveScoreEvidenceSnapshot(
+      storedNoFit.scoreEvidenceSnapshot,
+      {
+        signalClass: "direct_demand",
+        signalType: storedNoFit.signalType,
+        indiaRelevanceType: storedNoFit.indiaRelevanceType,
+        scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+        momentumPolicyVersion: null,
+        components: storedScoreComponents(storedNoFit),
+      },
+    );
+    expect(noFitSnapshot).not.toBeNull();
+    expect(noFitSnapshot?.assessmentAuthority).toBe(
+      signal.scoreEvidenceSnapshot.assessmentAuthority,
+    );
+    expect(
+      noFitSnapshot?.componentEvidence.find(
+        ({ component }) => component === "indiaFit",
+      ),
+    ).toMatchObject({ value: 0, basis: "server_derived" });
+    expect(
+      noFitSnapshot?.componentEvidence.find(
+        ({ component }) => component === "actionability",
+      ),
+    ).toEqual(originalActionabilityEvidence);
     const forbidden = await adminRepository.reviewSignal({
       signalId: signal.id,
       actor,
@@ -5770,6 +8657,70 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       command: { type: "dismiss" },
     });
     expect(forbidden).toMatchObject({ outcome: "conflict", reason: "transition_not_allowed" });
+  });
+
+  it("rebases a momentum no-India-fit header without changing its score provenance", async () => {
+    const signal = await persistedMomentum("momentum-no-india-fit");
+    await setConsistentFixtureStatus(signal.id, "promoted");
+    const originalComponents = structuredClone(
+      signal.scoreEvidenceSnapshot.componentEvidence,
+    );
+
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(0, "610"),
+        command: { type: "mark_no_india_fit" },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "updated",
+      detail: {
+        signal: {
+          signalClass: "ecosystem_momentum",
+          status: "promoted",
+          indiaRelevanceType: "no_current_India_fit",
+          revision: 1,
+        },
+      },
+    });
+
+    const [stored] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    if (!stored) throw new Error("Momentum no-fit signal was not stored.");
+    expect(stored).toMatchObject({
+      momentumScore: signal.momentumScore,
+      indiaRelevanceRationale:
+        "An administrator reviewed the public evidence and marked this signal as having no current India fit.",
+      indiaFitReasons: [
+        "No current India fit was confirmed in the administrator review.",
+      ],
+      indiaFitConstraints: [],
+      indiaFitUnknowns: [
+        "India fit may change if new public evidence is added.",
+      ],
+      indiaFitConfidence: 100,
+      indiaRegulatoryFacts: null,
+      indiaLogisticsFacts: null,
+    });
+    expect(stored.scoreEvidenceSnapshot).toMatchObject({
+      signalType: stored.signalType,
+      indiaRelevanceType: "no_current_India_fit",
+    });
+    expect(stored.scoreEvidenceSnapshot.componentEvidence).toEqual(
+      originalComponents,
+    );
+    await expect(adminRepository.getSignalDetail(signal.id)).resolves.toMatchObject({
+      outcome: "found",
+      detail: {
+        signal: {
+          signalClass: "ecosystem_momentum",
+          indiaRelevanceType: "no_current_India_fit",
+        },
+      },
+    });
   });
 
   it("checks idempotency before revision, rejects changed reuse, returns latest safe detail, and allows one concurrent winner", async () => {
@@ -5828,10 +8779,15 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
 
   it("enforces server-derived qualification boundaries for all three classes", async () => {
     const direct = await persistedDirect("qualification");
+    const originalDirectExplicitness = direct.demandExplicitness;
+    await setConsistentFixtureStatus(direct.id, "needs_review");
     await db
       .update(globalRadarSignals)
-      .set({ status: "needs_review", demandExplicitness: 74 })
+      .set({ demandExplicitness: 74 })
       .where(eq(globalRadarSignals.id, direct.id));
+    const directBeforeRejectedQualification = await signalWriteSnapshot(
+      direct.id,
+    );
     await expect(
       adminRepository.reviewSignal({
         signalId: direct.id,
@@ -5840,7 +8796,13 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
         command: { type: "qualify" },
       }),
     ).resolves.toMatchObject({ outcome: "conflict", reason: "qualification_requirements_not_met" });
-    await db.update(globalRadarSignals).set({ demandExplicitness: 75 }).where(eq(globalRadarSignals.id, direct.id));
+    expect(await signalWriteSnapshot(direct.id)).toEqual(
+      directBeforeRejectedQualification,
+    );
+    await db
+      .update(globalRadarSignals)
+      .set({ demandExplicitness: originalDirectExplicitness })
+      .where(eq(globalRadarSignals.id, direct.id));
     await expect(
       adminRepository.reviewSignal({
         signalId: direct.id,
@@ -5850,71 +8812,28 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       }),
     ).resolves.toMatchObject({ outcome: "updated" });
 
+    const precursor = await persistedPrecursor("qualification");
+    const originalPrecursorConfidence = precursor.evidenceConfidence;
+    await setConsistentFixtureStatus(precursor.id, "needs_review");
     await db
       .update(globalRadarSignals)
-      .set({ status: "needs_review", revision: 2, scorePolicyVersion: "global-radar-score-v0" })
-      .where(eq(globalRadarSignals.id, direct.id));
+      .set({ evidenceConfidence: 59 })
+      .where(eq(globalRadarSignals.id, precursor.id));
     await expect(
       adminRepository.reviewSignal({
-        signalId: direct.id,
-        actor,
-        envelope: envelope(2, "23"),
-        command: { type: "qualify" },
-      }),
-    ).resolves.toMatchObject({ outcome: "conflict", reason: "qualification_requirements_not_met" });
-
-    const [directTemplate] = await db
-      .select()
-      .from(globalRadarSignals)
-      .where(eq(globalRadarSignals.id, direct.id));
-    if (!directTemplate) throw new Error("Qualification template missing.");
-    const precursorId = randomUUID();
-    await db.insert(globalRadarSignals).values({
-      ...directTemplate,
-      id: precursorId,
-      signalClass: "demand_precursor",
-      signalType: "funding",
-      title: "Qualification precursor boundary",
-      status: "needs_review",
-      revision: 0,
-      dedupeKey: "7".repeat(64),
-      scorePolicyVersion: "global-radar-score-v1",
-      demandExplicitness: null,
-      freshness: null,
-      actionability: null,
-      commercialPotential: null,
-      repeatability: null,
-      responseAccessibility: null,
-      strategicLearning: null,
-      complianceComplexity: null,
-      directDemandScore: null,
-      evidenceConfidence: 59,
-      proximityToExternalDemand: 50,
-      fundingDeploymentMomentum: 80,
-      likelyDataHardwareIntensity: 80,
-      estimatedTimeHorizon: 80,
-      strategicRelevance: 80,
-      precursorScore: 72,
-      expiresAt: null,
-      evergreen: null,
-      reobserveBy: null,
-      responsePathType: null,
-      responsePathUrl: null,
-      responseBusinessEmail: null,
-      partnerApplicationUrl: null,
-    });
-    await expect(
-      adminRepository.reviewSignal({
-        signalId: precursorId,
+        signalId: precursor.id,
         actor,
         envelope: envelope(0, "24"),
         command: { type: "qualify" },
       }),
     ).resolves.toMatchObject({ outcome: "conflict", reason: "qualification_requirements_not_met" });
-    await db.update(globalRadarSignals).set({ evidenceConfidence: 60 }).where(eq(globalRadarSignals.id, precursorId));
+    await db
+      .update(globalRadarSignals)
+      .set({ evidenceConfidence: originalPrecursorConfidence })
+      .where(eq(globalRadarSignals.id, precursor.id));
     await expect(
       adminRepository.reviewSignal({
-        signalId: precursorId,
+        signalId: precursor.id,
         actor,
         envelope: envelope(0, "25"),
         command: { type: "qualify" },
@@ -5941,14 +8860,12 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       .from(globalRadarSignals)
       .where(eq(globalRadarSignals.signalClass, "ecosystem_momentum"));
     if (!momentum) throw new Error("Momentum qualification signal missing.");
-    await db
-      .update(globalSignalEvidence)
-      .set({ isSyndicated: false })
-      .where(eq(globalSignalEvidence.signalId, momentum.id));
+    const originalMomentumEvidenceQuality = momentum.momentumEvidenceQuality;
+    const originalMomentumScore = momentum.momentumScore;
+    await setConsistentFixtureStatus(momentum.id, "needs_review");
     await db
       .update(globalRadarSignals)
       .set({
-        status: "needs_review",
         momentumScore: 70,
         momentumEvidenceQuality: 59,
       })
@@ -5957,33 +8874,113 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       adminRepository.reviewSignal({
         signalId: momentum.id,
         actor,
-        envelope: envelope(0, "26", "2026-07-30T15:00:00.000Z"),
+        envelope: envelope(0, "26", "2026-07-31T16:00:00.000Z"),
         command: { type: "qualify" },
       }),
     ).resolves.toMatchObject({ outcome: "conflict", reason: "qualification_requirements_not_met" });
-    await db.update(globalRadarSignals).set({ momentumEvidenceQuality: 60 }).where(eq(globalRadarSignals.id, momentum.id));
+    await db
+      .update(globalRadarSignals)
+      .set({
+        momentumEvidenceQuality: originalMomentumEvidenceQuality,
+        momentumScore: originalMomentumScore,
+      })
+      .where(eq(globalRadarSignals.id, momentum.id));
+    await db
+      .update(globalSignalEvidence)
+      .set({ isSyndicated: false })
+      .where(eq(globalSignalEvidence.signalId, momentum.id));
+    await expect(
+      repository.recomputeMomentum({
+        now: new Date("2026-07-31T16:00:00.000Z"),
+        policy: MOMENTUM_POLICY,
+      }),
+    ).resolves.toEqual({
+      outcome: "completed",
+      recomputed: 1,
+      unchanged: 0,
+    });
     await expect(
       adminRepository.reviewSignal({
         signalId: momentum.id,
         actor,
-        envelope: envelope(0, "27", "2026-07-30T15:00:00.000Z"),
+        envelope: envelope(1, "27", "2026-07-31T16:00:00.000Z"),
         command: { type: "qualify" },
       }),
     ).resolves.toMatchObject({ outcome: "updated" });
+    const [qualifiedMomentum] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, momentum.id));
+    if (!qualifiedMomentum) {
+      throw new Error("Qualified momentum signal was not stored.");
+    }
+    const qualifiedMomentumSnapshot = parseActiveScoreEvidenceSnapshot(
+      qualifiedMomentum.scoreEvidenceSnapshot,
+      {
+        signalClass: "ecosystem_momentum",
+        signalType: qualifiedMomentum.signalType,
+        indiaRelevanceType: qualifiedMomentum.indiaRelevanceType,
+        scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+        momentumPolicyVersion: GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
+        components: storedScoreComponents(qualifiedMomentum),
+      },
+    );
+    expect(qualifiedMomentumSnapshot?.assessmentAuthority).toBe(
+      momentum.scoreEvidenceSnapshot.assessmentAuthority,
+    );
+    for (const component of ["taxonomyConsistency", "evidenceQuality"] as const) {
+      expect(
+        qualifiedMomentumSnapshot?.componentEvidence.find(
+          (association) => association.component === component,
+        ),
+      ).toEqual(
+        momentum.scoreEvidenceSnapshot.componentEvidence.find(
+          (association) => association.component === component,
+        ),
+      );
+    }
+  });
+
+  it("does not qualify momentum from future-dated contributor evidence", async () => {
+    const signal = await persistedMomentum("future-evidence-qualification");
+    await setConsistentFixtureStatus(signal.id, "needs_review");
+    await db
+      .update(globalSignalEvidence)
+      .set({
+        observedAt: new Date("2026-08-01T00:00:00.000Z"),
+        publishedAt: new Date("2026-08-01T00:00:00.000Z"),
+      })
+      .where(eq(globalSignalEvidence.signalId, signal.id));
+    const before = await signalWriteSnapshot(signal.id);
+
+    await expect(
+      adminRepository.reviewSignal({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(
+          signal.revision,
+          "28",
+          "2026-07-30T15:00:00.000Z",
+        ),
+        command: { type: "qualify" },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "qualification_requirements_not_met",
+    });
+    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
   });
 
   it("edits direct expiry and cross-class classification without stale class fields", async () => {
     const signal = await persistedDirect("edits", (batch) => {
       batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
-        ...directWorkerScorePaths,
         ...precursorWorkerScorePaths,
         "directDemandAsk.procurement",
         "precursorDevelopment.funding",
-        "signal.announcedAt",
         "signal.effectiveFrom",
-        "indiaRelevance.explicit_India.collection",
-        "responsePath",
       );
+      batch.signals[0]!.evidence[0]!.claim +=
+        " Apply at https://acme.example/suppliers.";
     });
     const expiry = await adminRepository.editDirectDemandExpiry({
       signalId: signal.id,
@@ -5999,7 +8996,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       outcome: "updated",
       detail: { signal: { revision: 1, reobserveBy: new Date("2026-08-30T00:00:00.000Z") } },
     });
-    await db.update(globalRadarSignals).set({ status: "monitoring" }).where(eq(globalRadarSignals.id, signal.id));
+    await rebaseGlobalRadarFixtureSignal(signal.id, { status: "monitoring" });
     const classification = await adminService().editClassification(
       actor,
       signal.id,
@@ -6009,13 +9006,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "demand_precursor",
           signalType: "funding",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            evidenceConfidence: 80,
+          assessments: {
             proximityToExternalDemand: 70,
             fundingDeploymentMomentum: 80,
             likelyDataHardwareIntensity: 70,
-            indiaFit: 80,
-            estimatedTimeHorizon: 80,
             strategicRelevance: 75,
           },
         },
@@ -6032,7 +9026,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
             id: "score_rationale",
             data: expect.objectContaining({
               componentEvidence: expect.arrayContaining(
-                expectedWorkerEvidence(precursorWorkerScorePaths),
+                expectedAdministratorEvidence(precursorWorkerScorePaths),
               ),
             }),
           }),
@@ -6058,15 +9052,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "direct_demand",
           signalType: "procurement",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            explicitness: 90,
-            evidenceConfidence: 85,
-            freshness: 80,
+          assessments: {
             actionability: 80,
-            indiaFit: 75,
             commercialPotential: 75,
             repeatability: 70,
-            responseAccessibility: 70,
             strategicLearning: 70,
             complianceComplexity: 20,
           },
@@ -6088,7 +9077,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
             id: "score_rationale",
             data: expect.objectContaining({
               componentEvidence: expect.arrayContaining(
-                expectedWorkerEvidence(directWorkerScorePaths),
+                expectedAdministratorEvidence(directWorkerScorePaths),
               ),
             }),
           }),
@@ -6140,10 +9129,6 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       ]),
     );
 
-    await db
-      .update(globalRadarSignals)
-      .set({ announcedAt: new Date("2026-09-01T00:00:00.000Z") })
-      .where(eq(globalRadarSignals.id, signal.id));
     await expect(
       adminRepository.editSignalClassification({
         signalId: signal.id,
@@ -6153,31 +9138,26 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "direct_demand",
           signalType: "procurement",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            explicitness: 90,
-            evidenceConfidence: 85,
-            freshness: 80,
+          assessments: {
             actionability: 80,
-            indiaFit: 75,
             commercialPotential: 75,
             repeatability: 70,
-            responseAccessibility: 70,
             strategicLearning: 70,
             complianceComplexity: 20,
           },
           activity: {
             evergreen: false,
-            expiresAt: "2026-08-31T00:00:00.000Z",
+            expiresAt: "2026-07-28T00:00:00.000Z",
             reobserveBy: null,
           },
         },
       }),
-    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "classification_requirements_not_met",
+    });
 
-    await db
-      .update(globalRadarSignals)
-      .set({ status: "qualified" })
-      .where(eq(globalRadarSignals.id, signal.id));
+    await rebaseGlobalRadarFixtureSignal(signal.id, { status: "qualified" });
     await expect(
       adminRepository.editSignalClassification({
         signalId: signal.id,
@@ -6187,13 +9167,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "demand_precursor",
           signalType: "funding",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            evidenceConfidence: 80,
+          assessments: {
             proximityToExternalDemand: 70,
             fundingDeploymentMomentum: 80,
             likelyDataHardwareIntensity: 70,
-            indiaFit: 80,
-            estimatedTimeHorizon: 80,
             strategicRelevance: 75,
           },
         },
@@ -6212,11 +9189,12 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     let batch = validMomentumPersistenceBatch(claim.run.id);
     batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
       ...precursorWorkerScorePaths,
-      ...momentumWorkerScorePaths,
       "precursorDevelopment.funding",
       "signal.effectiveFrom",
       "indiaRelevance.inferred_India_compatible.requirement_access",
     );
+    batch.signals[0]!.evidence[0]!.claim +=
+      " Applications are open to suppliers worldwide.";
     batch = rehashPersistenceBatch(batch);
     const completed = await repository.completeRun({
       ...completionInput(claim.run.id, claim.privateClaim.leaseToken, new Date(now.getTime() + 1_000)),
@@ -6234,10 +9212,9 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       .from(globalRadarSignalEntities)
       .where(eq(globalRadarSignalEntities.signalId, momentum.id));
     if (!contributor) throw new Error("Momentum contributor missing.");
-    await db
-      .update(globalRadarSignals)
-      .set({ status: "monitoring" })
-      .where(eq(globalRadarSignals.id, momentum.id));
+    await rebaseGlobalRadarFixtureSignal(momentum.id, {
+      status: "monitoring",
+    });
 
     const service = adminService("2026-07-31T16:00:00.000Z");
     await expect(
@@ -6248,13 +9225,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           primaryEntityId: contributor.globalEntityId,
           signalType: "funding",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
-            evidenceConfidence: 80,
+          assessments: {
             proximityToExternalDemand: 70,
             fundingDeploymentMomentum: 80,
             likelyDataHardwareIntensity: 70,
-            indiaFit: 80,
-            estimatedTimeHorizon: 80,
             strategicRelevance: 75,
           },
         },
@@ -6269,7 +9243,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
             id: "score_rationale",
             data: expect.objectContaining({
               componentEvidence: expect.arrayContaining(
-                expectedWorkerEvidence(precursorWorkerScorePaths),
+                expectedAdministratorEvidence(precursorWorkerScorePaths),
               ),
             }),
           }),
@@ -6298,7 +9272,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
           signalClass: "ecosystem_momentum",
           signalType: "ecosystem_direction",
           demandDomain: "robot_learning_and_manipulation",
-          components: {
+          assessments: {
             taxonomyConsistency: 85,
             evidenceQuality: 80,
           },
@@ -6314,7 +9288,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
             id: "score_rationale",
             data: expect.objectContaining({
               componentEvidence: expect.arrayContaining(
-                expectedWorkerEvidence(momentumWorkerScorePaths),
+                expectedAdministratorEvidence(momentumWorkerScorePaths),
               ),
             }),
           }),
@@ -6352,10 +9326,7 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     ).toBe(true);
 
     for (const [status, suffix] of [["qualified", "37"], ["promoted", "38"]] as const) {
-      await db
-        .update(globalRadarSignals)
-        .set({ status })
-        .where(eq(globalRadarSignals.id, momentum.id));
+      await rebaseGlobalRadarFixtureSignal(momentum.id, { status });
       await expect(
         adminRepository.editSignalClassification({
           signalId: momentum.id,
@@ -6366,13 +9337,10 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
             primaryEntityId: contributor.globalEntityId,
             signalType: "funding",
             demandDomain: "robot_learning_and_manipulation",
-            components: {
-              evidenceConfidence: 80,
+            assessments: {
               proximityToExternalDemand: 70,
               fundingDeploymentMomentum: 80,
               likelyDataHardwareIntensity: 70,
-              indiaFit: 80,
-              estimatedTimeHorizon: 80,
               strategicRelevance: 75,
             },
           },
@@ -6497,6 +9465,9 @@ describe("PostgreSQL Global Radar administrator evidence and notes", () => {
 
   it("canonicalizes and appends evidence once, replays before revision with later now, and rejects changed reuse", async () => {
     const signal = await fixture();
+    const scoreEvidenceSnapshotBefore = JSON.stringify(
+      signal.scoreEvidenceSnapshot,
+    );
     const input = {
       signalId: signal.id,
       actor,
@@ -6522,14 +9493,75 @@ describe("PostgreSQL Global Radar administrator evidence and notes", () => {
     ).resolves.toEqual({ outcome: "conflict", reason: "idempotency_mismatch" });
     const rows = await db.select().from(globalSignalEvidence);
     expect(rows).toHaveLength(2);
+    expect(
+      rows
+        .map(({ ingestOrdinal }) => ingestOrdinal)
+        .sort((left, right) => left - right),
+    ).toEqual([1, 2]);
     const appended = rows.find(({ runId }) => runId === null);
     expect(appended).toMatchObject({
+      ingestOrdinal: 2,
       runId: null,
       canonicalSourceUrl: "https://admin-evidence.example/public-update",
       observedAt: new Date("2026-07-30T16:00:00.000Z"),
       rawMetadata: {},
     });
     expect(JSON.stringify(appended)).not.toContain("clientControlled");
+    const [signalAfterAppend] = await db
+      .select({ scoreEvidenceSnapshot: globalRadarSignals.scoreEvidenceSnapshot })
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.id, signal.id));
+    expect(JSON.stringify(signalAfterAppend?.scoreEvidenceSnapshot)).toBe(
+      scoreEvidenceSnapshotBefore,
+    );
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "direct_demand",
+        filters: { page: 1 },
+      }),
+    ).resolves.toMatchObject({ outcome: "listed", total: 1 });
+  });
+
+  it("serializes concurrent evidence appends so one revision winner receives the next ordinal", async () => {
+    const signal = await fixture();
+    const results = await Promise.all([
+      adminRepository.appendEvidence({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(0, "210"),
+        evidence: evidence("https://admin-evidence.example/concurrent-a"),
+      }),
+      adminRepository.appendEvidence({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(0, "211"),
+        evidence: evidence("https://admin-evidence.example/concurrent-b"),
+      }),
+    ]);
+    expect(results.filter(({ outcome }) => outcome === "appended")).toHaveLength(
+      1,
+    );
+    expect(results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ outcome: "appended", revision: 1 }),
+        expect.objectContaining({
+          outcome: "conflict",
+          reason: "revision_mismatch",
+        }),
+      ]),
+    );
+    const rows = await db
+      .select({ ingestOrdinal: globalSignalEvidence.ingestOrdinal })
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, signal.id))
+      .orderBy(asc(globalSignalEvidence.ingestOrdinal));
+    expect(rows.map(({ ingestOrdinal }) => ingestOrdinal)).toEqual([1, 2]);
+    await expect(
+      adminRepository.listSignals({
+        signalClass: "direct_demand",
+        filters: { page: 1 },
+      }),
+    ).resolves.toMatchObject({ outcome: "listed", total: 1 });
   });
 
   it("stores notes only in append-only history and never echoes note text from the mutation or audit", async () => {
@@ -6558,6 +9590,35 @@ describe("PostgreSQL Global Radar administrator evidence and notes", () => {
     expect(JSON.stringify(list)).not.toContain(body);
     const detail = await adminRepository.getSignalDetail(signal.id);
     expect(JSON.stringify(detail)).toContain(body);
+  });
+
+  it("rejects sensitive administrator reasons and note bodies without writes", async () => {
+    const signal = await fixture();
+    const updatesBefore = await db.select().from(globalSignalUpdates);
+    const eventsBefore = await db.select().from(globalRadarAdminEvents);
+
+    await expect(
+      adminRepository.appendNote({
+        signalId: signal.id,
+        actor,
+        envelope: {
+          ...envelope(0, "301"),
+          reason: "Authorization: Bearer private-administrator-token",
+        },
+        body: "Public administrator note.",
+      }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    await expect(
+      adminRepository.appendNote({
+        signalId: signal.id,
+        actor,
+        envelope: envelope(0, "302"),
+        body: "request_payload={private}",
+      }),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+
+    expect(await db.select().from(globalSignalUpdates)).toEqual(updatesBefore);
+    expect(await db.select().from(globalRadarAdminEvents)).toEqual(eventsBefore);
   });
 });
 
@@ -6625,6 +9686,57 @@ describe("PostgreSQL Global Radar transactional administrator merge", () => {
       now: new Date("2026-07-30T18:00:00.000Z"),
     };
   }
+
+  it.each([
+    { tamperedSide: "survivor", idempotencySuffix: "405" },
+    { tamperedSide: "duplicate", idempotencySuffix: "406" },
+  ] as const)(
+    "fails closed without writing when the $tamperedSide score provenance is corrupt",
+    async ({ tamperedSide, idempotencySuffix }) => {
+      const { survivor, duplicateId } = await mergeFixture();
+      const signalIds = [survivor.id, duplicateId];
+      const tamperedSignalId =
+        tamperedSide === "survivor" ? survivor.id : duplicateId;
+
+      await db
+        .update(globalRadarSignals)
+        .set({ directDemandScore: 99 })
+        .where(eq(globalRadarSignals.id, tamperedSignalId));
+
+      async function readMergeMutationRows() {
+        return {
+          signals: await db
+            .select()
+            .from(globalRadarSignals)
+            .where(inArray(globalRadarSignals.id, signalIds))
+            .orderBy(globalRadarSignals.id),
+          updates: await db
+            .select()
+            .from(globalSignalUpdates)
+            .where(inArray(globalSignalUpdates.signalId, signalIds))
+            .orderBy(globalSignalUpdates.id),
+          adminEvents: await db
+            .select()
+            .from(globalRadarAdminEvents)
+            .where(inArray(globalRadarAdminEvents.targetId, signalIds))
+            .orderBy(globalRadarAdminEvents.id),
+        };
+      }
+
+      const before = JSON.stringify(await readMergeMutationRows());
+      await expect(
+        adminRepository.mergeSignals(
+          input(survivor.id, duplicateId, idempotencySuffix),
+        ),
+      ).resolves.toMatchObject({
+        outcome: "conflict",
+        reason: "classification_requirements_not_met",
+      });
+      const after = JSON.stringify(await readMergeMutationRows());
+
+      expect(after).toBe(before);
+    },
+  );
 
   it("merges without deleting or reparenting either signal graph and replays exactly", async () => {
     const { survivor, duplicateId } = await mergeFixture();

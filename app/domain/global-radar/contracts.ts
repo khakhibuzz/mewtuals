@@ -40,7 +40,6 @@ const MAX_QUERY_LENGTH = 1_000;
 const MAX_QUERY_RESULTS_EXAMINED = 10_000;
 const MAX_REQUIREMENT_SUMMARY_LENGTH = 1_000;
 const MAX_SHORT_STRING_LENGTH = 200;
-const MAX_SOURCE_ERROR_LENGTH = 1_000;
 const MAX_SUPPORTED_FIELD_PATH_LENGTH = 200;
 const BATCH_BYTES_MESSAGE =
   "Global Radar batch must be at most 2097152 bytes.";
@@ -64,8 +63,329 @@ const forbiddenRecordKeys = new Set([
   "responsebody",
   "responsecontent",
 ]);
+const sensitiveRecordKeys = new Set([
+  "accesskey",
+  "accesstoken",
+  "apikey",
+  "authorization",
+  "authtoken",
+  "bearertoken",
+  "claimfile",
+  "claimpath",
+  "clientsecret",
+  "cookie",
+  "credential",
+  "credentials",
+  "idtoken",
+  "leasetoken",
+  "leasetokenhash",
+  "password",
+  "passwd",
+  "privatekey",
+  "proxyauthorization",
+  "refreshtoken",
+  "secret",
+  "secretkey",
+  "sessionid",
+  "sessiontoken",
+  "setcookie",
+  "token",
+  "workersecret",
+]);
+const sensitiveRecordKeyPatterns = [
+  /(?:api|access|auth|bearer|client|id|lease|refresh|session|worker)?token(?:hash)?$/,
+  /(?:secret|password|passwd|credential|credentials|privatekey|secretkey)$/,
+  /^(?:proxy)?authorization$/,
+  /^(?:set)?cookie$/,
+  /^claim(?:file|path)$/,
+  /^(?:raw|request|response|rejected|batch)(?:body|content|payload)$/,
+  /^private(?:failure|error|diagnostic|diagnostics|path|content|data)$/,
+  /^internal(?:diagnostic|diagnostics|error|failure)(?:body|content|payload|data)?$/,
+] as const;
+const sensitiveRecordKeyMarkers = [
+  "accesskey",
+  "accesstoken",
+  "apikey",
+  "authorization",
+  "authtoken",
+  "bearertoken",
+  "claimfile",
+  "claimpath",
+  "clientsecret",
+  "cookie",
+  "credential",
+  "databaseurl",
+  "errorbody",
+  "exception",
+  "fullpage",
+  "internaldiagnostic",
+  "internalerror",
+  "internalfailure",
+  "industrialsecrets",
+  "leasetoken",
+  "privatecontent",
+  "privatedata",
+  "privatediagnostic",
+  "privateerror",
+  "privatefailure",
+  "privatekey",
+  "privatepath",
+  "promptinternals",
+  "batchbody",
+  "batchcontent",
+  "batchpayload",
+  "rawmetadata",
+  "rawbody",
+  "rawcontent",
+  "rawpayload",
+  "rejectedcontent",
+  "rejectedbody",
+  "rejectedpayload",
+  "requestbody",
+  "requestcontent",
+  "requestpayload",
+  "responsebody",
+  "responsecontent",
+  "responsepayload",
+  "sessionid",
+  "sessiontoken",
+  "stacktrace",
+  "submissionhash",
+  "workersecret",
+] as const;
+const sensitiveRecordKeyTokens = new Set([
+  "authorization",
+  "cookie",
+  "credential",
+  "credentials",
+  "exception",
+  "password",
+  "secret",
+  "secrets",
+  "sql",
+  "token",
+]);
 const documentMarkupPattern =
   /<(?:!doctype\b|\?xml\b|!\[cdata\[|\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\/?>)/i;
+const sensitiveTextPatterns = [
+  documentMarkupPattern,
+  /\b(?:authorization|proxy-authorization)\s*:/i,
+  /\b(?:bearer|basic)\s+(?=[a-z0-9._~+/=-]{8,})(?=[a-z0-9._~+/=-]*(?:\d|[._~+/=-]))[a-z0-9._~+/=-]{8,}/i,
+  /\b(?:api[_ -]?key|access[_ -]?(?:key|token)|auth[_ -]?token|bearer[_ -]?token|refresh[_ -]?token|id[_ -]?token|lease[_ -]?token|worker[_ -]?secret|password|passwd|credential|client[_ -]?secret|session[_ -]?(?:id|token)|cookie|set-cookie|private[_ -]?key|secret[_ -]?key)\b\s*[:=]/i,
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
+  /\b[a-z][a-z0-9+.-]*:\/\/[^/\s@]+@/i,
+  /\beyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\b/i,
+  /\b(?:github_pat_|gh[pousr]_|sk-(?:proj-)?|xox[baprs]-|AKIA|ASIA)[a-z0-9_-]{8,}\b/i,
+  /(?:^|[\s"'=(])(?:\/Users\/|\/home\/|\/private\/|\/tmp\/|\/var\/folders\/|node_modules\/|\.codex\/|[A-Za-z]:\\)/,
+  /\bclaim[_ -]?(?:file|path)\s*[:=]/i,
+  /\b(?:token|secret|secrets|credential|credentials)\b\s*[:=]/i,
+  /\b(?:raw|request|response|rejected|batch)[_ -]?(?:body|payload|content)\s*[:=]/i,
+  /\b(?:internal|private)[_ -]?(?:diagnostic|diagnostics|error|failure|data|content|path)\s*[:=]/i,
+] as const;
+const operationalDiagnosticPatterns = [
+  /\b(?:sqlstate|postgres(?:ql)?|syntax error at or near|relation\s+\S+\s+does not exist)\b/i,
+  /\b(?:select|insert|update|delete|alter|drop|create)\b[\s\S]{0,80}\b(?:from|into|table|where|values|set)\b/i,
+  /(?:^|\n)\s*at\s+(?:async\s+)?[\w$.<>]+\s+\([^)\n]+\)/m,
+] as const;
+
+function normalizedRecordKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isSensitiveRecordKey(key: string): boolean {
+  const normalized = normalizedRecordKey(key);
+  return (
+    sensitiveRecordKeys.has(normalized) ||
+    sensitiveRecordKeyPatterns.some((pattern) => pattern.test(normalized))
+  );
+}
+
+export function globalRadarTextContainsSensitiveContent(value: string): boolean {
+  return sensitiveTextPatterns.some((pattern) => pattern.test(value));
+}
+
+const noAllowedSensitiveJsonKeys: ReadonlySet<string> = new Set();
+const boundedRecordAllowedSensitiveJsonKeys: ReadonlySet<string> = new Set([
+  "industrialsecrets",
+]);
+
+export function globalRadarJsonEntryContainsSensitiveContent(
+  key: string | null,
+  value: unknown,
+  allowedSensitiveKeys: ReadonlySet<string> = noAllowedSensitiveJsonKeys,
+): boolean {
+  if (key !== null) {
+    const normalizedKey = normalizedRecordKey(key);
+    const keyTokens = key
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    if (
+      (normalizedKey === "industrialsecrets" ||
+        forbiddenRecordKeys.has(normalizedKey) ||
+        isSensitiveRecordKey(key) ||
+        keyTokens.some((token) => sensitiveRecordKeyTokens.has(token)) ||
+        sensitiveRecordKeyMarkers.some((marker) =>
+          normalizedKey.includes(marker),
+        )) &&
+      !allowedSensitiveKeys.has(normalizedKey)
+    ) {
+      return true;
+    }
+  }
+  return (
+    typeof value === "string" &&
+    globalRadarTextContainsSensitiveContent(value)
+  );
+}
+
+const MAX_SENSITIVE_JSON_DEPTH = 32;
+const MAX_SENSITIVE_JSON_NODES = 50_000;
+
+export function globalRadarJsonContainsSensitiveContent(
+  value: unknown,
+  allowedSensitiveKeys: ReadonlySet<string> = noAllowedSensitiveJsonKeys,
+): boolean {
+  const normalizedAllowedKeys = new Set(
+    [...allowedSensitiveKeys].map(normalizedRecordKey),
+  );
+  const pending: Array<Readonly<{ value: unknown; depth: number }>> = [
+    { value, depth: 0 },
+  ];
+  const visited = new Set<object>();
+  let nodesVisited = 0;
+
+  try {
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (!current) break;
+      nodesVisited += 1;
+      if (
+        nodesVisited > MAX_SENSITIVE_JSON_NODES ||
+        current.depth > MAX_SENSITIVE_JSON_DEPTH
+      ) {
+        return true;
+      }
+      if (typeof current.value === "string") {
+        if (
+          globalRadarJsonEntryContainsSensitiveContent(
+            null,
+            current.value,
+            normalizedAllowedKeys,
+          )
+        ) {
+          return true;
+        }
+        continue;
+      }
+      if (
+        current.value === null ||
+        typeof current.value === "boolean"
+      ) {
+        continue;
+      }
+      if (typeof current.value === "number") {
+        if (!Number.isFinite(current.value)) return true;
+        continue;
+      }
+      if (typeof current.value !== "object") return true;
+      if (visited.has(current.value)) continue;
+      visited.add(current.value);
+
+      const isArray = Array.isArray(current.value);
+      const prototype = Object.getPrototypeOf(current.value);
+      if (
+        !isArray &&
+        prototype !== Object.prototype &&
+        prototype !== null
+      ) {
+        return true;
+      }
+      const descriptors = Object.getOwnPropertyDescriptors(current.value);
+      if (Object.hasOwn(descriptors, "toJSON")) return true;
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (!descriptor.enumerable) continue;
+        if (!("value" in descriptor)) return true;
+        if (
+          !isArray &&
+          globalRadarJsonEntryContainsSensitiveContent(
+            key,
+            descriptor.value,
+            normalizedAllowedKeys,
+          )
+        ) {
+          return true;
+        }
+        pending.push({ value: descriptor.value, depth: current.depth + 1 });
+      }
+    }
+  } catch {
+    return true;
+  }
+  return false;
+}
+
+function normalizedSafeText(maximum: number) {
+  return z.string().trim().min(1).max(maximum);
+}
+
+export const globalRadarAuthoredAuditTextSchema = normalizedSafeText(2_000)
+  .refine((value) => !globalRadarTextContainsSensitiveContent(value), {
+    message: "Audit text must not contain secrets, private paths, or payloads.",
+  })
+  .transform((value) => value.replace(/\s+/g, " "));
+
+export const globalRadarOperationalDiagnosticSchema = normalizedSafeText(1_000)
+  .refine(
+    (value) => {
+      const wordCount = value.match(/\p{L}[\p{L}\p{N}'’-]*/gu)?.length ?? 0;
+      return (
+        wordCount <= 80 &&
+        (value.match(/\n/g)?.length ?? 0) <= 2 &&
+        !globalRadarTextContainsSensitiveContent(value) &&
+        !operationalDiagnosticPatterns.some((pattern) => pattern.test(value))
+      );
+    },
+    { message: "Operational diagnostics must be concise and payload-free." },
+  )
+  .transform((value) => value.replace(/\s+/g, " "));
+
+export function containsKnownGlobalRadarSecret(
+  value: unknown,
+  knownSecrets: readonly (string | null | undefined)[],
+): boolean {
+  const secrets = knownSecrets
+    .filter((secret): secret is string => typeof secret === "string")
+    .map((secret) => secret.trim())
+    .filter(Boolean);
+  if (secrets.length === 0) return false;
+
+  const pending: unknown[] = [value];
+  const visited = new Set<object>();
+  try {
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (typeof current === "string") {
+        if (secrets.some((secret) => current.includes(secret))) return true;
+        continue;
+      }
+      if (current === null || typeof current !== "object") continue;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const descriptors = Object.getOwnPropertyDescriptors(current);
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (!descriptor.enumerable) continue;
+        if (secrets.some((secret) => key.includes(secret))) return true;
+        if (!("value" in descriptor)) return true;
+        pending.push(descriptor.value);
+      }
+    }
+  } catch {
+    return true;
+  }
+  return false;
+}
 
 export const GLOBAL_RADAR_SCHEMA_VERSION = "global-radar-batch-v1" as const;
 export const GLOBAL_RADAR_PROMPT_VERSION = "codex-public-web-v1" as const;
@@ -312,6 +632,7 @@ type RecordInspectionIssue =
   | "invalid"
   | "key_length"
   | "page_content"
+  | "sensitive_content"
   | "keys";
 
 function inspectBoundedRecord(
@@ -348,6 +669,9 @@ function inspectBoundedRecord(
       const { value, depth } = task;
       if (typeof value === "string") {
         if (documentMarkupPattern.test(value)) return "document_markup";
+        if (globalRadarJsonEntryContainsSensitiveContent(null, value)) {
+          return "sensitive_content";
+        }
         stringCharacterCount += value.length;
         if (
           value.length > MAX_BOUNDED_RECORD_STRING_LENGTH ||
@@ -417,9 +741,18 @@ function inspectBoundedRecord(
         if (key.length > MAX_BOUNDED_RECORD_KEY_LENGTH) {
           return "key_length";
         }
-        const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const normalizedKey = normalizedRecordKey(key);
         if (forbiddenRecordKeys.has(normalizedKey)) {
           return "forbidden_key";
+        }
+        if (
+          globalRadarJsonEntryContainsSensitiveContent(
+            key,
+            "safe-placeholder",
+            boundedRecordAllowedSensitiveJsonKeys,
+          )
+        ) {
+          return "sensitive_content";
         }
         if (!("value" in descriptor)) return "invalid";
         tasks.push({
@@ -445,6 +778,7 @@ const boundedRecordMessages = {
   invalid: "Record must contain only JSON-compatible values.",
   key_length: "Record keys must be at most 64 characters.",
   page_content: RECORD_PAGE_CONTENT_MESSAGE,
+  sensitive_content: "Record must not contain sensitive content.",
   keys: "Record must contain at most 20 keys.",
 } as const;
 
@@ -698,7 +1032,7 @@ export const executedQuerySchema = z.strictObject({
   sourceAdapter: z.literal("codex_public_web"),
   executedAt: isoTimestampSchema,
   resultsExamined: z.number().int().min(0).max(MAX_QUERY_RESULTS_EXAMINED),
-  error: boundedRequiredString(MAX_SOURCE_ERROR_LENGTH).nullable(),
+  error: globalRadarOperationalDiagnosticSchema.nullable(),
 });
 
 export const linkedinOrganizationUrlSchema = publicHttpUrlSchema.refine(
@@ -763,9 +1097,14 @@ export const signalDraftSchema = z.strictObject({
   rawMetadata: boundedRecordSchema,
 });
 
+const safeSourceNameSchema = globalRadarAuthoredAuditTextSchema.refine(
+  (value) => value.length <= MAX_SOURCE_NAME_LENGTH,
+  { message: "Source names must be at most 200 characters." },
+);
+
 export const sourceErrorSchema = z.strictObject({
-  sourceName: boundedRequiredString(MAX_SOURCE_NAME_LENGTH),
-  message: boundedRequiredString(MAX_SOURCE_ERROR_LENGTH),
+  sourceName: safeSourceNameSchema,
+  message: globalRadarOperationalDiagnosticSchema,
   queryFingerprint: fingerprintSchema.nullable(),
 });
 

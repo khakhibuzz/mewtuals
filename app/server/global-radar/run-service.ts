@@ -11,6 +11,7 @@ import {
   createGlobalRadarFingerprint,
   createGlobalRadarMomentumPolicy,
   generateGlobalRadarQueries,
+  globalRadarOperationalDiagnosticSchema,
   globalRadarDemandFamilies,
   globalRadarValidationProposalSchema,
   globalRadarSourceFamilies,
@@ -28,6 +29,7 @@ import {
   type WatchlistPlanningInput,
 } from "../../domain/global-radar";
 import {
+  globalRadarConfigContainsKnownSecret,
   publicGlobalRadarConfig,
   type GlobalRadarConfig,
   type PublicGlobalRadarConfig,
@@ -37,7 +39,6 @@ import { verifyGlobalRadarBearer } from "./worker-auth";
 
 const uuidSchema = z.string().uuid();
 const fingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const safeReasonSchema = z.string().trim().min(1).max(1_000);
 
 const claimSelectorSchema = z
   .strictObject({
@@ -56,12 +57,12 @@ const manualQueueSchema = z.strictObject({
 const failSchema = z.strictObject({
   runId: uuidSchema,
   leaseToken: z.string().trim().min(1).max(512),
-  reason: safeReasonSchema,
+  reason: globalRadarOperationalDiagnosticSchema,
 });
 
 const abandonSchema = z.strictObject({
   runId: uuidSchema,
-  reason: safeReasonSchema,
+  reason: globalRadarOperationalDiagnosticSchema,
 });
 
 export type GlobalRadarAdminActor = Readonly<{
@@ -210,6 +211,7 @@ function validDate(value: Date): boolean {
 
 function publicConfigFromPlan(
   plan: RadarPlan,
+  config: GlobalRadarConfig,
 ): PublicGlobalRadarConfig | null {
   if (
     plan.sourceAdapters.length !== 1 ||
@@ -217,7 +219,7 @@ function publicConfigFromPlan(
   ) {
     return null;
   }
-  return Object.freeze({
+  const fields = Object.freeze({
     countries: Object.freeze([...plan.countries]),
     languages: Object.freeze([...plan.languages]),
     themes: Object.freeze([...plan.themes]),
@@ -229,6 +231,7 @@ function publicConfigFromPlan(
       ecosystem_momentum: plan.thresholds.ecosystem_momentum,
     }),
   });
+  return globalRadarConfigContainsKnownSecret(config, fields) ? null : fields;
 }
 
 function normalizedAdminActor(
@@ -252,6 +255,23 @@ export function createGlobalRadarRunService(
   );
   const authorizations = new WeakSet<object>();
   const publicConfig = publicGlobalRadarConfig(dependencies.config);
+  const containsKnownSecret = (
+    value: unknown,
+    additionalKnownSecrets: readonly (string | null | undefined)[] = [],
+  ) =>
+    globalRadarConfigContainsKnownSecret(
+      dependencies.config,
+      value,
+      additionalKnownSecrets,
+    );
+  const serializedRun = (value: unknown) => {
+    try {
+      const run = serializeGlobalRadarRun(value);
+      return containsKnownSecret(run) ? null : run;
+    } catch {
+      return null;
+    }
+  };
 
   function authorizeWorker(
     authorization: string | null,
@@ -377,15 +397,20 @@ export function createGlobalRadarRunService(
         : {}),
     });
     if (result.outcome === "conflict") {
+      const run = result.run ? serializedRun(result.run) : null;
       return {
         outcome: "conflict" as const,
         reason: result.reason,
-        ...(result.run ? { run: serializeGlobalRadarRun(result.run) } : {}),
+        ...(run ? { run } : {}),
       };
+    }
+    const run = serializedRun(result.run);
+    if (!run) {
+      return { outcome: "conflict" as const, reason: "invalid_input" };
     }
     return {
       outcome: result.outcome,
-      run: serializeGlobalRadarRun(result.run),
+      run,
     };
   }
 
@@ -400,8 +425,18 @@ export function createGlobalRadarRunService(
       result.privateClaim.planSnapshot,
       run.planFingerprint,
     );
-    const claimedConfig = plan ? publicConfigFromPlan(plan) : null;
-    if (!plan || !claimedConfig) {
+    const claimedConfig = plan
+      ? publicConfigFromPlan(plan, dependencies.config)
+      : null;
+    if (
+      !plan ||
+      !claimedConfig ||
+      containsKnownSecret({
+        plan,
+        leaseToken: result.privateClaim.leaseToken,
+        outputSchema: dependencies.workerOutputSchema,
+      })
+    ) {
       return { outcome: "conflict" as const, reason: "invalid_plan" };
     }
     return {
@@ -448,12 +483,14 @@ export function createGlobalRadarRunService(
       claimed.reason === "active_run" ||
       claimed.reason === "active_race"
     ) {
+      const run =
+        claimed.outcome === "no_work" && claimed.run
+          ? serializedRun(claimed.run)
+          : null;
       return {
         outcome: claimed.outcome,
         reason: claimed.reason,
-        ...(claimed.outcome === "no_work" && claimed.run
-          ? { run: serializeGlobalRadarRun(claimed.run) }
-          : {}),
+        ...(run ? { run } : {}),
       };
     }
     let plan: RadarPlan;
@@ -468,29 +505,36 @@ export function createGlobalRadarRunService(
     }
     const next = await dependencies.repository.claimRun({ now: now() });
     if (next.outcome === "claimed") return claimedResult(next);
+    const run =
+      next.outcome === "no_work" && next.run
+        ? serializedRun(next.run)
+        : null;
     return {
       outcome: next.outcome,
       reason: next.reason,
-      ...(next.outcome === "no_work" && next.run
-        ? { run: serializeGlobalRadarRun(next.run) }
-        : {}),
+      ...(run ? { run } : {}),
     };
   }
 
   function mutationResult(result: RunMutationResult) {
     if (result.outcome === "not_found") return result;
+    const run = result.run ? serializedRun(result.run) : null;
+    if (result.run && !run) {
+      return { outcome: "conflict" as const, reason: "invalid_input" as const };
+    }
     return {
       outcome: result.outcome,
       ...(result.outcome === "conflict" ? { reason: result.reason } : {}),
-      ...(result.run ? { run: serializeGlobalRadarRun(result.run) } : {}),
+      ...(run ? { run } : {}),
     };
   }
 
   function maintenanceConflict(run?: unknown) {
+    const safeRun = run ? serializedRun(run) : null;
     return {
       outcome: "conflict" as const,
       reason: "maintenance_failed" as const,
-      ...(run ? { run: serializeGlobalRadarRun(run) } : {}),
+      ...(safeRun ? { run: safeRun } : {}),
     };
   }
 
@@ -508,6 +552,11 @@ export function createGlobalRadarRunService(
       input.leaseToken,
     );
     if (!runId.success || !leaseToken.success) {
+      return { outcome: "invalid" as const };
+    }
+    if (
+      containsKnownSecret(input.batch, [leaseToken.data])
+    ) {
       return { outcome: "invalid" as const };
     }
     if (
@@ -587,6 +636,11 @@ export function createGlobalRadarRunService(
     if (!authorized(authorization)) return { outcome: "unauthorized" as const };
     const parsed = failSchema.safeParse(value);
     if (!parsed.success) return { outcome: "invalid" as const };
+    if (
+      containsKnownSecret(parsed.data.reason, [parsed.data.leaseToken])
+    ) {
+      return { outcome: "invalid" as const };
+    }
     return mutationResult(
       await dependencies.repository.failRun({
         ...parsed.data,
@@ -602,6 +656,11 @@ export function createGlobalRadarRunService(
     if (!authorized(authorization)) return { outcome: "unauthorized" as const };
     const parsed = abandonSchema.safeParse(value);
     if (!parsed.success) return { outcome: "invalid" as const };
+    if (
+      containsKnownSecret(parsed.data.reason)
+    ) {
+      return { outcome: "invalid" as const };
+    }
     return mutationResult(
       await dependencies.repository.abandonRun({
         ...parsed.data,

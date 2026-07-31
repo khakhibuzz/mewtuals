@@ -1,4 +1,19 @@
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  or,
+  sql,
+} from "drizzle-orm";
+
+import {
+  GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
+  assessComplianceReview,
+  directDemandFreshnessEvidencePathFromSnapshot,
+  hasValidActiveScoreEvidenceCitations,
+} from "../../app/domain/global-radar";
 
 import type { MewtualsDatabase } from "../client";
 import {
@@ -29,6 +44,13 @@ import {
   type SafeGlobalRadarSignalDetail,
   type SafeJsonObject,
 } from "./global-radar-admin-read-model";
+import {
+  eligibleMomentumEvidenceInWindowConditions,
+  emptyMomentumEvidenceWindowBounds,
+} from "./global-radar-score-evidence";
+import {
+  validateStoredGlobalRadarScoreProvenance,
+} from "./global-radar-stored-score-provenance";
 
 const DETAIL_CHILD_LIMIT = 100;
 
@@ -106,6 +128,22 @@ export function createGlobalRadarAdminDetailRepository(
         .where(eq(globalRadarSignals.id, signalId))
         .limit(1);
       if (!row) return { outcome: "not_found" };
+      const signal = row.signal;
+      const scoreProvenance =
+        await validateStoredGlobalRadarScoreProvenance(database, signal);
+      if (!scoreProvenance.valid) {
+        throw new Error(
+          `Invalid stored Global Radar score provenance: ${scoreProvenance.reason}.`,
+        );
+      }
+      const scoreEvidenceSnapshot = scoreProvenance.snapshot;
+      const scoreEvidenceFingerprints = [
+        ...new Set(
+          scoreEvidenceSnapshot.componentEvidence.flatMap(({ evidence }) =>
+            evidence.map(({ evidenceFingerprint }) => evidenceFingerprint),
+          ),
+        ),
+      ];
 
       const [
         associationRows,
@@ -118,6 +156,7 @@ export function createGlobalRadarAdminDetailRepository(
         evidenceCount,
         historyCount,
         noteCount,
+        scoreEvidenceRows,
       ] = await Promise.all([
         database
           .select({
@@ -215,7 +254,231 @@ export function createGlobalRadarAdminDetailRepository(
               eq(globalSignalUpdates.updateType, "note_appended"),
             ),
           ),
+        database
+          .select({
+            id: globalSignalEvidence.id,
+            evidenceFingerprint: globalSignalEvidence.evidenceFingerprint,
+            sourceUrl: globalSignalEvidence.sourceUrl,
+            sourceName: globalSignalEvidence.sourceName,
+            evidenceClaim: globalSignalEvidence.evidenceClaim,
+            globalEntityId: globalSignalEvidence.globalEntityId,
+            evidenceConfidence: globalSignalEvidence.evidenceConfidence,
+            publishedAt: globalSignalEvidence.publishedAt,
+            observedAt: globalSignalEvidence.observedAt,
+            isPrimarySource: globalSignalEvidence.isPrimarySource,
+            isSyndicated: globalSignalEvidence.isSyndicated,
+            sourceFamily: globalSignalEvidence.sourceFamily,
+            supportedFieldPaths: globalSignalEvidence.supportedFieldPaths,
+          })
+          .from(globalSignalEvidence)
+          .where(
+            and(
+              eq(globalSignalEvidence.signalId, signalId),
+              inArray(
+                globalSignalEvidence.evidenceFingerprint,
+                scoreEvidenceFingerprints,
+              ),
+            ),
+          ),
       ]);
+
+      const scoreEvidenceByFingerprint = new Map(
+        scoreEvidenceRows.map((evidence) => [
+          evidence.evidenceFingerprint,
+          evidence,
+        ]),
+      );
+      if (scoreEvidenceByFingerprint.size !== scoreEvidenceFingerprints.length) {
+        throw new Error("Stored score evidence could not be resolved.");
+      }
+      const scoreEvidenceSources = scoreEvidenceRows.map((item) => ({
+        id: item.evidenceFingerprint,
+        sourceUrl: item.sourceUrl,
+        sourceName: item.sourceName,
+        evidenceClaim: item.evidenceClaim,
+        contributorEntityId: item.globalEntityId,
+        evidenceConfidence: item.evidenceConfidence,
+        publishedAt: item.publishedAt?.toISOString() ?? null,
+        observedAt: item.observedAt.toISOString(),
+        isPrimarySource: item.isPrimarySource,
+        isSyndicated: item.isSyndicated,
+        sourceFamily: item.sourceFamily,
+        supportedFieldPaths: item.supportedFieldPaths,
+      }));
+      const citedMomentumOwnerIds = [
+        ...new Set(
+          scoreEvidenceRows.flatMap(({ globalEntityId }) =>
+            globalEntityId === null ? [] : [globalEntityId],
+          ),
+        ),
+      ];
+      const scoreEvidenceContributorRows =
+        signal.signalClass === "ecosystem_momentum" &&
+        citedMomentumOwnerIds.length > 0
+          ? await database
+              .select({
+                globalEntityId: globalRadarSignalEntities.globalEntityId,
+              })
+              .from(globalRadarSignalEntities)
+              .where(
+                and(
+                  eq(globalRadarSignalEntities.signalId, signalId),
+                  eq(globalRadarSignalEntities.role, "contributor"),
+                  inArray(
+                    globalRadarSignalEntities.globalEntityId,
+                    citedMomentumOwnerIds,
+                  ),
+                ),
+              )
+          : [];
+      const emptyMomentumEvidenceWindow =
+        emptyMomentumEvidenceWindowBounds(scoreEvidenceSnapshot);
+      if (emptyMomentumEvidenceWindow !== null) {
+        const contributorRows = await database
+          .select({
+            globalEntityId: globalRadarSignalEntities.globalEntityId,
+          })
+          .from(globalRadarSignalEntities)
+          .where(
+            and(
+              eq(globalRadarSignalEntities.signalId, signalId),
+              eq(globalRadarSignalEntities.role, "contributor"),
+            ),
+          );
+        const contributorEntityIds = contributorRows.map(
+          ({ globalEntityId }) => globalEntityId,
+        );
+        if (contributorEntityIds.length === 0) {
+          throw new Error(
+            "Invalid stored Global Radar empty momentum evidence window.",
+          );
+        }
+        const activeEligibleEvidence = await database
+          .select({ id: globalSignalEvidence.id })
+          .from(globalSignalEvidence)
+          .where(
+            eligibleMomentumEvidenceInWindowConditions({
+              signalId,
+              contributorEntityIds,
+              cutoff: emptyMomentumEvidenceWindow.cutoff,
+              asOf: emptyMomentumEvidenceWindow.asOf,
+            }),
+          )
+          .limit(1);
+        if (activeEligibleEvidence.length > 0) {
+          throw new Error(
+            "Invalid stored Global Radar empty momentum evidence window.",
+          );
+        }
+      }
+      const freshnessEvidencePath =
+        signal.signalClass === "direct_demand"
+          ? directDemandFreshnessEvidencePathFromSnapshot(
+              scoreEvidenceSnapshot,
+            )
+          : undefined;
+      if (
+        signal.signalClass === "direct_demand" &&
+        (freshnessEvidencePath === null ||
+          (freshnessEvidencePath === "signal.announcedAt" &&
+            signal.announcedAt === null) ||
+          (freshnessEvidencePath === "signal.effectiveFrom" &&
+            signal.effectiveFrom === null))
+      ) {
+        throw new Error("Invalid stored Global Radar freshness provenance.");
+      }
+      const semanticFreshnessEvidencePath =
+        freshnessEvidencePath ?? undefined;
+      let actionabilityInput: number | null | undefined;
+      if (signal.signalClass === "direct_demand") {
+        actionabilityInput =
+          scoreEvidenceSnapshot.componentEvidence.find(
+            ({ component }) => component === "actionability",
+          )?.inputValue ?? null;
+        if (actionabilityInput === null) {
+          if (signal.actionability !== null) {
+            throw new Error(
+              "Invalid stored Global Radar actionability provenance.",
+            );
+          }
+        } else {
+          const reviewedActionability = assessComplianceReview({
+            currentStatus: signal.status,
+            actionability: actionabilityInput,
+            assessment: {
+              sensitiveDataFlags: {
+                faces: signal.faces,
+                voices: signal.voices,
+                biometrics: signal.biometrics,
+                gaze: signal.gaze,
+                health: signal.health,
+                children: signal.children,
+                home_interiors: signal.homeInteriors,
+                workplace_monitoring: signal.workplaceMonitoring,
+                precise_location: signal.preciseLocation,
+                road_users: signal.roadUsers,
+                employee_data: signal.employeeData,
+                industrial_secrets: signal.industrialSecrets,
+                defence_or_dual_use: signal.defenceOrDualUse,
+                copyrighted_material: signal.copyrightedMaterial,
+                export_controls: signal.exportControls,
+              },
+              complianceFacts: {
+                consent: signal.consent,
+                deIdentification: signal.deIdentification,
+                legalReview: signal.legalReview,
+                knownResidencyRequirements:
+                  signal.knownResidencyRequirements,
+                participantRightsComplexity:
+                  signal.participantRightsComplexity,
+              },
+            },
+          });
+          if (
+            !reviewedActionability.valid ||
+            reviewedActionability.actionability !== signal.actionability
+          ) {
+            throw new Error(
+              "Invalid stored Global Radar actionability provenance.",
+            );
+          }
+        }
+      }
+      if (
+        !hasValidActiveScoreEvidenceCitations({
+          snapshot: scoreEvidenceSnapshot,
+          signalType: signal.signalType,
+          indiaRelevanceType: signal.indiaRelevanceType,
+          actionabilityInput,
+          momentumContributorEntityIds: scoreEvidenceContributorRows.map(
+            ({ globalEntityId }) => globalEntityId,
+          ),
+          freshnessEvidencePath: semanticFreshnessEvidencePath,
+          evidence: scoreEvidenceSources,
+        })
+      ) {
+        throw new Error("Invalid stored Global Radar score-evidence citations.");
+      }
+      const scoreComponentEvidence =
+        scoreEvidenceSnapshot.componentEvidence.map((association) => ({
+          ...association,
+          evidence: association.evidence.map(
+            ({ evidenceFingerprint, matchedFieldPaths }) => {
+              const resolved = scoreEvidenceByFingerprint.get(
+                evidenceFingerprint,
+              );
+              if (!resolved) {
+                throw new Error("Stored score evidence could not be resolved.");
+              }
+              return {
+                id: resolved.id,
+                sourceUrl: resolved.sourceUrl,
+                sourceName: resolved.sourceName,
+                matchedFieldPaths: [...matchedFieldPaths],
+              };
+            },
+          ),
+        }));
 
       const [watchlistRow] = row.organisation
         ? await database
@@ -248,7 +511,6 @@ export function createGlobalRadarAdminDetailRepository(
         )
         .limit(1);
 
-      const signal = row.signal;
       const safeSignal = toSafeGlobalRadarSignalListItem({
         ...signal,
         entityId: row.organisation?.id ?? null,
@@ -449,6 +711,8 @@ export function createGlobalRadarAdminDetailRepository(
             },
             coverage: signal.scoreCoverage,
             policyVersion: signal.scorePolicyVersion,
+            evidenceVersion: GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
+            componentEvidence: scoreComponentEvidence,
           },
           timeline: {
             announcedAt: signal.announcedAt,

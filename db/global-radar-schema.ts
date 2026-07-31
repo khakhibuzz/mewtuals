@@ -16,6 +16,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import {
+  type ActiveScoreEvidenceSnapshot,
   indiaRelevanceTypes,
   professionalResponsePathTypes,
   promotionEligibilityPaths,
@@ -594,6 +595,9 @@ export const globalRadarSignals = pgTable(
     momentumScore: integer("momentum_score"),
     scoreCoverage: integer("score_coverage").notNull(),
     scorePolicyVersion: text("score_policy_version").notNull(),
+    scoreEvidenceSnapshot: jsonb("score_evidence_snapshot")
+      .$type<ActiveScoreEvidenceSnapshot>()
+      .notNull(),
     momentumPolicyVersion: text("momentum_policy_version"),
     momentumQualificationGatesPassed: boolean(
       "momentum_qualification_gates_passed",
@@ -793,6 +797,32 @@ export const globalRadarSignals = pgTable(
         AND (${table.momentumVolume7Days} IS NULL OR ${table.momentumVolume7Days} >= 0)
         AND (${table.momentumVolume30Days} IS NULL OR ${table.momentumVolume30Days} >= 0)
         AND (${table.momentumVolume90Days} IS NULL OR ${table.momentumVolume90Days} >= 0)`,
+    ),
+    check(
+      "global_radar_signals_score_evidence_snapshot_check",
+      sql`(jsonb_typeof(${table.scoreEvidenceSnapshot}) = 'object'
+        AND ${table.scoreEvidenceSnapshot}->>'snapshotVersion' = 'global-radar-active-score-snapshot-v2'
+        AND ${table.scoreEvidenceSnapshot}->>'evidenceVersion' = 'global-radar-score-evidence-v1'
+        AND (${table.scoreEvidenceSnapshot}->>'scoreAsOf')::timestamptz IS NOT NULL
+        AND (${table.scoreEvidenceSnapshot}->>'evidenceBoundaryOrdinal')::integer > 0
+        AND (${table.scoreEvidenceSnapshot}->>'evidenceSetCount')::integer > 0
+        AND (${table.scoreEvidenceSnapshot}->>'evidenceSetCount')::integer <= (${table.scoreEvidenceSnapshot}->>'evidenceBoundaryOrdinal')::integer
+        AND ${table.scoreEvidenceSnapshot}->>'evidenceSetDigest' ~ '^[a-f0-9]{64}$'
+        AND ${table.scoreEvidenceSnapshot}->>'scoreInputDigest' ~ '^[a-f0-9]{64}$'
+        AND ${table.scoreEvidenceSnapshot}->>'scorePolicyVersion' = ${table.scorePolicyVersion}
+        AND ${table.scoreEvidenceSnapshot}->>'signalClass' = ${table.signalClass}::text
+        AND ${table.scoreEvidenceSnapshot}->>'signalType' = ${table.signalType}
+        AND ${table.scoreEvidenceSnapshot}->>'indiaRelevanceType' = ${table.indiaRelevanceType}::text
+        AND ${table.scoreEvidenceSnapshot}->>'assessmentAuthority' IN ('worker', 'administrator')
+        AND (
+          (${table.signalClass} = 'ecosystem_momentum'
+            AND ${table.scoreEvidenceSnapshot}->>'momentumPolicyVersion' = ${table.momentumPolicyVersion})
+          OR (${table.signalClass} <> 'ecosystem_momentum'
+            AND ${table.scoreEvidenceSnapshot}->'momentumPolicyVersion' = 'null'::jsonb)
+        )
+        AND jsonb_typeof(${table.scoreEvidenceSnapshot}->'componentEvidence') = 'array'
+        AND jsonb_array_length(${table.scoreEvidenceSnapshot}->'componentEvidence') BETWEEN 1 AND 13
+        AND octet_length(${table.scoreEvidenceSnapshot}::text) <= 524288) IS TRUE`,
     ),
     check(
       "global_radar_signals_class_matrix_check",
@@ -1092,6 +1122,7 @@ export const globalSignalEvidence = pgTable(
   {
     id: radarId(),
     signalId: uuid("signal_id").notNull(),
+    ingestOrdinal: integer("ingest_ordinal").notNull(),
     runId: uuid("run_id"),
     globalEntityId: uuid("global_entity_id"),
     sourceUrl: text("source_url").notNull(),
@@ -1125,6 +1156,10 @@ export const globalSignalEvidence = pgTable(
       table.signalId,
       table.evidenceFingerprint,
     ),
+    unique("global_signal_evidence_signal_ordinal_unique").on(
+      table.signalId,
+      table.ingestOrdinal,
+    ),
     index("global_signal_evidence_signal_idx").on(table.signalId),
     index("global_signal_evidence_run_idx").on(table.runId),
     index("global_signal_evidence_contributor_idx").on(table.globalEntityId),
@@ -1147,6 +1182,10 @@ export const globalSignalEvidence = pgTable(
       columns: [table.globalEntityId],
       foreignColumns: [globalEntities.id],
     }).onDelete("restrict"),
+    check(
+      "global_signal_evidence_ingest_ordinal_check",
+      sql`${table.ingestOrdinal} > 0`,
+    ),
     check(
       "global_signal_evidence_text_check",
       sql`length(btrim(${table.sourceUrl})) BETWEEN 1 AND 2048

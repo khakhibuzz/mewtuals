@@ -13,6 +13,8 @@ import {
   directDemandAskTypes,
   GLOBAL_RADAR_PROMPT_VERSION,
   GLOBAL_RADAR_SCHEMA_VERSION,
+  globalRadarJsonContainsSensitiveContent,
+  globalRadarOperationalDiagnosticSchema,
   indiaRelevanceTypes,
   isoTimestampSchema,
   nullableBoundedStringArraySchema,
@@ -37,6 +39,7 @@ import {
   assessIndiaRelevance,
   type IndiaRelevanceAssessment,
 } from "./india-relevance";
+import { globalRadarIndiaFitScore } from "./india-fit-score";
 import {
   createEntityIdentity,
   createQueryFingerprint,
@@ -92,20 +95,12 @@ import {
 import { determineInitialSignalStatus } from "./transitions";
 
 const MAX_BATCH_BYTES = 2 * 1_024 * 1_024;
+const allowedGlobalRadarProposalSensitiveKeys: ReadonlySet<string> = new Set([
+  "industrialsecrets",
+  "rawmetadata",
+]);
 const documentMarkupPattern =
   /<(?:!doctype\b|\?xml\b|!\[cdata\[|\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\/?>)/i;
-const unsafeDiagnosticPatterns = [
-  documentMarkupPattern,
-  /\b(?:authorization|proxy-authorization)\s*:/i,
-  /\b(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i,
-  /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|credential|client[_ -]?secret|session[_ -]?id|cookie|set-cookie)\b\s*[:=]/i,
-  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
-  /\b(?:sqlstate|postgres(?:ql)?|syntax error at or near|relation\s+\S+\s+does not exist)\b/i,
-  /\b(?:select|insert|update|delete|alter|drop|create)\b[\s\S]{0,80}\b(?:from|into|table|where|values|set)\b/i,
-  /(?:^|\n)\s*at\s+(?:async\s+)?[\w$.<>]+\s+\([^)\n]+\)/m,
-  /(?:\/Users\/|\/home\/|node_modules\/|[A-Za-z]:\\)/,
-  /\b(?:raw|request|response|rejected)\s+(?:body|payload|content)\s*[:=]/i,
-] as const;
 const applicationRefSchema = z
   .string()
   .trim()
@@ -113,20 +108,6 @@ const applicationRefSchema = z
   .max(200)
   .regex(/^[a-z0-9][a-z0-9._:-]*$/);
 const boundedText = (maximum: number) => z.string().trim().min(1).max(maximum);
-const safeDiagnosticTextSchema = boundedText(1_000)
-  .refine(
-    (value) => {
-      const wordCount =
-        value.match(/\p{L}[\p{L}\p{N}'’-]*/gu)?.length ?? 0;
-      return (
-        wordCount <= 80 &&
-        (value.match(/\n/g)?.length ?? 0) <= 2 &&
-        !unsafeDiagnosticPatterns.some((pattern) => pattern.test(value))
-      );
-    },
-    { message: "Source diagnostics must be concise and payload-free." },
-  )
-  .transform((value) => value.replace(/\s+/g, " "));
 const nullableTimestamp = isoTimestampSchema.nullable();
 const associatedEntityProposalSchema = z.strictObject({
   entityRef: applicationRefSchema,
@@ -248,11 +229,11 @@ export const radarSignalProposalSchema = z
 
 export const radarExecutedQueryProposalSchema =
   persistableRadarExecutedQuerySchema.extend({
-    error: safeDiagnosticTextSchema.nullable(),
+    error: globalRadarOperationalDiagnosticSchema.nullable(),
   });
 
 const radarSourceErrorProposalSchema = sourceErrorSchema.extend({
-  message: safeDiagnosticTextSchema,
+  message: globalRadarOperationalDiagnosticSchema,
 });
 
 const validationProposalShape = {
@@ -312,7 +293,20 @@ function addProposalTotalsIssues(
 
 export const globalRadarValidationProposalSchema = z
   .strictObject(validationProposalShape)
-  .superRefine(addProposalTotalsIssues);
+  .superRefine((proposal, context) => {
+    if (
+      globalRadarJsonContainsSensitiveContent(
+        proposal,
+        allowedGlobalRadarProposalSensitiveKeys,
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Global Radar proposal must not contain sensitive content.",
+      });
+    }
+    addProposalTotalsIssues(proposal, context);
+  });
 
 export const globalRadarBatchProposalSchema =
   globalRadarValidationProposalSchema;
@@ -836,19 +830,6 @@ function signalObservedAt(evidence: readonly ClassifiedEvidence[]): string {
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0]!;
 }
 
-function indiaFitScore(
-  relevanceType: z.output<typeof proposedIndiaRelevanceSchema>["proposedType"],
-): number {
-  return {
-    explicit_India: 100,
-    existing_India_presence: 90,
-    India_expansion: 85,
-    globally_open: 70,
-    inferred_India_compatible: 60,
-    no_current_India_fit: 0,
-  }[relevanceType];
-}
-
 function assessServerIndiaRelevance(
   proposal: RadarSignalProposal,
   evidence: readonly ClassifiedEvidence[],
@@ -893,9 +874,7 @@ function assessServerIndiaRelevance(
     if (assessment.assessed) return assessment;
   }
   if (
-    [...supportedPaths].some((path) =>
-      path.startsWith("indiaRelevance.globally_open."),
-    )
+    supportedPaths.has("indiaRelevance.globally_open.requirement_access")
   ) {
     const assessment = assess("globally_open");
     if (assessment.assessed) return assessment;
@@ -938,7 +917,7 @@ function scoreDirectProposal(
     evidenceConfidence: classification.gateFacts.evidenceConfidence,
     freshness: freshness.valid ? freshness.score : null,
     actionability,
-    indiaFit: indiaFitScore(relevanceType),
+    indiaFit: globalRadarIndiaFitScore(relevanceType),
     responseAccessibility: classification.gateFacts.responsePathVerified
       ? 100
       : null,
@@ -958,7 +937,7 @@ function scorePrecursorProposal(
   return scoreDemandPrecursor({
     ...proposal.scoreComponents,
     evidenceConfidence: classification.gateFacts.evidenceConfidence,
-    indiaFit: indiaFitScore(relevanceType),
+    indiaFit: globalRadarIndiaFitScore(relevanceType),
     estimatedTimeHorizon: timeHorizon.valid ? timeHorizon.score : null,
   });
 }
@@ -1158,7 +1137,15 @@ function validateSignal(
     proposal.signalClass === "ecosystem_momentum" &&
     missingMomentumWorkerScoredMetricEvidencePaths({
       momentumMetrics: proposal.momentumMetrics,
-      evidence: evidenceResult.items.map(({ evidence: item }) => item),
+      momentumContributorEntityIds: proposal.associatedEntities.flatMap(
+        ({ entityRef, role }) =>
+          role === "contributor" ? [entityRef] : [],
+      ),
+      evidence: evidenceResult.items.map(({ evidence: item }) => ({
+        supportedFieldPaths: item.supportedFieldPaths,
+        contributorEntityId: item.contributorEntityRef,
+        isSyndicated: item.isSyndicated,
+      })),
     }).length > 0
   ) {
     return Object.freeze({ valid: false, reason: "invalid_evidence" });
@@ -1247,7 +1234,7 @@ function validateSignal(
       observedAt,
       evidenceResult.items,
       compliancePolicy!.actionability,
-      context.clock,
+      { now: () => new Date(now.getTime()) },
     );
     threshold = thresholds.directDemand;
   } else if (proposal.signalClass === "demand_precursor") {
@@ -1255,7 +1242,7 @@ function validateSignal(
       proposal,
       classification,
       indiaAssessment.relevanceType,
-      context.clock,
+      { now: () => new Date(now.getTime()) },
     );
     threshold = thresholds.precursor;
   } else {
@@ -1298,6 +1285,7 @@ function validateSignal(
         id: item.evidenceFingerprint,
         sourceUrl: item.sourceUrl,
         sourceName: item.sourceName,
+        evidenceClaim: item.claim,
         contributorEntityId: item.contributorEntityRef,
         evidenceConfidence: item.evidenceConfidence,
         publishedAt: item.publishedAt,
@@ -1404,6 +1392,10 @@ function validateSignal(
     announcedAt: proposal.announcedAt,
     effectiveFrom: proposal.effectiveFrom,
     observedAt,
+    scoreAsOf:
+      proposal.signalClass === "ecosystem_momentum"
+        ? observedAt
+        : now.toISOString(),
     initialStatus: status.status,
     responsePath,
     partnerApplicationUrl,
@@ -1426,6 +1418,7 @@ function validateSignal(
           signalClass: "direct_demand" as const,
           signalType: proposal.directDemandAsk.type,
           primaryEntityRef: proposal.primaryEntityRef,
+          actionabilityInput: proposal.scoreComponents.actionability,
           score,
           expiresAt: proposal.directDemandAsk.expiresAt,
           evergreen: proposal.evergreen,
@@ -1491,6 +1484,14 @@ function rawBatchTotalsAreBounded(signals: readonly unknown[]): boolean {
 function parseEnvelope(input: unknown): ParsedEnvelope {
   if (serializedJsonByteLength(input) > MAX_BATCH_BYTES) {
     return invalidProposal("batch exceeds 2 MiB");
+  }
+  if (
+    globalRadarJsonContainsSensitiveContent(
+      input,
+      allowedGlobalRadarProposalSensitiveKeys,
+    )
+  ) {
+    return invalidProposal("proposal contains sensitive content");
   }
   const parsed = validationEnvelopeSchema.safeParse(input);
   if (!parsed.success) return invalidProposal("strict envelope validation failed");

@@ -14,6 +14,7 @@ import {
   createGlobalRadarAdminWatchlistPatchHandler,
   type GlobalRadarAdminRouteService,
 } from "../app/server/global-radar/route";
+import { adminResult } from "../app/server/global-radar/route-response";
 import {
   GET as runsGetRoute,
   POST as runsPostRoute,
@@ -155,16 +156,22 @@ function safeDetail() {
     ["demandExplicitness", "directDemandAsk.supplier_registration"],
     ["evidenceConfidence", "signal.factualSummary"],
     ["freshness", "signal.announcedAt"],
-    ["indiaFit", "indiaRelevance.globally_open.manufacturing"],
+    ["indiaFit", "indiaRelevance.globally_open.requirement_access"],
     ["responseAccessibility", "responsePath"],
   ]);
   const componentEvidence = Object.entries(scoreComponents).map(
     ([component, value]) => ({
       component,
       value,
-      basis: workerScorePaths.has(component)
-        ? "worker_evidence"
-        : "server_derived",
+      basis:
+        component === "actionability"
+          ? "server_adjusted"
+          : workerScorePaths.has(component)
+            ? "worker_evidence"
+            : "server_derived",
+      assessmentBasis:
+        component === "actionability" ? "worker_evidence" : null,
+      inputValue: component === "actionability" ? value : null,
       rationale: "This active score component is linked to public evidence.",
       evidence: [
         {
@@ -712,6 +719,78 @@ describe("Global Radar administrator HTTP adapters", () => {
     expect(service.queueManual).not.toHaveBeenCalled();
   });
 
+  it("rejects sensitive administrator audit text without echoing it", async () => {
+    const secret = "private-radar-administrator-secret";
+    const service = adminService();
+    const deps = dependencies(service);
+    const requests = [
+      createGlobalRadarAdminSignalPatchHandler(deps)(
+        patchRequest(`/api/admin/global-demand-radar/signals/${SIGNAL_ID}`, {
+          ...envelope(),
+          reason: `Authorization: Bearer ${secret}`,
+          command: { type: "monitor" },
+        }),
+        signalContext(),
+      ),
+      createGlobalRadarAdminNotePostHandler(deps)(
+        adminRequest(
+          `/api/admin/global-demand-radar/signals/${SIGNAL_ID}/notes`,
+          {
+            ...envelope(),
+            body: `Claim path: /private/tmp/${secret}/claim.json`,
+          },
+        ),
+        signalContext(),
+      ),
+      createGlobalRadarAdminPromotionPostHandler(deps)(
+        adminRequest(
+          `/api/admin/global-demand-radar/entities/${ENTITY_ID}/promotions`,
+          {
+            ...promotionCommand(),
+            rationale: `Rejected payload: ${secret}`,
+          },
+        ),
+        entityContext(),
+      ),
+    ];
+
+    for (const pending of requests) {
+      const response = await pending;
+      expect(response.status).toBe(400);
+      expect(JSON.stringify(await responseBody(response))).not.toContain(secret);
+    }
+    expect(service.reviewSignal).not.toHaveBeenCalled();
+    expect(service.appendNote).not.toHaveBeenCalled();
+    expect(service.promote).not.toHaveBeenCalled();
+  });
+
+  it("allows long public business rationale in authored administrator text", async () => {
+    const service = adminService();
+    const handler = createGlobalRadarAdminSignalPatchHandler(
+      dependencies(service),
+    );
+    const reason = Array.from(
+      { length: 100 },
+      (_, index) => `reviewed${index}`,
+    ).join(" ");
+
+    const response = await handler(
+      patchRequest(`/api/admin/global-demand-radar/signals/${SIGNAL_ID}`, {
+        ...envelope(),
+        reason,
+        command: { type: "monitor" },
+      }),
+      signalContext(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.reviewSignal).toHaveBeenCalledWith(
+      expect.anything(),
+      SIGNAL_ID,
+      expect.objectContaining({ reason }),
+    );
+  });
+
   it("requires JSON and enforces the 64 KiB declared and streamed limits", async () => {
     const service = adminService();
     const deps = dependencies(service);
@@ -849,10 +928,50 @@ describe("Global Radar administrator HTTP adapters", () => {
         body: {
           ...envelope(),
           classification: {
+            signalClass: "direct_demand",
+            signalType: "procurement",
+            demandDomain: "synthetic_data_and_evaluation",
+            assessments: {
+              actionability: 80,
+              commercialPotential: 75,
+              repeatability: 70,
+              strategicLearning: 70,
+              complianceComplexity: 20,
+            },
+            activity: {
+              evergreen: false,
+              expiresAt: "2026-08-31T00:00:00.000Z",
+              reobserveBy: null,
+            },
+          },
+        },
+        operation: service.editClassification,
+      },
+      {
+        body: {
+          ...envelope(),
+          classification: {
+            signalClass: "demand_precursor",
+            signalType: "funding",
+            demandDomain: "synthetic_data_and_evaluation",
+            assessments: {
+              proximityToExternalDemand: 70,
+              fundingDeploymentMomentum: 80,
+              likelyDataHardwareIntensity: 70,
+              strategicRelevance: 75,
+            },
+          },
+        },
+        operation: service.editClassification,
+      },
+      {
+        body: {
+          ...envelope(),
+          classification: {
             signalClass: "ecosystem_momentum",
             signalType: "ecosystem_direction",
             demandDomain: "synthetic_data_and_evaluation",
-            components: { taxonomyConsistency: 80, evidenceQuality: 75 },
+            assessments: { taxonomyConsistency: 80, evidenceQuality: 75 },
           },
         },
         operation: service.editClassification,
@@ -887,7 +1006,17 @@ describe("Global Radar administrator HTTP adapters", () => {
           signalClass: "ecosystem_momentum",
           signalType: "platform_launch",
           demandDomain: "synthetic_data_and_evaluation",
-          components: { taxonomyConsistency: 80, evidenceQuality: 75 },
+          assessments: { taxonomyConsistency: 80, evidenceQuality: 75 },
+        },
+      },
+      {
+        ...envelope(),
+        classification: {
+          signalClass: "ecosystem_momentum",
+          signalType: "ecosystem_direction",
+          demandDomain: "synthetic_data_and_evaluation",
+          assessments: { taxonomyConsistency: 80, evidenceQuality: 75 },
+          workerSecret: "private",
         },
       },
       {
@@ -897,7 +1026,6 @@ describe("Global Radar administrator HTTP adapters", () => {
           signalType: "ecosystem_direction",
           demandDomain: "synthetic_data_and_evaluation",
           components: { taxonomyConsistency: 80, evidenceQuality: 75 },
-          workerSecret: "private",
         },
       },
     ]) {
@@ -908,6 +1036,145 @@ describe("Global Radar administrator HTTP adapters", () => {
       expect(response.status).toBe(400);
     }
   });
+
+  it.each([
+    [
+      "direct demand",
+      {
+        signalClass: "direct_demand",
+        signalType: "procurement",
+        demandDomain: "synthetic_data_and_evaluation",
+        assessments: {
+          actionability: null,
+          commercialPotential: null,
+          repeatability: null,
+          strategicLearning: null,
+          complianceComplexity: null,
+        },
+        activity: {
+          evergreen: false,
+          expiresAt: null,
+          reobserveBy: null,
+        },
+      },
+    ],
+    [
+      "demand precursor",
+      {
+        signalClass: "demand_precursor",
+        signalType: "funding",
+        demandDomain: "synthetic_data_and_evaluation",
+        assessments: {
+          proximityToExternalDemand: null,
+          fundingDeploymentMomentum: null,
+          likelyDataHardwareIntensity: null,
+          strategicRelevance: null,
+        },
+      },
+    ],
+  ] as const)(
+    "accepts nullable %s subjective assessments",
+    async (_label, classification) => {
+      const service = adminService();
+      const handler = createGlobalRadarAdminSignalPatchHandler(
+        dependencies(service),
+      );
+      const body = { ...envelope(), classification };
+
+      const response = await handler(
+        patchRequest(
+          `/api/admin/global-demand-radar/signals/${SIGNAL_ID}`,
+          body,
+        ),
+        signalContext(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(service.editClassification).toHaveBeenCalledWith(
+        ACTOR,
+        SIGNAL_ID,
+        body,
+      );
+    },
+  );
+
+  it.each([
+    ["direct_demand", "explicitness"],
+    ["direct_demand", "evidenceConfidence"],
+    ["direct_demand", "freshness"],
+    ["direct_demand", "indiaFit"],
+    ["direct_demand", "responseAccessibility"],
+    ["demand_precursor", "evidenceConfidence"],
+    ["demand_precursor", "indiaFit"],
+    ["demand_precursor", "estimatedTimeHorizon"],
+    ["ecosystem_momentum", "independentEntityCount"],
+    ["ecosystem_momentum", "primarySourceCount"],
+    ["ecosystem_momentum", "sourceFamilyCount"],
+    ["ecosystem_momentum", "volume7Days"],
+    ["ecosystem_momentum", "volume30Days"],
+    ["ecosystem_momentum", "volume90Days"],
+  ] as const)(
+    "rejects the forbidden %s assessment key %s independently",
+    async (signalClass, forbiddenKey) => {
+      const service = adminService();
+      const handler = createGlobalRadarAdminSignalPatchHandler(
+        dependencies(service),
+      );
+      const classification = signalClass === "direct_demand"
+        ? {
+            signalClass,
+            signalType: "procurement",
+            demandDomain: "synthetic_data_and_evaluation",
+            assessments: {
+              actionability: 80,
+              commercialPotential: 75,
+              repeatability: 70,
+              strategicLearning: 70,
+              complianceComplexity: 20,
+              [forbiddenKey]: 50,
+            },
+            activity: {
+              evergreen: false,
+              expiresAt: "2026-08-31T00:00:00.000Z",
+              reobserveBy: null,
+            },
+          }
+        : signalClass === "demand_precursor"
+          ? {
+              signalClass,
+              signalType: "funding",
+              demandDomain: "synthetic_data_and_evaluation",
+              assessments: {
+                proximityToExternalDemand: 70,
+                fundingDeploymentMomentum: 80,
+                likelyDataHardwareIntensity: 70,
+                strategicRelevance: 75,
+                [forbiddenKey]: 50,
+              },
+            }
+          : {
+              signalClass,
+              signalType: "ecosystem_direction",
+              demandDomain: "synthetic_data_and_evaluation",
+              assessments: {
+                taxonomyConsistency: 80,
+                evidenceQuality: 75,
+                [forbiddenKey]: 50,
+              },
+            };
+
+      const response = await handler(
+        patchRequest(
+          `/api/admin/global-demand-radar/signals/${SIGNAL_ID}`,
+          { ...envelope(), classification },
+        ),
+        signalContext(),
+      );
+
+      expect(response.status).toBe(400);
+      expect(service.editClassification).not.toHaveBeenCalled();
+    },
+  );
 
   it("validates evidence and note bodies before intent-specific service calls", async () => {
     const service = adminService();
@@ -1284,6 +1551,15 @@ describe("Global Radar administrator HTTP adapters", () => {
                 submissionHashHex: "private-hash-value",
                 rawPayloadData: "private-payload-value",
                 privateExceptionMessage: "private-exception-value",
+                accessToken: "private-access-token-value",
+                authToken: "private-auth-token-value",
+                credentials: "private-credentials-value",
+                cookie: "private-cookie-value",
+                privateKey: "private-private-key-value",
+                secretValue: "private-generic-secret-value",
+                industrialSecretsValue: "private-industrial-secret-alias-value",
+                publicSummary:
+                  "Authorization: Bearer private-benign-key-token-value-1234",
               },
             },
           };
@@ -1504,6 +1780,59 @@ describe("Global Radar administrator HTTP adapters", () => {
     });
   });
 
+  it("sanitizes raw momentum component counts above one hundred", async () => {
+    const detail = safeDetail();
+    const scoreSection = detail.sections.find(
+      ({ id }) => id === "score_rationale",
+    )!;
+    const scoreData = scoreSection.data as unknown as {
+      componentEvidence: Array<Record<string, unknown>>;
+    };
+    scoreData.componentEvidence[0] = {
+      ...scoreData.componentEvidence[0],
+      component: "volume30Days",
+      value: 103,
+      basis: "server_derived",
+      assessmentBasis: null,
+      inputValue: null,
+      evidence: [
+        {
+          id: "00000000-0000-4000-8000-000000000220",
+          sourceUrl: "https://fictional.example/suppliers",
+          sourceName: "Fictional Robotics",
+          matchedFieldPaths: ["evidence.observedAt"],
+        },
+      ],
+    };
+    const service = adminService({
+      getSignalDetail: vi.fn(async () => ({ outcome: "found", detail })),
+    });
+
+    const response = await createGlobalRadarAdminSignalGetHandler(
+      dependencies(service),
+    )(
+      new Request(
+        `https://mewtuals.com/api/admin/global-demand-radar/signals/${SIGNAL_ID}`,
+      ),
+      signalContext(),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await responseBody(response) as {
+      detail: typeof detail;
+    };
+    const sanitizedScore = body.detail.sections.find(
+      ({ id }) => id === "score_rationale",
+    )!.data as unknown as {
+      componentEvidence: Array<{ component: string; value: number }>;
+    };
+    expect(sanitizedScore.componentEvidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ component: "volume30Days", value: 103 }),
+      ]),
+    );
+  });
+
   it("returns a generic 500 for invalid nested object and vocabulary values", async () => {
     const scoreDetail = safeDetail();
     const scoreSection = scoreDetail.sections.find(
@@ -1522,6 +1851,20 @@ describe("Global Radar administrator HTTP adapters", () => {
       detailWithSectionData("score_rationale", {
         componentEvidence: scoreData.componentEvidence.map((association, index) =>
           index === 0 ? { ...association, evidence: [] } : association,
+        ),
+      }),
+      detailWithSectionData("score_rationale", {
+        componentEvidence: scoreData.componentEvidence.map((association) =>
+          association.component === "demandExplicitness"
+            ? { ...association, basis: "worker_evidence" }
+            : association,
+        ),
+      }),
+      detailWithSectionData("score_rationale", {
+        componentEvidence: scoreData.componentEvidence.map((association) =>
+          association.component === "commercialPotential"
+            ? { ...association, basis: "server_derived" }
+            : association,
         ),
       }),
     ]) {
@@ -1543,6 +1886,27 @@ describe("Global Radar administrator HTTP adapters", () => {
         error: "We could not complete that request. Please try again.",
       });
     }
+  });
+});
+
+describe("Global Radar administrator read conflict responses", () => {
+  it("allows only the generic score-provenance reason and no partial read payload", async () => {
+    const response = adminResult(
+      {
+        outcome: "conflict",
+        reason: "score_provenance_invalid",
+        metrics: { highQuality: 99 },
+        items: [{ score: 99 }],
+      },
+      { successOutcomes: ["listed"], successKeys: [] },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(responseBody(response)).resolves.toEqual({
+      ok: false,
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
   });
 });
 

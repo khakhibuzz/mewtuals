@@ -1,7 +1,6 @@
 import {
   GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
-  deriveScoreComponentEvidenceAssociations,
-  selectDirectDemandFreshnessEvidencePath,
+  globalRadarJsonEntryContainsSensitiveContent,
 } from "../../domain/global-radar";
 
 export const GLOBAL_RADAR_DETAIL_SECTIONS = [
@@ -39,22 +38,9 @@ export const GLOBAL_RADAR_DETAIL_SECTION_IDS = Object.freeze(
 
 type JsonRecord = Record<string, unknown>;
 
-const forbiddenSafeJsonKeys = new Set([
-  "claimpath",
-  "exception",
-  "fullpage",
-  "fullpagetext",
-  "leasetoken",
-  "leasetokenhash",
-  "pagecontent",
-  "privatefailure",
-  "promptinternals",
-  "rawmetadata",
-  "rawpayload",
-  "rejectedbody",
-  "sql",
-  "submissionhash",
-  "workersecret",
+const noAllowedSensitiveJsonKeys: ReadonlySet<string> = new Set();
+const industrialSecretsJsonKey: ReadonlySet<string> = new Set([
+  "industrialsecrets",
 ]);
 
 function readRecord(value: unknown, label: string): JsonRecord {
@@ -128,19 +114,49 @@ function nullableStringArray(value: unknown): string[] | null {
   return value === null || value === undefined ? null : stringArray(value);
 }
 
-function safeJson(value: unknown, depth = 0): unknown {
+function safeJson(
+  value: unknown,
+  depth = 0,
+  allowedSensitiveKeys: ReadonlySet<string> = noAllowedSensitiveJsonKeys,
+): unknown {
+  if (
+    globalRadarJsonEntryContainsSensitiveContent(
+      null,
+      value,
+      allowedSensitiveKeys,
+    )
+  ) {
+    return null;
+  }
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "string") return value.slice(0, 2_048);
   if (depth >= 4 || typeof value !== "object") return null;
   if (Array.isArray(value)) {
-    return value.slice(0, 100).map((item) => safeJson(item, depth + 1));
+    return value
+      .slice(0, 100)
+      .filter(
+        (item) =>
+          !globalRadarJsonEntryContainsSensitiveContent(
+            null,
+            item,
+            allowedSensitiveKeys,
+          ),
+      )
+      .map((item) => safeJson(item, depth + 1, allowedSensitiveKeys));
   }
   const output: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) {
-    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (forbiddenSafeJsonKeys.has(normalizedKey)) continue;
-    output[key] = safeJson(item, depth + 1);
+    if (
+      globalRadarJsonEntryContainsSensitiveContent(
+        key,
+        item,
+        allowedSensitiveKeys,
+      )
+    ) {
+      continue;
+    }
+    output[key] = safeJson(item, depth + 1, allowedSensitiveKeys);
   }
   return output;
 }
@@ -270,32 +286,33 @@ function evidenceCitation(value: unknown) {
   };
 }
 
-function scoreEvidenceSource(value: unknown) {
-  const source = readRecord(value, "score evidence");
+function scoreComponentEvidenceAssociation(value: unknown) {
+  const source = readRecord(value, "score component evidence association");
+  if (!Array.isArray(source.evidence)) {
+    throw new Error("Invalid Global Radar score component evidence citations.");
+  }
   return {
-    id: readString(source.id, "score evidence id"),
-    sourceUrl: readString(source.sourceUrl, "score evidence URL"),
-    sourceName: readString(source.sourceName, "score evidence source name"),
-    contributorEntityId: nullableString(source.globalEntityId),
-    evidenceConfidence: readNumber(
-      source.evidenceConfidence,
-      "score evidence confidence",
-    ),
-    publishedAt: nullableIsoTimestamp(source.publishedAt),
-    observedAt: isoTimestamp(source.observedAt, "score evidence observation"),
-    isPrimarySource: readBoolean(
-      source.isPrimarySource,
-      "score evidence primary-source flag",
-    ),
-    isSyndicated: readBoolean(
-      source.isSyndicated,
-      "score evidence syndication flag",
-    ),
-    sourceFamily: readString(
-      source.sourceFamily,
-      "score evidence source family",
-    ),
-    supportedFieldPaths: stringArray(source.supportedFieldPaths),
+    component: readString(source.component, "score evidence component"),
+    value: readNumber(source.value, "score evidence value"),
+    basis: readString(source.basis, "score evidence basis"),
+    assessmentBasis: nullableString(source.assessmentBasis),
+    inputValue: nullableNumber(source.inputValue),
+    rationale: readString(source.rationale, "score evidence rationale"),
+    evidence: source.evidence.map((value) => {
+      const citation = readRecord(value, "score evidence citation");
+      return {
+        id: readString(citation.id, "score evidence citation id"),
+        sourceUrl: readString(
+          citation.sourceUrl,
+          "score evidence citation URL",
+        ),
+        sourceName: readString(
+          citation.sourceName,
+          "score evidence citation source name",
+        ),
+        matchedFieldPaths: stringArray(citation.matchedFieldPaths),
+      };
+    }),
   };
 }
 
@@ -670,28 +687,19 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
   ) {
     throw new Error("Invalid Global Radar signal class.");
   }
-  const scoreEvidence = evidence.items.map(scoreEvidenceSource);
-  const componentEvidence = deriveScoreComponentEvidenceAssociations({
-    signalClass,
-    signalType: readString(signal.signalType, "signal type"),
-    indiaRelevanceType: readString(
-      signal.indiaRelevanceType,
-      "India relevance type",
-    ),
-    momentumContributorEntityIds: associated.items.flatMap((item) =>
-      item.role === "contributor" ? [item.organisation.id] : [],
-    ),
-    freshnessEvidencePath:
-      signalClass === "direct_demand"
-        ? selectDirectDemandFreshnessEvidencePath({
-            announcedAt: nullableIsoTimestamp(timeline.announcedAt),
-            effectiveFrom: nullableIsoTimestamp(timeline.effectiveFrom),
-            evidence: scoreEvidence,
-          })
-        : undefined,
-    components: activeScore,
-    evidence: scoreEvidence,
-  });
+  const evidenceVersion = readString(
+    scoreRationale.evidenceVersion,
+    "score evidence version",
+  );
+  if (evidenceVersion !== GLOBAL_RADAR_SCORE_EVIDENCE_VERSION) {
+    throw new Error("Invalid Global Radar score evidence version.");
+  }
+  if (!Array.isArray(scoreRationale.componentEvidence)) {
+    throw new Error("Invalid Global Radar score component evidence.");
+  }
+  const componentEvidence = scoreRationale.componentEvidence.map(
+    scoreComponentEvidenceAssociation,
+  );
   const physicalRequirements = requirements.items.filter((item) => {
     const candidate = item as { kind: string };
     return ["physical_data", "robotics_hardware", "manufacturing"].includes(
@@ -799,7 +807,11 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
       constraints: stringArray(signal.indiaFitConstraints),
       unknowns: stringArray(signal.indiaFitUnknowns),
       confidence: readNumber(signal.indiaFitConfidence, "India fit confidence"),
-      regulatoryFacts: safeJson(signal.indiaRegulatoryFacts),
+      regulatoryFacts: safeJson(
+        signal.indiaRegulatoryFacts,
+        0,
+        industrialSecretsJsonKey,
+      ),
       logisticsFacts: safeJson(signal.indiaLogisticsFacts),
     },
     systems_context_explanation: {
@@ -852,6 +864,8 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
     compliance_flags: {
       sensitiveDataFlags: safeJson(
         readRecord(compliance.sensitiveDataFlags, "sensitive data flags"),
+        0,
+        industrialSecretsJsonKey,
       ),
       facts: safeJson(readRecord(compliance.facts, "compliance facts")),
     },
@@ -878,7 +892,7 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
         scoreRationale.policyVersion,
         "score policy version",
       ),
-      evidenceVersion: GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
+      evidenceVersion,
       components: safeJson(
         Object.fromEntries(
           Object.entries(activeScore).filter(([key]) => key !== "score"),

@@ -11,7 +11,10 @@ import {
   planGlobalRadarRun,
   type RadarPlan,
 } from "../app/domain/global-radar";
-import type { GlobalRadarConfig } from "../app/server/global-radar/config";
+import {
+  createGlobalRadarConfig,
+  type GlobalRadarConfig,
+} from "../app/server/global-radar/config";
 import {
   createGlobalRadarRunService,
   type GlobalRadarRunRepositoryPort,
@@ -29,7 +32,7 @@ const ADMIN = {
   email: " ADMIN@Example.com ",
 };
 
-const config: GlobalRadarConfig = Object.freeze({
+const config: GlobalRadarConfig = createGlobalRadarConfig({
   workerSecret: "radar-worker-secret-that-is-longer-than-32-characters",
   countries: ["United States", "China"],
   languages: ["en", "zh-CN"] as const,
@@ -554,6 +557,59 @@ describe("Global Radar run service", () => {
     );
   });
 
+  it("rejects exact worker credentials embedded in a completion before validation", async () => {
+    const validateBatch = vi.fn();
+    const repository = repositoryDouble();
+    const service = createService(repository, validateBatch);
+    const authorization = service.authorizeWorker(
+      `Bearer ${config.workerSecret}`,
+    );
+    const runId = "00000000-0000-4000-8000-000000000010";
+    const leaseToken = "opaque-claim-capability-that-must-remain-private";
+    const baseBatch = {
+      schemaVersion: "global-radar-batch-v1",
+      promptVersion: "codex-public-web-v1",
+      taxonomyVersion: "global-radar-v1",
+      runId,
+      planFingerprint: "b".repeat(64),
+      entities: [],
+      sourceErrors: [],
+      signals: [],
+    };
+
+    for (const credential of [leaseToken, config.workerSecret]) {
+      await expect(
+        service.complete(authorization, {
+          runId,
+          leaseToken,
+          batch: {
+            ...baseBatch,
+            executedQueries: [
+              {
+                fingerprint: "c".repeat(64),
+                query: `robotics supplier registration ${credential}`,
+                language: "en",
+                sourceCountry: "United States",
+                theme: "robotics_manufacturing",
+                signalIntent: "direct_demand",
+                sourceAdapter: "codex_public_web",
+                recencyDays: 30,
+                ordinal: 0,
+                executedAt: "2026-07-31T04:00:00.000Z",
+                resultsExamined: 0,
+                error: null,
+              },
+            ],
+          },
+        }),
+      ).resolves.toEqual({ outcome: "invalid" });
+    }
+
+    expect(validateBatch).not.toHaveBeenCalled();
+    expect(repository.lookupCompletionReplay).not.toHaveBeenCalled();
+    expect(repository.completeRun).not.toHaveBeenCalled();
+  });
+
   it("projects a fresh completion and keeps exact terminal replay write-free", async () => {
     const validated: GlobalRadarValidatedBatchPort = {
       runId: "00000000-0000-4000-8000-000000000010",
@@ -957,6 +1013,132 @@ describe("Global Radar run service", () => {
     ).resolves.toEqual({ outcome: "invalid" });
   });
 
+  it("rejects exact worker credentials in fail and abandon diagnostics", async () => {
+    const failRun = vi.fn(async () => ({
+      outcome: "completed" as const,
+      run: safeRun({ status: "failed", completedAt: NOW }),
+    }));
+    const abandonRun = vi.fn(async () => ({
+      outcome: "completed" as const,
+      run: safeRun({ status: "failed", completedAt: NOW }),
+    }));
+    const repository = repositoryDouble({ failRun, abandonRun });
+    const service = createService(repository);
+    const authorization = service.authorizeWorker(
+      `Bearer ${config.workerSecret}`,
+    );
+    const leaseToken = "opaque-claim-capability-that-must-remain-private";
+    const runId = "00000000-0000-4000-8000-000000000010";
+
+    for (const credential of [leaseToken, config.workerSecret]) {
+      await expect(
+        service.fail(authorization, {
+          runId,
+          leaseToken,
+          reason: `The adapter stopped after receiving ${credential}.`,
+        }),
+      ).resolves.toEqual({ outcome: "invalid" });
+    }
+    await expect(
+      service.abandon(authorization, {
+        runId,
+        reason: `The claim could not be recovered after ${config.workerSecret}.`,
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+
+    expect(failRun).not.toHaveBeenCalled();
+    expect(abandonRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects the Discovery credential before complete, fail, or abandon reaches a repository", async () => {
+    const discoverySecret =
+      "discovery-worker-secret-that-must-never-reach-a-port";
+    const guardedConfig = createGlobalRadarConfig(config, [discoverySecret]);
+    const repository = repositoryDouble();
+    const validateBatch = vi.fn();
+    const service = createService(repository, validateBatch, guardedConfig);
+    const authorization = service.authorizeWorker(
+      `Bearer ${guardedConfig.workerSecret}`,
+    );
+    const runId = "00000000-0000-4000-8000-000000000010";
+    const leaseToken = "opaque-claim-capability-that-must-remain-private";
+    const batch = {
+      schemaVersion: "global-radar-batch-v1",
+      promptVersion: "codex-public-web-v1",
+      taxonomyVersion: "global-radar-v1",
+      runId,
+      planFingerprint: "b".repeat(64),
+      executedQueries: [],
+      entities: [
+        {
+          entityRef: "entity-private",
+          canonicalName: "Private test entity",
+          websiteUrl: "https://example.com",
+          linkedinOrganizationUrl: null,
+          stablePublicIdentifiers: [],
+          canonicalCorporateGroupId: null,
+          headquartersCountry: "United States",
+          headquartersCity: null,
+          operatingCountries: ["United States"],
+          organisationType: "company",
+          sector: "robotics",
+          shortDescription: `Public summary ${discoverySecret}`,
+          rawMetadata: {},
+        },
+      ],
+      signals: [],
+      sourceErrors: [],
+    };
+
+    await expect(
+      service.complete(authorization, { runId, leaseToken, batch }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    await expect(
+      service.fail(authorization, {
+        runId,
+        leaseToken,
+        reason: `Adapter stopped after ${discoverySecret}.`,
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    await expect(
+      service.abandon(authorization, {
+        runId,
+        reason: `Claim stopped after ${discoverySecret}.`,
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+
+    expect(validateBatch).not.toHaveBeenCalled();
+    expect(repository.lookupCompletionReplay).not.toHaveBeenCalled();
+    expect(repository.completeRun).not.toHaveBeenCalled();
+    expect(repository.failRun).not.toHaveBeenCalled();
+    expect(repository.abandonRun).not.toHaveBeenCalled();
+  });
+
+  it("never projects a Discovery credential returned by a repository", async () => {
+    const discoverySecret =
+      "discovery-worker-secret-that-must-never-be-public";
+    const guardedConfig = createGlobalRadarConfig(config, [discoverySecret]);
+    const repository = repositoryDouble({
+      failRun: vi.fn(async () => ({
+        outcome: "completed" as const,
+        run: safeRun({ sourceCountries: [discoverySecret] }),
+      })),
+    });
+    const service = createService(repository, vi.fn(), guardedConfig);
+    const authorization = service.authorizeWorker(
+      `Bearer ${guardedConfig.workerSecret}`,
+    );
+
+    const result = await service.fail(authorization, {
+      runId: "00000000-0000-4000-8000-000000000010",
+      leaseToken: "opaque-claim-capability-that-must-remain-private",
+      reason: "The public source adapter stopped.",
+    });
+
+    expect(result).toEqual({ outcome: "conflict", reason: "invalid_input" });
+    expect(JSON.stringify(result)).not.toContain(discoverySecret);
+  });
+
   it("queues only a UUID-keyed manual plan for an authorized administrator", async () => {
     const repository = repositoryDouble({
       queueRun: vi.fn(async (input) => ({
@@ -1006,8 +1188,10 @@ describe("Global Radar run service", () => {
     ).resolves.toEqual({ outcome: "invalid" });
   });
 
-  it("composes injected ports and keeps Cloudflare applications request-scoped", () => {
+  it("composes injected ports, propagates known secrets, and keeps Cloudflare applications request-scoped", async () => {
     const runRepository = repositoryDouble();
+    const appendNote = vi.fn();
+    const reverse = vi.fn();
     const application = createGlobalRadarApplication({
       config,
       adminEmails: ["admin@example.com"],
@@ -1024,7 +1208,7 @@ describe("Global Radar run service", () => {
         editSignalClassification: vi.fn(),
         editDirectDemandExpiry: vi.fn(),
         appendEvidence: vi.fn(),
-        appendNote: vi.fn(),
+        appendNote,
         mergeSignals: vi.fn(),
         upsertWatchlist: vi.fn(),
         qualifyEntity: vi.fn(),
@@ -1033,7 +1217,7 @@ describe("Global Radar run service", () => {
         lookupPromotionReplay: vi.fn(),
         loadContext: vi.fn(),
         promote: vi.fn(),
-        reverse: vi.fn(),
+        reverse,
       },
       validateBatch: vi.fn(),
       workerOutputSchema: {
@@ -1053,6 +1237,30 @@ describe("Global Radar run service", () => {
     });
     expect(shouldCacheGlobalRadarApplication({})).toBe(true);
     expect(shouldCacheGlobalRadarApplication({ Cloudflare: {} })).toBe(false);
+
+    await expect(
+      application.admin.appendNote(
+        ADMIN,
+        "00000000-0000-4000-8000-000000000010",
+        {
+          expectedRevision: 0,
+          idempotencyKey: "00000000-0000-4000-8000-000000000012",
+          reason: "Administrator reviewed public evidence.",
+          body: `Administrator note ${config.workerSecret}`,
+        },
+      ),
+    ).resolves.toEqual({ outcome: "invalid" });
+    await expect(
+      application.promotion.reversePromotion(ADMIN, {
+        entityId: "00000000-0000-4000-8000-000000000013",
+        expectedEntityRevision: 1,
+        expectedPrimarySignalRevision: 1,
+        idempotencyKey: "00000000-0000-4000-8000-000000000014",
+        reason: `Reverse after review ${config.workerSecret}`,
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    expect(appendNote).not.toHaveBeenCalled();
+    expect(reverse).not.toHaveBeenCalled();
   });
 
   it("builds the production dependency graph without route-owned queries", () => {

@@ -106,21 +106,16 @@ describe("Global Radar administrator classification contracts", () => {
     ).toBe(true);
   });
 
-  it("recomputes class-local scores for every target class", () => {
+  it("canonicalizes only subjective assessments for every target class", () => {
     const direct = canonicalizeGlobalRadarAdminClassification(
       {
         signalClass: "direct_demand",
         signalType: "procurement",
         demandDomain: "robot_learning_and_manipulation",
-        components: {
-          explicitness: 90,
-          evidenceConfidence: 85,
-          freshness: 80,
+        assessments: {
           actionability: 80,
-          indiaFit: 75,
           commercialPotential: 75,
           repeatability: 70,
-          responseAccessibility: 70,
           strategicLearning: 70,
           complianceComplexity: 20,
         },
@@ -137,13 +132,10 @@ describe("Global Radar administrator classification contracts", () => {
         signalClass: "demand_precursor",
         signalType: "funding",
         demandDomain: "robot_learning_and_manipulation",
-        components: {
-          evidenceConfidence: 80,
+        assessments: {
           proximityToExternalDemand: 70,
           fundingDeploymentMomentum: 80,
           likelyDataHardwareIntensity: 70,
-          indiaFit: 80,
-          estimatedTimeHorizon: 80,
           strategicRelevance: 75,
         },
       },
@@ -154,7 +146,7 @@ describe("Global Radar administrator classification contracts", () => {
         signalClass: "ecosystem_momentum",
         signalType: "ecosystem_direction",
         demandDomain: "robot_learning_and_manipulation",
-        components: {
+        assessments: {
           taxonomyConsistency: 85,
           evidenceQuality: 80,
         },
@@ -162,34 +154,200 @@ describe("Global Radar administrator classification contracts", () => {
       now,
     );
 
-    expect(direct).toMatchObject({
+    expect(direct).toEqual({
       signalClass: "direct_demand",
-      score: expect.any(Number),
-      scoreCoverage: 100,
+      signalType: "procurement",
+      demandDomain: "robot_learning_and_manipulation",
+      primaryEntityId: null,
+      assessments: {
+        actionability: 80,
+        commercialPotential: 75,
+        repeatability: 70,
+        strategicLearning: 70,
+        complianceComplexity: 20,
+      },
+      expiresAt: new Date("2026-09-30T00:00:00.000Z"),
+      evergreen: false,
+      reobserveBy: null,
     });
-    expect(precursor).toMatchObject({
+    expect(precursor).toEqual({
       signalClass: "demand_precursor",
-      score: expect.any(Number),
-      scoreCoverage: 100,
+      signalType: "funding",
+      demandDomain: "robot_learning_and_manipulation",
+      primaryEntityId: null,
+      assessments: {
+        proximityToExternalDemand: 70,
+        fundingDeploymentMomentum: 80,
+        likelyDataHardwareIntensity: 70,
+        strategicRelevance: 75,
+      },
     });
-    expect(momentum).toMatchObject({
+    expect(momentum).toEqual({
       signalClass: "ecosystem_momentum",
-      components: { taxonomyConsistency: 85, evidenceQuality: 80 },
+      signalType: "ecosystem_direction",
+      demandDomain: "robot_learning_and_manipulation",
+      assessments: { taxonomyConsistency: 85, evidenceQuality: 80 },
     });
+  });
+
+  it("accepts nullable direct and precursor subjective assessments", () => {
+    expect(
+      canonicalizeGlobalRadarAdminClassification(
+        {
+          signalClass: "direct_demand",
+          signalType: "procurement",
+          demandDomain: "robot_learning_and_manipulation",
+          assessments: {
+            actionability: null,
+            commercialPotential: null,
+            repeatability: null,
+            strategicLearning: null,
+            complianceComplexity: null,
+          },
+          activity: {
+            evergreen: false,
+            expiresAt: null,
+            reobserveBy: null,
+          },
+        },
+        now,
+      ),
+    ).toEqual({
+      signalClass: "direct_demand",
+      signalType: "procurement",
+      demandDomain: "robot_learning_and_manipulation",
+      primaryEntityId: null,
+      assessments: {
+        actionability: null,
+        commercialPotential: null,
+        repeatability: null,
+        strategicLearning: null,
+        complianceComplexity: null,
+      },
+      expiresAt: null,
+      evergreen: false,
+      reobserveBy: null,
+    });
+    expect(
+      canonicalizeGlobalRadarAdminClassification(
+        {
+          signalClass: "demand_precursor",
+          signalType: "funding",
+          demandDomain: "robot_learning_and_manipulation",
+          assessments: {
+            proximityToExternalDemand: null,
+            fundingDeploymentMomentum: null,
+            likelyDataHardwareIntensity: null,
+            strategicRelevance: null,
+          },
+        },
+        now,
+      ),
+    ).toEqual({
+      signalClass: "demand_precursor",
+      signalType: "funding",
+      demandDomain: "robot_learning_and_manipulation",
+      primaryEntityId: null,
+      assessments: {
+        proximityToExternalDemand: null,
+        fundingDeploymentMomentum: null,
+        likelyDataHardwareIntensity: null,
+        strategicRelevance: null,
+      },
+    });
+  });
+
+  it.each([
+    ["direct_demand", "explicitness"],
+    ["direct_demand", "evidenceConfidence"],
+    ["direct_demand", "freshness"],
+    ["direct_demand", "indiaFit"],
+    ["direct_demand", "responseAccessibility"],
+    ["demand_precursor", "evidenceConfidence"],
+    ["demand_precursor", "indiaFit"],
+    ["demand_precursor", "estimatedTimeHorizon"],
+    ["ecosystem_momentum", "independentEntityCount"],
+    ["ecosystem_momentum", "primarySourceCount"],
+    ["ecosystem_momentum", "sourceFamilyCount"],
+    ["ecosystem_momentum", "volume7Days"],
+    ["ecosystem_momentum", "volume30Days"],
+    ["ecosystem_momentum", "volume90Days"],
+  ] as const)(
+    "rejects the forbidden %s assessment key %s independently",
+    (signalClass, forbiddenKey) => {
+      const classification = signalClass === "direct_demand"
+        ? {
+            signalClass,
+            signalType: "procurement",
+            demandDomain: "robot_learning_and_manipulation",
+            assessments: {
+              actionability: 80,
+              commercialPotential: 75,
+              repeatability: 70,
+              strategicLearning: 70,
+              complianceComplexity: 20,
+              [forbiddenKey]: 50,
+            },
+            activity: {
+              evergreen: false,
+              expiresAt: "2026-09-30T00:00:00.000Z",
+              reobserveBy: null,
+            },
+          }
+        : signalClass === "demand_precursor"
+          ? {
+              signalClass,
+              signalType: "funding",
+              demandDomain: "robot_learning_and_manipulation",
+              assessments: {
+                proximityToExternalDemand: 70,
+                fundingDeploymentMomentum: 80,
+                likelyDataHardwareIntensity: 70,
+                strategicRelevance: 75,
+                [forbiddenKey]: 50,
+              },
+            }
+          : {
+              signalClass,
+              signalType: "ecosystem_direction",
+              demandDomain: "robot_learning_and_manipulation",
+              assessments: {
+                taxonomyConsistency: 85,
+                evidenceQuality: 80,
+                [forbiddenKey]: 50,
+              },
+            };
+
+      expect(
+        canonicalizeGlobalRadarAdminClassification(classification as never, now),
+      ).toBeNull();
+    },
+  );
+
+  it("rejects the legacy components classification envelope", () => {
+    expect(
+      canonicalizeGlobalRadarAdminClassification(
+        {
+          signalClass: "ecosystem_momentum",
+          signalType: "ecosystem_direction",
+          demandDomain: "robot_learning_and_manipulation",
+          components: { taxonomyConsistency: 85, evidenceQuality: 80 },
+        } as never,
+        now,
+      ),
+    ).toBeNull();
+  });
+
+  it("preserves exact target-class subtype validation", () => {
     expect(canonicalizeGlobalRadarAdminClassification(
       {
         signalClass: "direct_demand",
         signalType: "funding",
         demandDomain: "robot_learning_and_manipulation",
-        components: {
-          explicitness: 90,
-          evidenceConfidence: 85,
-          freshness: 80,
+        assessments: {
           actionability: 80,
-          indiaFit: 75,
           commercialPotential: 75,
           repeatability: 70,
-          responseAccessibility: 70,
           strategicLearning: 70,
           complianceComplexity: 20,
         },
@@ -206,13 +364,10 @@ describe("Global Radar administrator classification contracts", () => {
         signalClass: "demand_precursor",
         signalType: "supplier_registration",
         demandDomain: "robot_learning_and_manipulation",
-        components: {
-          evidenceConfidence: 80,
+        assessments: {
           proximityToExternalDemand: 70,
           fundingDeploymentMomentum: 80,
           likelyDataHardwareIntensity: 70,
-          indiaFit: 80,
-          estimatedTimeHorizon: 80,
           strategicRelevance: 75,
         },
       },
@@ -223,7 +378,7 @@ describe("Global Radar administrator classification contracts", () => {
         signalClass: "ecosystem_momentum",
         signalType: "platform_launch",
         demandDomain: "robot_learning_and_manipulation",
-        components: { taxonomyConsistency: 85, evidenceQuality: 80 },
+        assessments: { taxonomyConsistency: 85, evidenceQuality: 80 },
       },
       now,
     )).toBeNull();
@@ -381,6 +536,8 @@ describe("Global Radar administrator evidence contracts", () => {
       canonicalizeGlobalRadarAdminEvidence(
         {
           ...evidence(),
+          claim:
+            "The organisation operates manufacturing facilities in India.",
           supportsDirectDemand: false,
           supportsIndiaRelevance: false,
           supportedFieldPaths: [
@@ -400,6 +557,22 @@ describe("Global Radar administrator evidence contracts", () => {
           ...evidence(),
           supportsDirectDemand: true,
           supportedFieldPaths: ["directDemandAsk.not_a_real_type"],
+        },
+        now,
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects a negated claim mislabeled as a positive India relationship", () => {
+    expect(
+      canonicalizeGlobalRadarAdminEvidence(
+        {
+          ...evidence(),
+          claim:
+            "The organisation does not operate manufacturing facilities in India.",
+          supportedFieldPaths: [
+            "indiaRelevance.existing_India_presence.manufacturing",
+          ],
         },
         now,
       ),

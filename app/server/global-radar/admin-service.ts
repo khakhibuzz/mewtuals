@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 import {
+  containsKnownGlobalRadarSecret,
   globalRadarDemandFamilyLookup,
+  globalRadarAuthoredAuditTextSchema,
   globalRadarLeafIdentifierLookup,
   globalRadarThemes,
   indiaRelevanceTypeLookup,
@@ -21,7 +23,7 @@ import type { GlobalRadarAdminActor } from "./run-service";
 
 const uuidSchema = z.string().uuid();
 const idempotencyKeySchema = z.string().uuid();
-const reasonSchema = z.string().trim().min(1).max(2_000);
+const reasonSchema = globalRadarAuthoredAuditTextSchema;
 const recordSchema = z.record(z.string(), z.unknown());
 
 const envelopeShape = {
@@ -66,7 +68,7 @@ const evidenceSchema = z.strictObject({
 
 const noteSchema = z.strictObject({
   ...envelopeShape,
-  body: z.string().trim().min(1).max(2_000),
+  body: globalRadarAuthoredAuditTextSchema,
 });
 
 const mergeSchema = z.strictObject({
@@ -118,6 +120,8 @@ export type GlobalRadarAdminRepositoryPort = Readonly<{
 export type GlobalRadarAdminServiceDependencies = Readonly<{
   repository: GlobalRadarAdminRepositoryPort;
   adminEmails: readonly string[];
+  knownSecrets?: readonly (string | null | undefined)[];
+  containsKnownSecret?(value: unknown): boolean;
   queueManualRun(input: {
     actor: GlobalRadarAdminActor;
     input: unknown;
@@ -421,6 +425,18 @@ function resultRecord(value: unknown): RepositoryResult {
     : { outcome: "conflict", reason: "invalid_input" };
 }
 
+const SCORE_PROVENANCE_INVALID_REASON = "score_provenance_invalid";
+
+function hasScoreProvenanceConflict(...values: readonly unknown[]): boolean {
+  return values.some((value) => {
+    const result = resultRecord(value);
+    return (
+      result.outcome === "conflict" &&
+      result.reason === SCORE_PROVENANCE_INVALID_REASON
+    );
+  });
+}
+
 const safeMutationReasons = new Set([
   "already_merged",
   "classification_requirements_not_met",
@@ -450,6 +466,16 @@ export function createGlobalRadarAdminService(
 
   function administrator(actor: GlobalRadarAdminActor | null | undefined) {
     return normalizeActor(actor, adminEmails);
+  }
+
+  function containsKnownSecret(value: unknown): boolean {
+    return (
+      dependencies.containsKnownSecret?.(value) === true ||
+      containsKnownGlobalRadarSecret(
+        value,
+        dependencies.knownSecrets ?? [],
+      )
+    );
   }
 
   async function getSignalDetail(
@@ -507,6 +533,19 @@ export function createGlobalRadarAdminService(
           })
         : Promise.resolve(null),
     ]);
+    if (
+      hasScoreProvenanceConflict(
+        list,
+        classMetrics,
+        overview,
+        unfilteredClassMetrics,
+      )
+    ) {
+      return {
+        outcome: "conflict" as const,
+        reason: SCORE_PROVENANCE_INVALID_REASON,
+      };
+    }
     if (
       list.outcome !== "listed" ||
       classMetrics.outcome !== "listed" ||
@@ -579,6 +618,12 @@ export function createGlobalRadarAdminService(
     const page = normalizedPage(source.page ?? 1);
     if (!page) return { outcome: "invalid" as const };
     const result = await dependencies.repository.listWatchlist({ page });
+    if (hasScoreProvenanceConflict(result)) {
+      return {
+        outcome: "conflict" as const,
+        reason: SCORE_PROVENANCE_INVALID_REASON,
+      };
+    }
     if (result.outcome !== "listed" || !Array.isArray(result.entries)) {
       return { outcome: "invalid" as const };
     }
@@ -591,6 +636,12 @@ export function createGlobalRadarAdminService(
       globalEntityIds: ids,
       now: now(),
     });
+    if (hasScoreProvenanceConflict(enrichment)) {
+      return {
+        outcome: "conflict" as const,
+        reason: SCORE_PROVENANCE_INVALID_REASON,
+      };
+    }
     if (enrichment.outcome !== "listed" || !Array.isArray(enrichment.items)) {
       return { outcome: "invalid" as const };
     }
@@ -786,7 +837,13 @@ export function createGlobalRadarAdminService(
     if (!admin) return { outcome: "forbidden" as const };
     const id = uuidSchema.safeParse(signalId);
     const parsed = reviewSchema.safeParse(value);
-    if (!id.success || !parsed.success) return { outcome: "invalid" as const };
+    if (
+      !id.success ||
+      !parsed.success ||
+      containsKnownSecret(parsed.data)
+    ) {
+      return { outcome: "invalid" as const };
+    }
     return signalMutationResult(
       await dependencies.repository.reviewSignal({
         signalId: id.data,
@@ -805,7 +862,13 @@ export function createGlobalRadarAdminService(
     if (!admin) return { outcome: "forbidden" as const };
     const id = uuidSchema.safeParse(signalId);
     const parsed = classificationSchema.safeParse(value);
-    if (!id.success || !parsed.success) return { outcome: "invalid" as const };
+    if (
+      !id.success ||
+      !parsed.success ||
+      containsKnownSecret(parsed.data)
+    ) {
+      return { outcome: "invalid" as const };
+    }
     return signalMutationResult(
       await dependencies.repository.editSignalClassification({
         signalId: id.data,
@@ -824,7 +887,13 @@ export function createGlobalRadarAdminService(
     if (!admin) return { outcome: "forbidden" as const };
     const id = uuidSchema.safeParse(signalId);
     const parsed = expirySchema.safeParse(value);
-    if (!id.success || !parsed.success) return { outcome: "invalid" as const };
+    if (
+      !id.success ||
+      !parsed.success ||
+      containsKnownSecret(parsed.data)
+    ) {
+      return { outcome: "invalid" as const };
+    }
     return signalMutationResult(
       await dependencies.repository.editDirectDemandExpiry({
         signalId: id.data,
@@ -843,7 +912,13 @@ export function createGlobalRadarAdminService(
     if (!admin) return { outcome: "forbidden" as const };
     const id = uuidSchema.safeParse(signalId);
     const parsed = evidenceSchema.safeParse(value);
-    if (!id.success || !parsed.success) return { outcome: "invalid" as const };
+    if (
+      !id.success ||
+      !parsed.success ||
+      containsKnownSecret(parsed.data)
+    ) {
+      return { outcome: "invalid" as const };
+    }
     return appendMutationResult(
       await dependencies.repository.appendEvidence({
         signalId: id.data,
@@ -862,7 +937,13 @@ export function createGlobalRadarAdminService(
     if (!admin) return { outcome: "forbidden" as const };
     const id = uuidSchema.safeParse(signalId);
     const parsed = noteSchema.safeParse(value);
-    if (!id.success || !parsed.success) return { outcome: "invalid" as const };
+    if (
+      !id.success ||
+      !parsed.success ||
+      containsKnownSecret(parsed.data)
+    ) {
+      return { outcome: "invalid" as const };
+    }
     return appendMutationResult(
       await dependencies.repository.appendNote({
         signalId: id.data,
@@ -879,7 +960,9 @@ export function createGlobalRadarAdminService(
     const admin = administrator(actor);
     if (!admin) return { outcome: "forbidden" as const };
     const parsed = mergeSchema.safeParse(value);
-    if (!parsed.success) return { outcome: "invalid" as const };
+    if (!parsed.success || containsKnownSecret(parsed.data)) {
+      return { outcome: "invalid" as const };
+    }
     return mergeMutationResult(
       await dependencies.repository.mergeSignals({
         ...parsed.data,
@@ -896,7 +979,9 @@ export function createGlobalRadarAdminService(
     const admin = administrator(actor);
     if (!admin) return { outcome: "forbidden" as const };
     const parsed = watchlistSchema.safeParse(value);
-    if (!parsed.success) return { outcome: "invalid" as const };
+    if (!parsed.success || containsKnownSecret(parsed.data)) {
+      return { outcome: "invalid" as const };
+    }
     return watchlistMutationResult(
       await dependencies.repository.upsertWatchlist({
         entity: parsed.data.entity,
@@ -924,7 +1009,8 @@ export function createGlobalRadarAdminService(
     if (
       !id.success ||
       !parsed.success ||
-      parsed.data.entityId !== id.data
+      parsed.data.entityId !== id.data ||
+      containsKnownSecret(parsed.data)
     ) {
       return { outcome: "invalid" as const };
     }
@@ -943,6 +1029,7 @@ export function createGlobalRadarAdminService(
   ) {
     const admin = administrator(actor);
     if (!admin) return { outcome: "forbidden" as const };
+    if (containsKnownSecret(input)) return { outcome: "invalid" as const };
     return operation({ actor: admin, input });
   }
 

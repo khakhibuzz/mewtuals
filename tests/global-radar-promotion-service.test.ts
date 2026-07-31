@@ -8,6 +8,7 @@ import {
 } from "../app/server/global-radar/promotion-service";
 
 const NOW = new Date("2026-07-31T12:00:00.000Z");
+const KNOWN_WORKER_SECRET = "opaque-radar-capability-value-1234567890";
 const ACTOR = {
   userId: "00000000-0000-4000-8000-000000000001",
   email: " ADMIN@Example.com ",
@@ -16,6 +17,7 @@ const ENTITY_ID = "00000000-0000-4000-8000-000000000002";
 const PRIMARY_ID = "00000000-0000-4000-8000-000000000003";
 const SUPPORTING_A = "00000000-0000-4000-8000-000000000004";
 const SUPPORTING_B = "00000000-0000-4000-8000-000000000005";
+const SUPPORTING_C = "00000000-0000-4000-8000-000000000010";
 const IDEMPOTENCY_KEY = "00000000-0000-4000-8000-000000000006";
 
 function qualifyingSignal(
@@ -31,6 +33,7 @@ function qualifyingSignal(
     scoreVersion: "global-radar-score-v1",
     hardGatesPassed: true,
     indiaRelevanceType: "globally_open",
+    hasIndiaEligibilityEvidence: true,
     observedAt: new Date("2026-07-01T12:00:00.000Z"),
     ...overrides,
   };
@@ -76,12 +79,21 @@ function storedContext() {
     evidence: [
       {
         signalId: PRIMARY_ID,
+        globalEntityId: ENTITY_ID,
         canonicalSourceUrl: "https://official.example/evidence",
+        evidenceClaim:
+          "The organisation operates manufacturing facilities in India.",
         isPrimarySource: true,
         isSyndicated: false,
         supportsIndiaRelevance: true,
         supportedFieldPaths: [
           "indiaRelevance.existing_India_presence.manufacturing",
+        ],
+        selectionRoles: [
+          "active_score_citation",
+          "qualified_india_direct_demand",
+          "documented_indian_relationship",
+          "exceptional_strategic_relevance",
         ],
       },
     ],
@@ -115,12 +127,14 @@ function context(
         isPrimarySource: true,
         isSyndicated: false,
         supportsDocumentedIndianRelationship: true,
+        supportsExceptionalStrategicRelevance: true,
       },
       {
         sourceKey: "official.example/b",
         isPrimarySource: true,
         isSyndicated: false,
         supportsDocumentedIndianRelationship: false,
+        supportsExceptionalStrategicRelevance: true,
       },
     ],
     promotionSupportingSignalIds: [PRIMARY_ID, SUPPORTING_A, SUPPORTING_B],
@@ -167,6 +181,7 @@ function service(repository: GlobalRadarPromotionRepositoryPort) {
   return createGlobalRadarPromotionService({
     repository,
     adminEmails: ["admin@example.com"],
+    knownSecrets: [KNOWN_WORKER_SECRET],
     thresholds: {
       direct_demand: 70,
       demand_precursor: 65,
@@ -279,6 +294,37 @@ describe("Global Radar promotion service", () => {
     ).toEqual({ eligible: false, reason: "insufficient_independent_primary_sources" });
   });
 
+  it("rejects a repeated selection when any selected signal is ineligible", () => {
+    expect(
+      evaluateGlobalRadarPromotionEligibility({
+        eligibilityPath: "repeated_india_compatible_signals",
+        context: context({
+          supportingSignals: [
+            qualifyingSignal(SUPPORTING_A),
+            qualifyingSignal(SUPPORTING_B),
+            qualifyingSignal(SUPPORTING_C, {
+              indiaRelevanceType: "no_current_India_fit",
+              hasIndiaEligibilityEvidence: false,
+            }),
+          ],
+          promotionSupportingSignalIds: [
+            PRIMARY_ID,
+            SUPPORTING_A,
+            SUPPORTING_B,
+            SUPPORTING_C,
+          ],
+        }),
+        thresholds: {
+          direct_demand: 70,
+          demand_precursor: 65,
+          ecosystem_momentum: 70,
+        },
+        scoreVersion: "global-radar-score-v1",
+        now: NOW,
+      }),
+    ).toEqual({ eligible: false, reason: "insufficient_repeated_signals" });
+  });
+
   it("authorizes, checks revisions, and passes only server-evaluated promotion facts", async () => {
     const repository = repositoryDouble({
       loadContext: vi.fn(async () => ({
@@ -305,6 +351,7 @@ describe("Global Radar promotion service", () => {
       globalEntityId: ENTITY_ID,
       primarySignalId: PRIMARY_ID,
       supportingSignalIds: [SUPPORTING_A, SUPPORTING_B],
+      eligibilityPath: "repeated_india_compatible_signals",
     });
     expect(repository.promote).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -335,6 +382,156 @@ describe("Global Radar promotion service", () => {
         score: 100,
       }),
     ).resolves.toEqual({ outcome: "invalid" });
+  });
+
+  it.each([
+    "qualified_india_direct_demand",
+    "documented_indian_relationship",
+    "exceptional_strategic_relevance",
+  ] as const)(
+    "rejects extra supporters before repository access for %s",
+    async (eligibilityPath) => {
+      const repository = repositoryDouble({
+        loadContext: vi.fn(async () => ({
+          outcome: "found",
+          context: context(),
+        })),
+        promote: vi.fn(async () => ({
+          outcome: "promoted",
+          promotion: promotionReadModel(),
+        })),
+      });
+
+      await expect(
+        service(repository).promote(ACTOR, {
+          ...promotionInput(eligibilityPath),
+          supportingSignalIds: [SUPPORTING_A],
+          expectedSupportingSignalRevisions: [
+            { signalId: SUPPORTING_A, revision: 2 },
+          ],
+        }),
+      ).resolves.toEqual({ outcome: "invalid" });
+      expect(repository.lookupPromotionReplay).not.toHaveBeenCalled();
+      expect(repository.loadContext).not.toHaveBeenCalled();
+      expect(repository.promote).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires at least two additional exactly revisioned signals for the repeated path", async () => {
+    const repository = repositoryDouble({
+      loadContext: vi.fn(async () => ({
+        outcome: "found",
+        context: context(),
+      })),
+      promote: vi.fn(async () => ({
+        outcome: "promoted",
+        promotion: promotionReadModel(),
+      })),
+    });
+
+    await expect(
+      service(repository).promote(ACTOR, {
+        ...promotionInput("repeated_india_compatible_signals"),
+        supportingSignalIds: [SUPPORTING_A],
+        expectedSupportingSignalRevisions: [
+          { signalId: SUPPORTING_A, revision: 2 },
+        ],
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    expect(repository.lookupPromotionReplay).not.toHaveBeenCalled();
+    expect(repository.loadContext).not.toHaveBeenCalled();
+    expect(repository.promote).not.toHaveBeenCalled();
+  });
+
+  it("rejects sensitive promotion rationale while allowing authored public prose", async () => {
+    const repository = repositoryDouble({
+      loadContext: vi.fn(async () => ({
+        outcome: "found",
+        context: context(),
+      })),
+      promote: vi.fn(async () => ({
+        outcome: "promoted",
+        promotion: promotionReadModel(),
+      })),
+    });
+    const promotionService = service(repository);
+    const base = promotionInput("qualified_india_direct_demand");
+
+    await expect(
+      promotionService.promote(ACTOR, {
+        ...base,
+        reason: "worker_secret=private-radar-worker-secret",
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    await expect(
+      promotionService.promote(ACTOR, {
+        ...base,
+        rationale: "Claim path: /private/tmp/radar/claim.json",
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    expect(repository.lookupPromotionReplay).not.toHaveBeenCalled();
+    expect(repository.promote).not.toHaveBeenCalled();
+
+    const publicRationale = Array.from(
+      { length: 100 },
+      (_, index) => `public-evidence-${index}`,
+    ).join(" ");
+    await expect(
+      promotionService.promote(ACTOR, {
+        ...base,
+        rationale: publicRationale,
+      }),
+    ).resolves.toMatchObject({ outcome: "promoted" });
+    expect(repository.promote).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an exact configured credential in promotion and reversal text", async () => {
+    const repository = repositoryDouble({
+      loadContext: vi.fn(async () => ({
+        outcome: "found",
+        context: context(),
+      })),
+      promote: vi.fn(async () => ({
+        outcome: "promoted",
+        promotion: promotionReadModel(),
+      })),
+      reverse: vi.fn(async () => ({
+        outcome: "reversed",
+        promotion: promotionReadModel(),
+      })),
+    });
+    const promotionService = service(repository);
+    const base = promotionInput("qualified_india_direct_demand");
+
+    const promotionResults = await Promise.all([
+      promotionService.promote(ACTOR, {
+        ...base,
+        reason: `Administrator review ${KNOWN_WORKER_SECRET}`,
+      }),
+      promotionService.promote(ACTOR, {
+        ...base,
+        rationale: `Public rationale ${KNOWN_WORKER_SECRET}`,
+      }),
+    ]);
+    const reversalResult = await promotionService.reversePromotion(ACTOR, {
+      entityId: ENTITY_ID,
+      expectedEntityRevision: 4,
+      expectedPrimarySignalRevision: 3,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      reason: `Reverse after review ${KNOWN_WORKER_SECRET}`,
+    });
+
+    expect(promotionResults).toEqual([
+      { outcome: "invalid" },
+      { outcome: "invalid" },
+    ]);
+    expect(reversalResult).toEqual({ outcome: "invalid" });
+    expect(
+      JSON.stringify([...promotionResults, reversalResult]),
+    ).not.toContain(KNOWN_WORKER_SECRET);
+    expect(repository.lookupPromotionReplay).not.toHaveBeenCalled();
+    expect(repository.promote).not.toHaveBeenCalled();
+    expect(repository.reverse).not.toHaveBeenCalled();
   });
 
   it("adapts the Task 11 stored context and recomputes hard gates", async () => {
@@ -400,6 +597,7 @@ describe("Global Radar promotion service", () => {
                 "indiaRelevance.India_expansion.manufacturing",
                 "indiaRelevance.explicit_India.suppliers",
               ],
+              selectionRoles: ["active_score_citation"],
             },
           ],
         },

@@ -2,14 +2,15 @@ import { z } from "zod";
 
 import {
   directDemandAskTypes,
-  directDemandComponentsSchema,
+  globalRadarAuthoredAuditTextSchema,
   globalRadarDemandFamilies,
+  globalRadarJsonContainsSensitiveContent,
+  globalRadarOperationalDiagnosticSchema,
   globalRadarThemes,
   isoTimestampSchema,
   linkedinOrganizationUrlSchema,
   persistableRadarEvidenceSchema,
   precursorDevelopmentTypes,
-  precursorComponentsSchema,
   publicHttpUrlSchema,
 } from "../../domain/global-radar";
 
@@ -17,8 +18,8 @@ export const MAX_GLOBAL_RADAR_ADMIN_BODY_BYTES = 64 * 1_024;
 export const GLOBAL_RADAR_LEASE_HEADER = "x-global-radar-lease-token";
 export const globalRadarRouteUuidSchema = z.string().uuid();
 
-const boundedReasonSchema = z.string().trim().min(1).max(2_000);
-const workerFailureReasonSchema = z.string().trim().min(1).max(1_000);
+const boundedReasonSchema = globalRadarAuthoredAuditTextSchema;
+const workerFailureReasonSchema = globalRadarOperationalDiagnosticSchema;
 
 export const globalRadarClaimSelectorSchema = z.strictObject({
   trigger: z.enum(["scheduled", "trial"]).default("scheduled"),
@@ -64,12 +65,34 @@ const classificationTargetShape = {
   demandDomain: z.enum(globalRadarDemandFamilies),
 } as const;
 
+const nullableAssessmentSchema = z.number().int().min(0).max(100).nullable();
+
+const directDemandAssessmentsSchema = z.strictObject({
+  actionability: nullableAssessmentSchema,
+  commercialPotential: nullableAssessmentSchema,
+  repeatability: nullableAssessmentSchema,
+  strategicLearning: nullableAssessmentSchema,
+  complianceComplexity: nullableAssessmentSchema,
+});
+
+const precursorAssessmentsSchema = z.strictObject({
+  proximityToExternalDemand: nullableAssessmentSchema,
+  fundingDeploymentMomentum: nullableAssessmentSchema,
+  likelyDataHardwareIntensity: nullableAssessmentSchema,
+  strategicRelevance: nullableAssessmentSchema,
+});
+
+const momentumAssessmentsSchema = z.strictObject({
+  taxonomyConsistency: z.number().int().min(0).max(100),
+  evidenceQuality: z.number().int().min(0).max(100),
+});
+
 const directDemandClassificationSchema = z.strictObject({
   signalClass: z.literal("direct_demand"),
   signalType: z.enum(directDemandAskTypes),
   ...classificationTargetShape,
   primaryEntityId: globalRadarRouteUuidSchema.optional(),
-  components: directDemandComponentsSchema,
+  assessments: directDemandAssessmentsSchema,
   activity: z.strictObject({
     evergreen: z.boolean(),
     expiresAt: isoTimestampSchema.nullable(),
@@ -82,17 +105,14 @@ const precursorClassificationSchema = z.strictObject({
   signalType: z.enum(precursorDevelopmentTypes),
   ...classificationTargetShape,
   primaryEntityId: globalRadarRouteUuidSchema.optional(),
-  components: precursorComponentsSchema,
+  assessments: precursorAssessmentsSchema,
 });
 
 const momentumClassificationSchema = z.strictObject({
   signalClass: z.literal("ecosystem_momentum"),
   signalType: z.literal("ecosystem_direction"),
   ...classificationTargetShape,
-  components: z.strictObject({
-    taxonomyConsistency: z.number().int().min(0).max(100),
-    evidenceQuality: z.number().int().min(0).max(100),
-  }),
+  assessments: momentumAssessmentsSchema,
 });
 
 const signalClassificationSchema = z.strictObject({
@@ -130,7 +150,7 @@ export const globalRadarEvidenceBodySchema = z.strictObject({
 
 export const globalRadarNoteBodySchema = z.strictObject({
   ...mutationEnvelopeShape,
-  body: z.string().trim().min(1).max(2_000),
+  body: globalRadarAuthoredAuditTextSchema,
 });
 
 export const globalRadarMergeBodySchema = z.strictObject({
@@ -302,20 +322,29 @@ const runNoticeSchema = z.union([
   }),
 ]);
 
-export const globalRadarSafeRunSchema = z.object({
-  id: globalRadarRouteUuidSchema,
-  trigger: z.enum(["scheduled", "manual", "trial"]),
-  scanMode: z.enum(["daily", "thematic", "watchlist_refresh", "manual"]),
-  status: z.enum(["queued", "running", "succeeded", "partial", "failed"]),
-  startedAt: isoTimestampSchema.nullable(),
-  completedAt: isoTimestampSchema.nullable(),
-  sourceCountries: z.array(z.string().max(100)).max(50),
-  sourceLanguages: z.array(z.string().max(35)).max(10),
-  targetDomains: z.array(z.string().max(200)).max(50),
-  targetSignalTypes: z.array(z.string().max(200)).max(50),
-  sourcesUsed: z.array(z.string().max(100)).max(10),
-  counts: runCountsSchema,
-  notices: z.array(runNoticeSchema).max(10),
-  createdAt: isoTimestampSchema,
-  updatedAt: isoTimestampSchema,
-});
+export const globalRadarSafeRunSchema = z
+  .object({
+    id: globalRadarRouteUuidSchema,
+    trigger: z.enum(["scheduled", "manual", "trial"]),
+    scanMode: z.enum(["daily", "thematic", "watchlist_refresh", "manual"]),
+    status: z.enum(["queued", "running", "succeeded", "partial", "failed"]),
+    startedAt: isoTimestampSchema.nullable(),
+    completedAt: isoTimestampSchema.nullable(),
+    sourceCountries: z.array(z.string().max(100)).max(50),
+    sourceLanguages: z.array(z.string().max(35)).max(10),
+    targetDomains: z.array(z.string().max(200)).max(50),
+    targetSignalTypes: z.array(z.string().max(200)).max(50),
+    sourcesUsed: z.array(z.string().max(100)).max(10),
+    counts: runCountsSchema,
+    notices: z.array(runNoticeSchema).max(10),
+    createdAt: isoTimestampSchema,
+    updatedAt: isoTimestampSchema,
+  })
+  .superRefine((run, context) => {
+    if (globalRadarJsonContainsSensitiveContent(run)) {
+      context.addIssue({
+        code: "custom",
+        message: "Global Radar run must not contain sensitive content.",
+      });
+    }
+  });

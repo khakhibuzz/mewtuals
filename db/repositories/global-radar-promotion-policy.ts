@@ -4,6 +4,7 @@ import {
 } from "../../app/domain/discovery";
 import {
   createGlobalRadarFingerprint,
+  evidenceClaimSupportsPositiveIndiaPath,
   evidenceSupportsDocumentedIndianRelationship,
 } from "../../app/domain/global-radar";
 import type {
@@ -17,8 +18,10 @@ import {
   promotionAttemptReasons,
   type CanonicalPromotionInput,
   type GlobalRadarPromotionConfiguration,
+  type PromotionEvidenceSelectionRole,
   type PromotionAttemptReason,
   type PromotionContext,
+  type SelectedPromotionEvidence,
 } from "./global-radar-promotion-contracts";
 
 export function entitySafeSnapshot(
@@ -61,27 +64,255 @@ export function signalSafeSnapshot(signal: GlobalRadarSignal) {
   };
 }
 
-function evidenceSafeSnapshot(evidence: readonly GlobalSignalEvidence[]) {
-  return evidence.map((item) => ({
-    signalId: item.signalId,
-    canonicalSourceUrl: item.canonicalSourceUrl,
-    sourceName: item.sourceName,
-    sourceFamily: item.sourceFamily,
-    evidenceFingerprint: item.evidenceFingerprint,
-    isPrimarySource: item.isPrimarySource,
-    isSyndicated: item.isSyndicated,
-    supportsDirectDemand: item.supportsDirectDemand,
-    supportsIndiaRelevance: item.supportsIndiaRelevance,
-    supportedFieldPaths: [...item.supportedFieldPaths].sort(),
-    observedAt: item.observedAt.toISOString(),
-  }));
+export const GLOBAL_RADAR_PROMOTION_SOURCE_SNAPSHOT_VERSION =
+  "global-radar-promotion-source-snapshot-v2" as const;
+
+function evidenceSafeSnapshot(evidence: readonly SelectedPromotionEvidence[]) {
+  return evidence
+    .map((item) => ({
+      selectionRoles: [...new Set(item.selectionRoles)].sort(),
+      signalId: item.signalId,
+      ingestOrdinal: item.ingestOrdinal,
+      runId: item.runId,
+      globalEntityId: item.globalEntityId,
+      evidenceFingerprint: item.evidenceFingerprint,
+      evidenceClaim: item.evidenceClaim,
+      evidenceConfidence: item.evidenceConfidence,
+      translationConfidence: item.translationConfidence,
+      publishedAt: item.publishedAt?.toISOString() ?? null,
+      observedAt: item.observedAt.toISOString(),
+      isPrimarySource: item.isPrimarySource,
+      isSyndicated: item.isSyndicated,
+      supportsDirectDemand: item.supportsDirectDemand,
+      supportsIndiaRelevance: item.supportsIndiaRelevance,
+      supportedFieldPaths: [...item.supportedFieldPaths].sort(),
+      canonicalSourceUrl: item.canonicalSourceUrl,
+      sourceUrl: item.sourceUrl,
+      sourceName: item.sourceName,
+      sourceType: item.sourceType,
+      sourceLanguage: item.sourceLanguage,
+      sourceCountry: item.sourceCountry,
+      sourceFamily: item.sourceFamily,
+    }))
+    .sort(
+      (left, right) =>
+        left.signalId.localeCompare(right.signalId) ||
+        left.ingestOrdinal - right.ingestOrdinal ||
+        left.evidenceFingerprint.localeCompare(right.evidenceFingerprint) ||
+        left.selectionRoles.join("\n").localeCompare(
+          right.selectionRoles.join("\n"),
+        ),
+    );
 }
 
-export function sourceSnapshotDigest(evidence: readonly GlobalSignalEvidence[]) {
+export function sourceSnapshotDigest(
+  evidence: readonly SelectedPromotionEvidence[],
+) {
   return createGlobalRadarFingerprint({
-    version: "global-radar-promotion-source-snapshot-v1",
+    version: GLOBAL_RADAR_PROMOTION_SOURCE_SNAPSHOT_VERSION,
     evidence: evidenceSafeSnapshot(evidence),
   });
+}
+
+function evidenceSelectionKey(evidence: GlobalSignalEvidence): string {
+  return `${evidence.signalId}:${evidence.evidenceFingerprint}`;
+}
+
+function evidenceHasPositiveIndiaPath(
+  evidence: GlobalSignalEvidence,
+  signal: GlobalRadarSignal,
+): boolean {
+  const exactPrefix = `indiaRelevance.${signal.indiaRelevanceType}.`;
+  return (
+    evidence.supportsIndiaRelevance &&
+    evidence.supportedFieldPaths.some(
+      (supportedFieldPath) =>
+        supportedFieldPath.startsWith(exactPrefix) &&
+        evidenceClaimSupportsPositiveIndiaPath({
+          supportedFieldPath,
+          evidenceClaim: evidence.evidenceClaim,
+        }),
+    )
+  );
+}
+
+function independentSourceOrigin(evidence: GlobalSignalEvidence): string {
+  try {
+    return new URL(evidence.canonicalSourceUrl).hostname
+      .toLowerCase()
+      .replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function comparePromotionEvidence(
+  left: GlobalSignalEvidence,
+  right: GlobalSignalEvidence,
+): number {
+  return (
+    right.evidenceConfidence - left.evidenceConfidence ||
+    (right.publishedAt?.getTime() ?? -1) -
+      (left.publishedAt?.getTime() ?? -1) ||
+    right.observedAt.getTime() - left.observedAt.getTime() ||
+    left.canonicalSourceUrl.localeCompare(right.canonicalSourceUrl) ||
+    left.evidenceFingerprint.localeCompare(right.evidenceFingerprint)
+  );
+}
+
+export type PromotionScoreEvidenceSelection = Readonly<{
+  signalId: string;
+  evaluationEvidence: readonly GlobalSignalEvidence[];
+  citedEvidence: readonly GlobalSignalEvidence[];
+}>;
+
+export function selectPromotionEvidence(input: Readonly<{
+  eligibilityPath: CanonicalPromotionInput["eligibilityPath"];
+  entity: GlobalEntity;
+  primarySignal: GlobalRadarSignal;
+  supportingSignals: readonly GlobalRadarSignal[];
+  availableEvidence: readonly GlobalSignalEvidence[];
+  scoreEvidence: readonly PromotionScoreEvidenceSelection[];
+}>):
+  | Readonly<{ valid: true; evidence: SelectedPromotionEvidence[] }>
+  | Readonly<{ valid: false; reason: "score_evidence_owner_mismatch" }> {
+  const availableByKey = new Map(
+    input.availableEvidence.map((evidence) => [
+      evidenceSelectionKey(evidence),
+      evidence,
+    ]),
+  );
+  const signalById = new Map(
+    input.supportingSignals.map((signal) => [signal.id, signal]),
+  );
+  const selected = new Map<
+    string,
+    { evidence: GlobalSignalEvidence; roles: Set<PromotionEvidenceSelectionRole> }
+  >();
+  const add = (
+    evidence: GlobalSignalEvidence,
+    role: PromotionEvidenceSelectionRole,
+  ) => {
+    const key = evidenceSelectionKey(evidence);
+    const existing = selected.get(key) ?? {
+      evidence,
+      roles: new Set<PromotionEvidenceSelectionRole>(),
+    };
+    existing.roles.add(role);
+    selected.set(key, existing);
+  };
+
+  for (const selection of input.scoreEvidence) {
+    const selectedSignal = signalById.get(selection.signalId);
+    const evaluationKeys = new Set(
+      selection.evaluationEvidence.map(evidenceSelectionKey),
+    );
+    let selectedCitationCount = 0;
+    for (const citedEvidence of selection.citedEvidence) {
+      if (!evaluationKeys.has(evidenceSelectionKey(citedEvidence))) {
+        return { valid: false, reason: "score_evidence_owner_mismatch" };
+      }
+      const available = availableByKey.get(evidenceSelectionKey(citedEvidence));
+      if (!available || available.signalId !== selection.signalId) {
+        if (
+          selectedSignal?.signalClass === "ecosystem_momentum" &&
+          citedEvidence.globalEntityId !== input.entity.id
+        ) {
+          continue;
+        }
+        return { valid: false, reason: "score_evidence_owner_mismatch" };
+      }
+      add(available, "active_score_citation");
+      selectedCitationCount += 1;
+    }
+    if (selectedCitationCount === 0) {
+      return { valid: false, reason: "score_evidence_owner_mismatch" };
+    }
+  }
+
+  const addIndiaEligibilityRole = (
+    signal: GlobalRadarSignal,
+    role: Extract<
+      PromotionEvidenceSelectionRole,
+      "qualified_india_direct_demand" | "repeated_india_compatible_signal"
+    >,
+  ) => {
+    for (const entry of selected.values()) {
+      if (
+        entry.evidence.signalId === signal.id &&
+        evidenceHasPositiveIndiaPath(entry.evidence, signal)
+      ) {
+        entry.roles.add(role);
+      }
+    }
+  };
+
+  if (input.eligibilityPath === "qualified_india_direct_demand") {
+    addIndiaEligibilityRole(
+      input.primarySignal,
+      "qualified_india_direct_demand",
+    );
+  } else if (input.eligibilityPath === "repeated_india_compatible_signals") {
+    for (const signal of input.supportingSignals) {
+      addIndiaEligibilityRole(signal, "repeated_india_compatible_signal");
+    }
+  } else if (input.eligibilityPath === "documented_indian_relationship") {
+    const relationshipEvidence = input.availableEvidence
+      .filter(
+        (evidence) =>
+          evidence.signalId === input.primarySignal.id &&
+          evidence.globalEntityId === input.entity.id &&
+          evidence.isPrimarySource &&
+          !evidence.isSyndicated &&
+          evidence.supportsIndiaRelevance &&
+          evidence.supportedFieldPaths.some(
+            (supportedFieldPath) =>
+              evidenceSupportsDocumentedIndianRelationship([
+                supportedFieldPath,
+              ]) &&
+              evidenceClaimSupportsPositiveIndiaPath({
+                supportedFieldPath,
+                evidenceClaim: evidence.evidenceClaim,
+              }),
+          ),
+      )
+      .sort(comparePromotionEvidence)[0];
+    if (relationshipEvidence) {
+      add(relationshipEvidence, "documented_indian_relationship");
+    }
+  } else {
+    const selectedOrigins = new Set<string>();
+    const candidates = [...selected.values()]
+      .map(({ evidence }) => evidence)
+      .filter(
+        (evidence) =>
+          evidence.signalId === input.primarySignal.id &&
+          evidence.isPrimarySource &&
+          !evidence.isSyndicated,
+      )
+      .sort(comparePromotionEvidence);
+    for (const evidence of candidates) {
+      const origin = independentSourceOrigin(evidence);
+      if (!origin || selectedOrigins.has(origin)) continue;
+      selectedOrigins.add(origin);
+      add(evidence, "exceptional_strategic_relevance");
+      if (selectedOrigins.size === 2) break;
+    }
+  }
+
+  return {
+    valid: true,
+    evidence: [...selected.values()]
+      .map(({ evidence, roles }) => ({
+        ...evidence,
+        selectionRoles: [...roles].sort(),
+      }))
+      .sort(
+        (left, right) =>
+          left.signalId.localeCompare(right.signalId) ||
+          left.evidenceFingerprint.localeCompare(right.evidenceFingerprint),
+      ),
+  };
 }
 
 export function storedAttemptReason(
@@ -143,11 +374,15 @@ export function signalPassesThresholdAndHardGates(
 }
 
 function independentPrimarySourceCount(
-  evidence: readonly GlobalSignalEvidence[],
+  evidence: readonly SelectedPromotionEvidence[],
 ): number {
   const origins = new Set<string>();
   for (const source of evidence) {
-    if (!source.isPrimarySource || source.isSyndicated) continue;
+    if (
+      !source.selectionRoles.includes("exceptional_strategic_relevance") ||
+      !source.isPrimarySource ||
+      source.isSyndicated
+    ) continue;
     try {
       const url = new URL(source.canonicalSourceUrl);
       origins.add(url.hostname.toLowerCase().replace(/^www\./, ""));
@@ -157,6 +392,62 @@ function independentPrimarySourceCount(
     }
   }
   return origins.size;
+}
+
+export function hasDocumentedIndianRelationshipEvidence(
+  context: PromotionContext,
+): boolean {
+  return context.evidence
+    .filter(({ signalId }) => signalId === context.primarySignal.id)
+    .some(
+      (source) =>
+        source.selectionRoles.includes("documented_indian_relationship") &&
+        source.globalEntityId === context.entity.id &&
+        source.isPrimarySource &&
+        !source.isSyndicated &&
+        source.supportsIndiaRelevance &&
+        source.supportedFieldPaths.some(
+          (supportedFieldPath) =>
+            evidenceSupportsDocumentedIndianRelationship([
+              supportedFieldPath,
+            ]) &&
+            evidenceClaimSupportsPositiveIndiaPath({
+              supportedFieldPath,
+              evidenceClaim: source.evidenceClaim,
+            }),
+        ),
+    );
+}
+
+export function hasInvalidDocumentedIndianRelationshipClaim(
+  input: Readonly<{
+    entityId: string;
+    primarySignalId: string;
+    evidence: readonly GlobalSignalEvidence[];
+  }>,
+): boolean {
+  return input.evidence
+    .filter(
+      ({ signalId, globalEntityId }) =>
+        signalId === input.primarySignalId &&
+        globalEntityId === input.entityId,
+    )
+    .some(
+      (source) =>
+        source.isPrimarySource &&
+        !source.isSyndicated &&
+        source.supportsIndiaRelevance &&
+        source.supportedFieldPaths.some(
+          (supportedFieldPath) =>
+            evidenceSupportsDocumentedIndianRelationship([
+              supportedFieldPath,
+            ]) &&
+            !evidenceClaimSupportsPositiveIndiaPath({
+              supportedFieldPath,
+              evidenceClaim: source.evidenceClaim,
+            }),
+        ),
+    );
 }
 
 export function promotionEligibilityMet(
@@ -176,7 +467,12 @@ export function promotionEligibilityMet(
   if (input.eligibilityPath === "qualified_india_direct_demand") {
     return (
       primarySignal.signalClass === "direct_demand" &&
-      primarySignal.indiaRelevanceType !== "no_current_India_fit"
+      primarySignal.indiaRelevanceType !== "no_current_India_fit" &&
+      evidence.some(
+        ({ signalId, selectionRoles }) =>
+          signalId === primarySignal.id &&
+          selectionRoles.includes("qualified_india_direct_demand"),
+      )
     );
   }
   if (input.eligibilityPath === "repeated_india_compatible_signals") {
@@ -191,7 +487,12 @@ export function promotionEligibilityMet(
           signal.observedAt >= windowStart &&
           signal.observedAt <= input.now &&
           signal.indiaRelevanceType !== "no_current_India_fit" &&
-          signalPassesThresholdAndHardGates(signal, input.now, configuration),
+          signalPassesThresholdAndHardGates(signal, input.now, configuration) &&
+          evidence.some(
+            ({ signalId, selectionRoles }) =>
+              signalId === signal.id &&
+              selectionRoles.includes("repeated_india_compatible_signal"),
+          ),
       )
     );
   }
@@ -199,15 +500,7 @@ export function promotionEligibilityMet(
     ({ signalId }) => signalId === primarySignal.id,
   );
   if (input.eligibilityPath === "documented_indian_relationship") {
-    return primaryEvidence.some(
-      (source) =>
-        source.isPrimarySource &&
-        !source.isSyndicated &&
-        source.supportsIndiaRelevance &&
-        evidenceSupportsDocumentedIndianRelationship(
-          source.supportedFieldPaths,
-        ),
-    );
+    return hasDocumentedIndianRelationshipEvidence(context);
   }
   return (
     entity.entityStatus === "qualified" &&

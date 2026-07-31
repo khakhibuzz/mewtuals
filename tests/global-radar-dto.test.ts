@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
+  deriveScoreComponentEvidenceAssociations,
+  selectDirectDemandFreshnessEvidencePath,
+} from "../app/domain/global-radar";
+
+import {
   GLOBAL_RADAR_DETAIL_SECTION_IDS,
   serializeGlobalRadarPromotion,
   serializeGlobalRadarRun,
@@ -11,7 +17,7 @@ import {
 
 function detailReadModel() {
   const observedAt = new Date("2026-07-31T04:00:00.000Z");
-  return {
+  const detail = {
     organisation: {
       id: "00000000-0000-4000-8000-000000000001",
       canonicalName: "Example Robotics",
@@ -221,7 +227,7 @@ function detailReadModel() {
           sourceLanguage: "zh-CN",
           sourceCountry: "China",
           sourceFamily: "official_partner_supplier_pages",
-          evidenceClaim: "该公司公开邀请供应商申请。",
+          evidenceClaim: "该公司接受来自全球供应商的申请。",
           sourceExcerpt: "供应商申请现已开放。",
           englishSummary: "The company publicly invites supplier applications.",
           publishedAt: observedAt,
@@ -237,7 +243,7 @@ function detailReadModel() {
             "signal.announcedAt",
             "signal.effectiveFrom",
             "directDemandAsk.supplier_registration",
-            "indiaRelevance.globally_open.manufacturing",
+            "indiaRelevance.globally_open.requirement_access",
             "responsePath",
             "scoreComponents.actionability",
             "scoreComponents.commercialPotential",
@@ -267,6 +273,109 @@ function detailReadModel() {
     promotion: null,
     allowedActions: ["append_note", "promote"],
   };
+  return attachStoredScoreEvidence(detail);
+}
+
+type DetailScoreEvidenceFixture = {
+  signal: {
+    signalClass: "direct_demand" | "demand_precursor" | "ecosystem_momentum";
+    signalType: string;
+    indiaRelevanceType: string;
+  };
+  scoreRationale: {
+    directDemand: Readonly<Record<string, unknown>>;
+    precursor: Readonly<Record<string, unknown>>;
+    momentum: Readonly<Record<string, unknown>>;
+    evidenceVersion: string;
+    componentEvidence: ReturnType<
+      typeof deriveScoreComponentEvidenceAssociations
+    >;
+  };
+  evidence: {
+    items: Array<{
+      id: string;
+      sourceUrl: string;
+      sourceName: string;
+      evidenceClaim: string;
+      globalEntityId: string | null;
+      evidenceConfidence: number;
+      publishedAt: Date | null;
+      observedAt: Date;
+      isPrimarySource: boolean;
+      isSyndicated: boolean;
+      sourceFamily: string;
+      supportedFieldPaths: string[];
+    }>;
+  };
+  associatedOrganisations: {
+    items: Array<{
+      role: string;
+      organisation: { id: string };
+    }>;
+  };
+  timeline: {
+    announcedAt: Date | null;
+    effectiveFrom: Date | null;
+  };
+};
+
+function attachStoredScoreEvidence<Detail>(detail: Detail): Detail {
+  const fixture = detail as unknown as DetailScoreEvidenceFixture;
+  const signalClass = fixture.signal.signalClass;
+  const activeScore =
+    signalClass === "direct_demand"
+      ? fixture.scoreRationale.directDemand
+      : signalClass === "demand_precursor"
+        ? fixture.scoreRationale.precursor
+        : fixture.scoreRationale.momentum;
+  const evidence = fixture.evidence.items.map((item) => ({
+    id: item.id,
+    sourceUrl: item.sourceUrl,
+    sourceName: item.sourceName,
+    evidenceClaim: item.evidenceClaim,
+    contributorEntityId: item.globalEntityId,
+    evidenceConfidence: item.evidenceConfidence,
+    publishedAt: item.publishedAt?.toISOString() ?? null,
+    observedAt: item.observedAt.toISOString(),
+    isPrimarySource: item.isPrimarySource,
+    isSyndicated: item.isSyndicated,
+    sourceFamily: item.sourceFamily,
+    supportedFieldPaths: item.supportedFieldPaths,
+  }));
+  fixture.scoreRationale.evidenceVersion =
+    GLOBAL_RADAR_SCORE_EVIDENCE_VERSION;
+  fixture.scoreRationale.componentEvidence =
+    deriveScoreComponentEvidenceAssociations({
+      signalClass,
+      signalType: fixture.signal.signalType,
+      indiaRelevanceType: fixture.signal.indiaRelevanceType,
+      assessmentAuthority: "worker",
+      actionabilityInput:
+        signalClass === "direct_demand"
+          ? typeof activeScore.actionability === "number"
+            ? activeScore.actionability
+            : null
+          : null,
+      momentumContributorEntityIds:
+        fixture.associatedOrganisations.items.flatMap((association) =>
+          association.role === "contributor"
+            ? [association.organisation.id]
+            : [],
+        ),
+      freshnessEvidencePath:
+        signalClass === "direct_demand"
+          ? selectDirectDemandFreshnessEvidencePath({
+              announcedAt:
+                fixture.timeline.announcedAt?.toISOString() ?? null,
+              effectiveFrom:
+                fixture.timeline.effectiveFrom?.toISOString() ?? null,
+              evidence,
+            })
+          : undefined,
+      components: activeScore,
+      evidence,
+    });
+  return detail;
 }
 
 describe("Global Radar DTO serializers", () => {
@@ -323,7 +432,7 @@ describe("Global Radar DTO serializers", () => {
         expect.objectContaining({
           lang: "zh-CN",
           dir: "ltr",
-          claim: "该公司公开邀请供应商申请。",
+          claim: "该公司接受来自全球供应商的申请。",
         }),
       ],
     });
@@ -411,7 +520,9 @@ describe("Global Radar DTO serializers", () => {
         expect.objectContaining({
           component: "actionability",
           value: 80,
-          basis: "worker_evidence",
+          basis: "server_adjusted",
+          assessmentBasis: "worker_evidence",
+          inputValue: 80,
           evidence: expect.arrayContaining([
             expect.objectContaining({
               matchedFieldPaths: ["scoreComponents.actionability"],
@@ -550,6 +661,7 @@ describe("Global Radar DTO serializers", () => {
       },
     ];
     detail.evidence.total = detail.evidence.items.length;
+    attachStoredScoreEvidence(detail);
 
     const dto = serializeGlobalRadarSignalDetail(detail);
     const scoreSection = dto.sections.find(
@@ -672,6 +784,7 @@ describe("Global Radar DTO serializers", () => {
       "scoreComponents.likelyDataHardwareIntensity",
       "scoreComponents.strategicRelevance",
     ];
+    attachStoredScoreEvidence(detail);
 
     const dto = serializeGlobalRadarSignalDetail(detail);
     const scoreSection = dto.sections.find(
@@ -700,7 +813,7 @@ describe("Global Radar DTO serializers", () => {
           basis: "server_derived",
           evidence: [
             expect.objectContaining({
-              matchedFieldPaths: ["precursorDevelopment.deployment"],
+              matchedFieldPaths: ["review.noCurrentIndiaFit"],
             }),
           ],
         }),
@@ -712,13 +825,24 @@ describe("Global Radar DTO serializers", () => {
     );
   });
 
-  it("refuses unrelated fallback evidence for an active score component", () => {
+  it("does not regenerate stored score provenance from current display facts", () => {
     const detail = detailReadModel();
     detail.signal.signalType = "procurement";
 
-    expect(() => serializeGlobalRadarSignalDetail(detail)).toThrow(
-      "Missing public evidence association for active score component: demandExplicitness",
-    );
+    const dto = serializeGlobalRadarSignalDetail(detail);
+    const scoreSection = dto.sections.find(
+      ({ id }) => id === "score_rationale",
+    )!.data as {
+      componentEvidence: Array<{
+        component: string;
+        evidence: Array<{ matchedFieldPaths: string[] }>;
+      }>;
+    };
+    expect(
+      scoreSection.componentEvidence.find(
+        ({ component }) => component === "demandExplicitness",
+      )?.evidence[0]?.matchedFieldPaths,
+    ).toEqual(["directDemandAsk.supplier_registration"]);
   });
 
   it("allowlists every DTO and never copies recursive private material", () => {
@@ -847,6 +971,47 @@ describe("Global Radar DTO serializers", () => {
     expect(JSON.stringify(watchlist)).not.toContain("Review public supplier");
     expect(JSON.stringify(promotion)).not.toContain("Review public supplier");
     expect(JSON.stringify(run)).not.toContain("Review public supplier");
+  });
+
+  it("strips recursive credential aliases and values from rich JSON while preserving the explicit industrial-secrets flag", () => {
+    const detail = detailReadModel();
+    Object.assign(detail.signal.indiaRegulatoryFacts, {
+      known: false,
+      industrialSecrets: "possible",
+      nested: {
+        accessToken: "private-access-token-value",
+        authToken: "private-auth-token-value",
+        credentials: "private-credentials-value",
+        cookie: "private-cookie-value",
+        privateKey: "private-key-value",
+        secretValue: "private-generic-secret-value",
+        industrialSecretsValue: "private-industrial-secret-alias-value",
+        publicSummary:
+          "Authorization: Bearer private-benign-key-token-value-1234",
+        sourceName: "PostgreSQL official documentation",
+        publicUrl: "https://example.com/private/research",
+        businessProse: "Private sector suppliers may apply.",
+      },
+    });
+
+    const dto = serializeGlobalRadarSignalDetail(detail);
+    const section = dto.sections.find(
+      ({ id }) => id === "india_fit_reasoning_and_constraints",
+    )!;
+    expect(section.data).toMatchObject({
+      regulatoryFacts: {
+        known: false,
+        industrialSecrets: "possible",
+        nested: {
+          sourceName: "PostgreSQL official documentation",
+          publicUrl: "https://example.com/private/research",
+          businessProse: "Private sector suppliers may apply.",
+        },
+      },
+    });
+    expect(JSON.stringify(section.data)).not.toMatch(
+      /private-(?:access-token|auth-token|credentials|cookie|key|generic-secret|industrial-secret-alias|benign-key-token)-value/,
+    );
   });
 
   it("maps the promotion repository's flat revision columns", () => {

@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import * as globalRadarDomain from "../app/domain/global-radar";
 import {
   canonicalizeGlobalRadarPersistenceBatch,
+  createGlobalRadarPersistenceHash,
   persistableGlobalRadarBatchObjectSchema,
 } from "../app/domain/global-radar/persistence";
 import { createQueryFingerprint } from "../app/domain/global-radar/normalization";
+import { createWorkerScoreEvidenceSnapshot } from "../db/repositories/global-radar-score-evidence";
 import {
   globalRadarValidationProposalSchema,
   validateGlobalRadarBatch,
@@ -429,6 +431,125 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     ).toBe(false);
   });
 
+  it("applies recursive sensitive-record guards to every rich metadata carrier", () => {
+    const unsafeRecord = {
+      publicSummary: "Authorization: Bearer private-radar-worker-value",
+    };
+    const indiaRelevance = directSignal().indiaRelevance;
+    const proposals = [
+      batch({
+        entities: [{ ...batch().entities[0]!, rawMetadata: unsafeRecord }],
+      }),
+      batch({ signals: [directSignal({ rawMetadata: unsafeRecord })] }),
+      batch({
+        signals: [
+          directSignal({ evidence: [evidence({ rawMetadata: unsafeRecord })] }),
+        ],
+      }),
+      batch({
+        signals: [
+          directSignal({
+            indiaRelevance: {
+              ...indiaRelevance,
+              regulatoryFacts: unsafeRecord,
+            },
+          }),
+        ],
+      }),
+      batch({
+        signals: [
+          directSignal({
+            indiaRelevance: {
+              ...indiaRelevance,
+              logisticsFacts: unsafeRecord,
+            },
+          }),
+        ],
+      }),
+      ...[
+        "rawMetadata",
+        "scaleSpecifications",
+        "technicalSpecifications",
+        "qualitySpecifications",
+        "rightsAndComplianceSpecifications",
+      ].map((field) =>
+        batch({
+          signals: [
+            directSignal({
+              requirements: [requirement({ [field]: unsafeRecord })],
+            }),
+          ],
+        }),
+      ),
+    ];
+
+    expect(
+      proposals.map(
+        (proposal) =>
+          globalRadarValidationProposalSchema.safeParse(proposal).success,
+      ),
+    ).toEqual(proposals.map(() => false));
+  });
+
+  it("rejects sensitive strings from every rich proposal and normalized batch field", () => {
+    const credential =
+      "Authorization: Bearer private-radar-worker-credential-value";
+    const proposals = [
+      batch({
+        entities: [
+          { ...batch().entities[0]!, shortDescription: credential },
+        ],
+      }),
+      batch({
+        executedQueries: [executedQuery({ query: credential })],
+      }),
+      batch({
+        signals: [directSignal({ factualSummary: credential })],
+      }),
+      batch({
+        signals: [
+          directSignal({
+            evidence: [evidence({ claim: credential })],
+          }),
+        ],
+      }),
+      batch({
+        signals: [
+          directSignal({
+            requirements: [requirement({ summary: credential })],
+          }),
+        ],
+      }),
+    ];
+
+    expect(
+      proposals.map(
+        (proposal) =>
+          globalRadarValidationProposalSchema.safeParse(proposal).success,
+      ),
+    ).toEqual(proposals.map(() => false));
+    for (const proposal of proposals) {
+      expect(() => validate(proposal)).toThrow(
+        "Invalid Global Radar validation proposal: proposal contains sensitive content",
+      );
+    }
+
+    const validated = validate(batch());
+    const tampered = {
+      ...validated,
+      entities: [
+        { ...validated.entities[0]!, shortDescription: credential },
+      ],
+    };
+    expect(persistableGlobalRadarBatchObjectSchema.safeParse(tampered).success).toBe(
+      false,
+    );
+    expect(canonicalizeGlobalRadarPersistenceBatch(tampered)).toEqual({
+      valid: false,
+      reason: "invalid_batch",
+    });
+  });
+
   it("recomputes the complete persistence graph and validates it twice", () => {
     const validated = validate(batch());
 
@@ -436,6 +557,7 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     const signal = validated.signals[0]!;
     expect(signal).toMatchObject({
       signalClass: "direct_demand",
+      actionabilityInput: 80,
       initialStatus: "needs_review",
       taxonomyVersion: "global-radar-v1",
       extractionMethod: "codex_public_web",
@@ -466,6 +588,24 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     expect(signal.evidence[0]?.supportedFieldPaths).toContain(
       "indiaRelevance.explicit_India.collection",
     );
+    const scoreEntityIds = new Map(
+      signal.evidence.flatMap(({ contributorEntityRef }, index) =>
+        contributorEntityRef === null
+          ? []
+          : [[contributorEntityRef, `entity-${index + 1}`] as const],
+      ),
+    );
+    expect(createWorkerScoreEvidenceSnapshot(signal, scoreEntityIds)).toMatchObject({
+      signalClass: "direct_demand",
+      componentEvidence: expect.arrayContaining([
+        expect.objectContaining({
+          component: "actionability",
+          basis: "server_adjusted",
+          assessmentBasis: "worker_evidence",
+          inputValue: 80,
+        }),
+      ]),
+    });
     expect(validated.canonicalSubmissionHash).toMatch(/^[a-f0-9]{64}$/);
     expect(persistableGlobalRadarBatchObjectSchema.safeParse(validated).success).toBe(
       true,
@@ -475,12 +615,93 @@ describe("Global Radar server-authoritative validation pipeline", () => {
     });
   });
 
+  it("assigns initial score-evidence ordinals independently of caller evidence order", () => {
+    const secondaryUrl = "https://acme.example/secondary-public-request";
+    const validated = validate(
+      batch({
+        signals: [
+          directSignal({
+            evidence: [
+              evidence(),
+              evidence({
+                sourceUrl: secondaryUrl,
+                canonicalSourceUrl: secondaryUrl,
+                sourceName: "Acme secondary request",
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    const signal = validated.signals[0];
+    if (!signal) throw new Error("Ordinal fixture signal was not produced.");
+    expect(signal.evidence).toHaveLength(2);
+    const entityIds = new Map([["entity-acme", "entity-acme-stored"]]);
+    const canonical = createWorkerScoreEvidenceSnapshot(signal, entityIds);
+    const reversed = createWorkerScoreEvidenceSnapshot(
+      { ...signal, evidence: [...signal.evidence].reverse() },
+      entityIds,
+    );
+
+    expect(reversed).toMatchObject({
+      evidenceBoundaryOrdinal: 2,
+      evidenceSetCount: 2,
+      evidenceSetDigest: canonical.evidenceSetDigest,
+    });
+  });
+
   it("produces the same canonical hash from the same normalized proposal", () => {
     const first = validate(batch());
     const second = validate(structuredClone(batch()));
 
     expect(second).toEqual(first);
     expect(second.canonicalSubmissionHash).toBe(first.canonicalSubmissionHash);
+  });
+
+  it("rejects a replay whose pre-policy actionability no longer matches the score", () => {
+    const validated = validate(batch());
+    const signal = validated.signals[0];
+    if (!signal || signal.signalClass !== "direct_demand") {
+      throw new Error("Direct-demand validation fixture was not produced.");
+    }
+    const { canonicalSubmissionHash: _ignored, ...withoutHash } = validated;
+    void _ignored;
+    const tamperedWithoutHash = {
+      ...withoutHash,
+      signals: [{ ...signal, actionabilityInput: 100 }],
+    };
+    const tampered = {
+      ...tamperedWithoutHash,
+      canonicalSubmissionHash:
+        createGlobalRadarPersistenceHash(tamperedWithoutHash),
+    };
+
+    expect(canonicalizeGlobalRadarPersistenceBatch(tampered)).toEqual({
+      valid: false,
+      reason: "invalid_batch",
+    });
+  });
+
+  it("rejects canonical persistence when a negated claim is mislabeled as positive India evidence", () => {
+    const validated = structuredClone(validate(batch()));
+    const signal = validated.signals[0];
+    const indiaEvidence = signal?.evidence[0];
+    if (!signal || !indiaEvidence) {
+      throw new Error("Positive India persistence fixture was not produced.");
+    }
+    indiaEvidence.claim =
+      "Acme does not collect physical data in India and excludes India.";
+    const { canonicalSubmissionHash: _ignored, ...withoutHash } = validated;
+    void _ignored;
+    const tampered = {
+      ...withoutHash,
+      canonicalSubmissionHash: createGlobalRadarPersistenceHash(withoutHash),
+    };
+
+    expect(canonicalizeGlobalRadarPersistenceBatch(tampered)).toEqual({
+      valid: false,
+      reason: "invalid_batch",
+    });
   });
 
   it("deduplicates repeated evidence fingerprints before persistence and hashing", () => {
@@ -839,6 +1060,56 @@ describe("Global Radar server-authoritative validation pipeline", () => {
       expect(rejected.rejections.invalid_evidence).toBe(1);
     }
   });
+
+  it.each(["syndicated", "unrelated"] as const)(
+    "rejects worker momentum metrics supported only by %s evidence",
+    (ineligibleKind) => {
+      const proposal = momentumBatch();
+      const signal = proposal.signals[0]!;
+      signal.evidence.forEach((item) => {
+        item.supportedFieldPaths = item.supportedFieldPaths.filter(
+          (path) => !path.startsWith("momentumMetrics."),
+        );
+      });
+      if (ineligibleKind === "unrelated") {
+        proposal.entities.push({
+          ...proposal.entities[0]!,
+          entityRef: "entity-unrelated",
+          canonicalName: "Unrelated Robotics",
+          websiteUrl: "https://unrelated.example",
+          linkedinOrganizationUrl:
+            "https://www.linkedin.com/company/unrelated-robotics",
+          stablePublicIdentifiers: [
+            { namespace: "official_registry", value: "unrelated-robotics" },
+          ],
+          canonicalCorporateGroupId: "group:unrelated-robotics",
+        });
+      }
+      signal.evidence.push(
+        evidence({
+          contributorEntityRef:
+            ineligibleKind === "unrelated"
+              ? "entity-unrelated"
+              : "entity-acme",
+          sourceUrl: `https://${ineligibleKind}.example/momentum-metrics`,
+          canonicalSourceUrl: `https://${ineligibleKind}.example/momentum-metrics`,
+          sourceName: `${ineligibleKind} metric carrier`,
+          isPrimarySource: false,
+          isSyndicated: ineligibleKind === "syndicated",
+          supportsDirectDemand: false,
+          supportsIndiaRelevance: false,
+          supportedFieldPaths: [
+            "momentumMetrics.taxonomyConsistency",
+            "momentumMetrics.evidenceQuality",
+          ],
+        }),
+      );
+
+      const rejected = validate(proposal);
+      expect(rejected.signals).toEqual([]);
+      expect(rejected.rejections.invalid_evidence).toBe(1);
+    },
+  );
 
   it("does not count aliased public identities as independent momentum", () => {
     const proposal = momentumBatch();

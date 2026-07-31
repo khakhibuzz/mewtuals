@@ -1049,6 +1049,35 @@ function positivelySupportsGlobalOpenness(value: string): boolean {
   return true;
 }
 
+export function evidenceClaimSupportsPositiveIndiaPath(input: Readonly<{
+  supportedFieldPath: string;
+  evidenceClaim: string;
+}>): boolean {
+  const segments = input.supportedFieldPath.split(".");
+  if (segments.length !== 3 || segments[0] !== "indiaRelevance") {
+    return false;
+  }
+  const [, relevanceType, factKind] = segments;
+  if (
+    (relevanceType === "globally_open" ||
+      relevanceType === "inferred_India_compatible") &&
+    factKind === "requirement_access"
+  ) {
+    return positivelySupportsGlobalOpenness(input.evidenceClaim);
+  }
+  if (
+    !exactEvidenceRelevanceTypes.has(relevanceType ?? "") ||
+    !indiaEvidenceFactKinds.includes(factKind as IndiaEvidenceFactKind)
+  ) {
+    return false;
+  }
+  return positivelySupportsExactIndiaFact(
+    input.evidenceClaim,
+    relevanceType as ExactIndiaRelevanceType,
+    factKind as IndiaEvidenceFactKind,
+  );
+}
+
 function acceptIndiaAssessment(
   assessment: z.output<typeof indiaRelevanceInputSchema>,
   basis:

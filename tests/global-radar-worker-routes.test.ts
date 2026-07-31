@@ -606,6 +606,40 @@ describe("Global Radar worker HTTP adapters", () => {
     expect(service.abandon).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects sensitive fail and abandon diagnostics without echoing them", async () => {
+    const service = workerService();
+    const fail = createGlobalRadarWorkerFailHandler({ getService: () => service });
+    const abandon = createGlobalRadarWorkerAbandonHandler({
+      getService: () => service,
+    });
+    const privateAuthorization =
+      "Authorization: Bearer private-radar-worker-value";
+    const privatePath = "claim_path=/private/tmp/radar-claim.json";
+
+    const failResponse = await fail(
+      workerRequest(
+        `/api/global-radar/worker/runs/${RUN_ID}/fail`,
+        { runId: RUN_ID, reason: privateAuthorization },
+        { "X-Global-Radar-Lease-Token": LEASE_TOKEN },
+      ),
+      context(),
+    );
+    const abandonResponse = await abandon(
+      workerRequest(
+        `/api/global-radar/worker/runs/${RUN_ID}/abandon`,
+        { runId: RUN_ID, reason: privatePath },
+      ),
+      context(),
+    );
+
+    expect(failResponse.status).toBe(400);
+    expect(abandonResponse.status).toBe(400);
+    expect(await failResponse.text()).not.toContain(privateAuthorization);
+    expect(await abandonResponse.text()).not.toContain(privatePath);
+    expect(service.fail).not.toHaveBeenCalled();
+    expect(service.abandon).not.toHaveBeenCalled();
+  });
+
   it("maps conflicts, not-found results, and private exceptions safely", async () => {
     const conflicting = workerService({
       complete: vi.fn(async () => ({
@@ -665,5 +699,31 @@ describe("Global Radar worker HTTP adapters", () => {
       error: "We could not complete that request. Please try again.",
     });
     expect(JSON.stringify(errorBody)).not.toMatch(/private|SQL|secret/);
+  });
+
+  it.each([
+    "token: private-value",
+    "secret=private-value",
+    "credentials: private-value",
+  ])("rejects generic credential labels in public run fields", async (value) => {
+    const service = workerService({
+      complete: vi.fn(async () => ({
+        outcome: "completed",
+        run: { ...safeRun(), sourceCountries: [value] },
+      })),
+    });
+    const response = await createGlobalRadarWorkerCompleteHandler({
+      getService: () => service,
+    })(
+      workerRequest(
+        `/api/global-radar/worker/runs/${RUN_ID}/complete`,
+        VALID_BATCH,
+        { "X-Global-Radar-Lease-Token": LEASE_TOKEN },
+      ),
+      context(),
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain(value);
   });
 });

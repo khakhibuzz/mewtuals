@@ -43,6 +43,7 @@ const safeAdminReasons = new Set([
   "request_mismatch",
   "restoration_not_safe",
   "revision_mismatch",
+  "score_provenance_invalid",
   "signal_entity_mismatch",
   "source_evidence_missing",
   "supporting_signal_invalid",

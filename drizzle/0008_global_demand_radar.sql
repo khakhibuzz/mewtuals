@@ -426,6 +426,7 @@ CREATE TABLE "global_radar_signals" (
 	"momentum_score" integer,
 	"score_coverage" integer NOT NULL,
 	"score_policy_version" text NOT NULL,
+	"score_evidence_snapshot" jsonb NOT NULL,
 	"momentum_policy_version" text,
 	"momentum_qualification_gates_passed" boolean,
 	"announced_at" timestamp with time zone,
@@ -535,6 +536,29 @@ CREATE TABLE "global_radar_signals" (
         AND ("global_radar_signals"."momentum_volume_7_days" IS NULL OR "global_radar_signals"."momentum_volume_7_days" >= 0)
         AND ("global_radar_signals"."momentum_volume_30_days" IS NULL OR "global_radar_signals"."momentum_volume_30_days" >= 0)
         AND ("global_radar_signals"."momentum_volume_90_days" IS NULL OR "global_radar_signals"."momentum_volume_90_days" >= 0)),
+	CONSTRAINT "global_radar_signals_score_evidence_snapshot_check" CHECK ((jsonb_typeof("global_radar_signals"."score_evidence_snapshot") = 'object'
+        AND "global_radar_signals"."score_evidence_snapshot"->>'snapshotVersion' = 'global-radar-active-score-snapshot-v2'
+        AND "global_radar_signals"."score_evidence_snapshot"->>'evidenceVersion' = 'global-radar-score-evidence-v1'
+        AND ("global_radar_signals"."score_evidence_snapshot"->>'scoreAsOf')::timestamptz IS NOT NULL
+        AND ("global_radar_signals"."score_evidence_snapshot"->>'evidenceBoundaryOrdinal')::integer > 0
+        AND ("global_radar_signals"."score_evidence_snapshot"->>'evidenceSetCount')::integer > 0
+        AND ("global_radar_signals"."score_evidence_snapshot"->>'evidenceSetCount')::integer <= ("global_radar_signals"."score_evidence_snapshot"->>'evidenceBoundaryOrdinal')::integer
+        AND "global_radar_signals"."score_evidence_snapshot"->>'evidenceSetDigest' ~ '^[a-f0-9]{64}$'
+        AND "global_radar_signals"."score_evidence_snapshot"->>'scoreInputDigest' ~ '^[a-f0-9]{64}$'
+        AND "global_radar_signals"."score_evidence_snapshot"->>'scorePolicyVersion' = "global_radar_signals"."score_policy_version"
+        AND "global_radar_signals"."score_evidence_snapshot"->>'signalClass' = "global_radar_signals"."signal_class"::text
+        AND "global_radar_signals"."score_evidence_snapshot"->>'signalType' = "global_radar_signals"."signal_type"
+        AND "global_radar_signals"."score_evidence_snapshot"->>'indiaRelevanceType' = "global_radar_signals"."india_relevance_type"::text
+        AND "global_radar_signals"."score_evidence_snapshot"->>'assessmentAuthority' IN ('worker', 'administrator')
+        AND (
+          ("global_radar_signals"."signal_class" = 'ecosystem_momentum'
+            AND "global_radar_signals"."score_evidence_snapshot"->>'momentumPolicyVersion' = "global_radar_signals"."momentum_policy_version")
+          OR ("global_radar_signals"."signal_class" <> 'ecosystem_momentum'
+            AND "global_radar_signals"."score_evidence_snapshot"->'momentumPolicyVersion' = 'null'::jsonb)
+        )
+        AND jsonb_typeof("global_radar_signals"."score_evidence_snapshot"->'componentEvidence') = 'array'
+        AND jsonb_array_length("global_radar_signals"."score_evidence_snapshot"->'componentEvidence') BETWEEN 1 AND 13
+        AND octet_length("global_radar_signals"."score_evidence_snapshot"::text) <= 524288) IS TRUE),
 	CONSTRAINT "global_radar_signals_class_matrix_check" CHECK ((
         "global_radar_signals"."signal_class" = 'direct_demand'
         AND "global_radar_signals"."global_entity_id" IS NOT NULL
@@ -730,6 +754,7 @@ CREATE TABLE "global_radar_watchlist_entries" (
 CREATE TABLE "global_signal_evidence" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"signal_id" uuid NOT NULL,
+	"ingest_ordinal" integer NOT NULL,
 	"run_id" uuid,
 	"global_entity_id" uuid,
 	"source_url" text NOT NULL,
@@ -755,6 +780,8 @@ CREATE TABLE "global_signal_evidence" (
 	"supported_field_paths" text[] NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "global_signal_evidence_signal_fingerprint_unique" UNIQUE("signal_id","evidence_fingerprint"),
+	CONSTRAINT "global_signal_evidence_signal_ordinal_unique" UNIQUE("signal_id","ingest_ordinal"),
+	CONSTRAINT "global_signal_evidence_ingest_ordinal_check" CHECK ("global_signal_evidence"."ingest_ordinal" > 0),
 	CONSTRAINT "global_signal_evidence_text_check" CHECK (length(btrim("global_signal_evidence"."source_url")) BETWEEN 1 AND 2048
         AND length(btrim("global_signal_evidence"."canonical_source_url")) BETWEEN 1 AND 2048
         AND length(btrim("global_signal_evidence"."source_name")) BETWEEN 1 AND 200

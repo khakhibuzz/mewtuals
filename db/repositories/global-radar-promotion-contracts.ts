@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import {
   GLOBAL_RADAR_SCORE_VERSION,
   createGlobalRadarFingerprint,
+  globalRadarAuthoredAuditTextSchema,
   promotionEligibilityPaths,
   signalClasses,
   type PromotionEligibilityPath,
@@ -20,8 +21,7 @@ import type { DiscoveryTransaction } from "./discovery-candidate-writer";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MAX_REASON_LENGTH = 2_000;
-const MAX_SUPPORTING_SIGNALS = 100;
+const MAX_SUPPORTING_SIGNALS = 21;
 export const REPEATED_SIGNAL_WINDOW_MS = 180 * 24 * 60 * 60 * 1_000;
 export const PROMOTION_LOCK_NAMESPACE = "global-radar:promotion:v1:" as const;
 export const REVERSAL_LOCK_NAMESPACE =
@@ -36,6 +36,22 @@ export type GlobalRadarPromotionActor = Readonly<{
   userId: string;
   email: string;
 }>;
+
+export const promotionEvidenceSelectionRoles = Object.freeze([
+  "active_score_citation",
+  "qualified_india_direct_demand",
+  "repeated_india_compatible_signal",
+  "documented_indian_relationship",
+  "exceptional_strategic_relevance",
+] as const);
+
+export type PromotionEvidenceSelectionRole =
+  (typeof promotionEvidenceSelectionRoles)[number];
+
+export type SelectedPromotionEvidence = GlobalSignalEvidence &
+  Readonly<{
+    selectionRoles: readonly PromotionEvidenceSelectionRole[];
+  }>;
 
 export type PromoteGlobalRadarEntityInput = Readonly<{
   globalEntityId: string;
@@ -66,6 +82,7 @@ export type LoadGlobalRadarPromotionContextInput = Readonly<{
   primarySignalId: string;
   /** Additional administrator-selected signals; the primary may be omitted. */
   supportingSignalIds: readonly string[];
+  eligibilityPath: PromotionEligibilityPath;
 }>;
 
 export type GlobalRadarPromotionConflictReason =
@@ -202,7 +219,7 @@ export type PromotionContext = Readonly<{
   entity: GlobalEntity;
   primarySignal: GlobalRadarSignal;
   supportingSignals: GlobalRadarSignal[];
-  evidence: GlobalSignalEvidence[];
+  evidence: SelectedPromotionEvidence[];
 }>;
 
 export type PromotionAttemptReason = Exclude<
@@ -247,11 +264,8 @@ export function validPromotionConfiguration(
 }
 
 function canonicalReason(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const reason = value.trim().replace(/\s+/g, " ");
-  return reason.length >= 1 && reason.length <= MAX_REASON_LENGTH
-    ? reason
-    : null;
+  const parsed = globalRadarAuthoredAuditTextSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 function canonicalActor(value: unknown): GlobalRadarPromotionActor | null {
@@ -306,6 +320,9 @@ export function canonicalPromotionInput(
     supportingSignalIds.length !== input.supportingSignalIds.length ||
     supportingSignalIds.some((signalId) => !UUID_PATTERN.test(signalId)) ||
     !supportingSignalIds.includes(input.primarySignalId.toLowerCase()) ||
+    (input.eligibilityPath === "repeated_india_compatible_signals"
+      ? supportingSignalIds.length < 3
+      : supportingSignalIds.length !== 1) ||
     !input.expectedSupportingSignalRevisions ||
     typeof input.expectedSupportingSignalRevisions !== "object" ||
     Array.isArray(input.expectedSupportingSignalRevisions)
@@ -394,6 +411,7 @@ export function canonicalPromotionContextSelection(
       globalEntityId: string;
       primarySignalId: string;
       promotionSupportingSignalIds: string[];
+      eligibilityPath: PromotionEligibilityPath;
     }>
   | null {
   if (
@@ -403,14 +421,18 @@ export function canonicalPromotionContextSelection(
     typeof input.primarySignalId !== "string" ||
     !UUID_PATTERN.test(input.primarySignalId) ||
     !Array.isArray(input.supportingSignalIds) ||
-    input.supportingSignalIds.length > MAX_SUPPORTING_SIGNALS
+    input.supportingSignalIds.length > MAX_SUPPORTING_SIGNALS ||
+    !promotionEligibilityPaths.includes(input.eligibilityPath)
   ) return null;
   const additionalSignalIds = input.supportingSignalIds.map((signalId) =>
     typeof signalId === "string" ? signalId.toLowerCase() : "",
   );
   if (
     additionalSignalIds.some((signalId) => !UUID_PATTERN.test(signalId)) ||
-    new Set(additionalSignalIds).size !== additionalSignalIds.length
+    new Set(additionalSignalIds).size !== additionalSignalIds.length ||
+    (input.eligibilityPath === "repeated_india_compatible_signals"
+      ? additionalSignalIds.length < 2
+      : additionalSignalIds.length !== 0)
   ) return null;
   const primarySignalId = input.primarySignalId.toLowerCase();
   const promotionSupportingSignalIds = [
@@ -421,6 +443,7 @@ export function canonicalPromotionContextSelection(
     globalEntityId: input.globalEntityId.toLowerCase(),
     primarySignalId,
     promotionSupportingSignalIds,
+    eligibilityPath: input.eligibilityPath,
   };
 }
 

@@ -4,30 +4,40 @@ import {
   asc,
   desc,
   eq,
-  gte,
+  gt,
   inArray,
-  isNotNull,
   isNull,
+  max,
   or,
   sql,
 } from "drizzle-orm";
 
 import {
+  GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
+  GLOBAL_RADAR_MOMENTUM_EVIDENCE_MAXIMUM_AGE_DAYS,
   GLOBAL_RADAR_SCORE_VERSION,
   createEntityIdentity,
   createGlobalRadarPublicIdentityAnchor,
   createGlobalRadarFingerprint,
   createGlobalRadarSignalDedupeKeyFromIdentityAnchors,
+  deriveGlobalRadarReclassification,
+  globalRadarAuthoredAuditTextSchema,
   globalRadarDemandFamilyLookup,
   hasCompleteScoreComponentEvidenceAssociations,
+  isProfessionalResponsePathEvidenceField,
   isoTimestampSchema,
   missingMomentumWorkerScoredMetricEvidencePaths,
   missingWorkerScoredComponentEvidencePaths,
   resolveDirectDemandExpiryStatus,
+  scoreDemandPrecursor,
+  scoreDirectDemand,
   selectDirectDemandFreshnessEvidencePath,
   signalClassLookup,
   transitionSignal,
+  type CandidateEvidence,
   type IndiaRelevanceType,
+  type ProfessionalResponsePath,
+  type SensitiveDataAndCompliance,
   type SignalClass,
   type SignalStatus,
 } from "../../app/domain/global-radar";
@@ -64,6 +74,20 @@ import {
   MAX_GLOBAL_RADAR_ADMIN_MOMENTUM_EVIDENCE,
 } from "./global-radar-admin-momentum";
 import {
+  createStoredGlobalRadarScoreInputDigest,
+  createStoredScoreEvidenceSnapshot,
+  eligibleMomentumEvidenceInWindowConditions,
+  rebaseStoredScoreEvidenceSnapshot,
+  storedScoreComponents,
+  type StoredScoreEvidenceRow,
+  type StoredScoreEvaluationEvidenceRow,
+} from "./global-radar-score-evidence";
+import {
+  validateStoredGlobalRadarScoreProvenance,
+  validateStoredGlobalRadarScoreProvenanceBatch,
+} from "./global-radar-stored-score-provenance";
+
+import {
   createGlobalRadarAdminDetailRepository,
 } from "./global-radar-admin-detail-repository";
 import {
@@ -89,6 +113,7 @@ import {
   type GlobalRadarAdminConfiguration,
   type GlobalRadarClassMetrics,
   type GlobalRadarCommonFilters,
+  type GlobalRadarReadConflictReason,
   type GlobalRadarSignalListInput,
   type ListGlobalRadarSignalsResult,
   type SafeGlobalRadarAdminRun,
@@ -98,6 +123,8 @@ import {
   type SafeGlobalRadarWatchlistItem,
   type SafeGlobalRadarWatchlistEnrichment,
 } from "./global-radar-admin-read-model";
+
+const GLOBAL_RADAR_ADMIN_AGGREGATE_CHUNK_SIZE = 100;
 
 export type { GlobalRadarAdminClassificationInput } from "./global-radar-admin-classification";
 export type { GlobalRadarAdminEvidenceInput } from "./global-radar-admin-evidence";
@@ -128,6 +155,96 @@ export type {
   SafeGlobalRadarWatchlistItem,
 } from "./global-radar-admin-read-model";
 
+type GlobalRadarAdminTransaction = Parameters<
+  Parameters<MewtualsDatabase["transaction"]>[0]
+>[0];
+
+class InvalidStoredScoreEvidenceError extends Error {}
+
+const administratorNoCurrentIndiaFitValues = Object.freeze({
+  indiaRelevanceRationale:
+    "An administrator reviewed the public evidence and marked this signal as having no current India fit.",
+  indiaFitReasons: Object.freeze([
+    "No current India fit was confirmed in the administrator review.",
+  ]),
+  indiaFitConstraints: Object.freeze([] as string[]),
+  indiaFitUnknowns: Object.freeze([
+    "India fit may change if new public evidence is added.",
+  ]),
+  indiaFitConfidence: 100,
+  indiaRegulatoryFacts: null,
+  indiaLogisticsFacts: null,
+});
+
+async function validateStoredScoreEvidenceForReview(
+  transaction: GlobalRadarAdminTransaction,
+  signal: typeof globalRadarSignals.$inferSelect,
+) {
+  const validation = await validateStoredGlobalRadarScoreProvenance(
+    transaction,
+    signal,
+  );
+  if (!validation.valid) {
+    throw new InvalidStoredScoreEvidenceError(
+      `Invalid stored Global Radar score provenance: ${validation.reason}.`,
+    );
+  }
+  return validation;
+}
+
+async function createAdminGlobalRadarScoreInputDigest(
+  transaction: GlobalRadarAdminTransaction,
+  input: Readonly<{
+    signal: typeof globalRadarSignals.$inferSelect;
+    scoreAsOf: Date;
+    actionabilityInput: number | null;
+    evidence: readonly Readonly<{ globalEntityId: string | null }>[];
+    overrides?: Partial<typeof globalRadarSignals.$inferSelect>;
+  }>,
+): Promise<string> {
+  const scoreInputSignal = { ...input.signal, ...input.overrides };
+  const associations = await transaction
+    .select({
+      globalEntityId: globalRadarSignalEntities.globalEntityId,
+      role: globalRadarSignalEntities.role,
+    })
+    .from(globalRadarSignalEntities)
+    .where(eq(globalRadarSignalEntities.signalId, input.signal.id));
+  const entityIds = [
+    ...new Set([
+      ...(scoreInputSignal.globalEntityId === null
+        ? []
+        : [scoreInputSignal.globalEntityId]),
+      ...associations.map(({ globalEntityId }) => globalEntityId),
+      ...input.evidence.flatMap(({ globalEntityId }) =>
+        globalEntityId === null ? [] : [globalEntityId],
+      ),
+    ]),
+  ];
+  const entities = entityIds.length
+    ? await transaction
+        .select({
+          id: globalEntities.id,
+          canonicalCorporateGroupId:
+            globalEntities.canonicalCorporateGroupId,
+        })
+        .from(globalEntities)
+        .where(inArray(globalEntities.id, entityIds))
+    : [];
+  if (entities.length !== entityIds.length) {
+    throw new InvalidStoredScoreEvidenceError(
+      "Invalid stored Global Radar score-input entity mapping.",
+    );
+  }
+  return createStoredGlobalRadarScoreInputDigest({
+    scoreAsOf: input.scoreAsOf,
+    signal: scoreInputSignal,
+    actionabilityInput: input.actionabilityInput,
+    associations,
+    entities,
+  });
+}
+
 function parseTimestamp(value: unknown): Date | null {
   const parsed = isoTimestampSchema.safeParse(value);
   return parsed.success ? new Date(parsed.data) : null;
@@ -146,6 +263,20 @@ function validConfiguration(
         threshold <= 100,
     ) &&
     Object.keys(configuration.thresholds).length === 3
+  );
+}
+
+function hasExactSignalIdParity(
+  expectedIds: readonly string[],
+  signals: readonly Readonly<{ id: string }>[],
+): boolean {
+  const expected = new Set(expectedIds);
+  const actual = new Set(signals.map(({ id }) => id));
+  return (
+    expected.size === expectedIds.length &&
+    actual.size === signals.length &&
+    signals.length === expectedIds.length &&
+    [...expected].every((id) => actual.has(id))
   );
 }
 
@@ -214,17 +345,16 @@ function canonicalAdminEnvelope(
     envelope.expectedRevision < 0 ||
     typeof envelope.idempotencyKey !== "string" ||
     !UUID_PATTERN.test(envelope.idempotencyKey) ||
-    typeof envelope.reason !== "string" ||
     !(envelope.now instanceof Date) ||
     Number.isNaN(envelope.now.getTime())
   ) return null;
-  const reason = envelope.reason.trim().replace(/\s+/g, " ");
-  if (reason.length < 1 || reason.length > 2_000) return null;
+  const reason = globalRadarAuthoredAuditTextSchema.safeParse(envelope.reason);
+  if (!reason.success) return null;
   return {
     actor: { userId: actor.userId.toLowerCase(), email: actor.email.trim() },
     expectedRevision: envelope.expectedRevision,
     idempotencyKey: envelope.idempotencyKey.toLowerCase(),
-    reason,
+    reason: reason.data,
     now: new Date(envelope.now.getTime()),
   };
 }
@@ -242,6 +372,182 @@ function storedRequestFingerprint(value: unknown): string | null {
   return typeof fingerprint === "string" && /^[a-f0-9]{64}$/.test(fingerprint)
     ? fingerprint
     : null;
+}
+
+type StoredAdminEvidenceRow = StoredScoreEvidenceRow & Readonly<{
+  id: string;
+  runId: string | null;
+  canonicalSourceUrl: string;
+  sourceType: string;
+  sourceLanguage: string;
+  evidenceClaim: string;
+  sourceExcerpt: string | null;
+  englishSummary: string;
+  translationConfidence: number | null;
+  supportsDirectDemand: boolean;
+}>;
+
+type StoredEntityIdentity = Readonly<{
+  id: string;
+  canonicalCorporateGroupId: string | null;
+}>;
+
+function candidateEvidenceFromStoredRows(
+  evidence: readonly StoredAdminEvidenceRow[],
+  entities: readonly StoredEntityIdentity[],
+): readonly CandidateEvidence[] {
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]));
+  return evidence.map((item) => {
+    const entity =
+      item.globalEntityId === null
+        ? null
+        : (entityById.get(item.globalEntityId) ?? null);
+    const unresolvedIdentity = item.evidenceFingerprint;
+    return {
+      sourceUrl: item.sourceUrl,
+      canonicalSourceUrl: item.canonicalSourceUrl,
+      // Summary and search-result proposals are rejected before persistence.
+      sourceKind: "original",
+      sourceLanguage: item.sourceLanguage,
+      originalText: item.evidenceClaim,
+      englishSummary: item.englishSummary,
+      publishedAt: item.publishedAt?.toISOString() ?? null,
+      observedAt: item.observedAt.toISOString(),
+      evidenceConfidence: item.evidenceConfidence,
+      translationConfidence: item.translationConfidence,
+      isPrimarySource: item.isPrimarySource,
+      isOfficialProcurementSource:
+        item.sourceFamily === "public_procurement_and_rfp_portals",
+      supportsDirectDemand: item.supportsDirectDemand,
+      isSyndicated: item.isSyndicated,
+      organizationId: entity?.id ?? unresolvedIdentity,
+      corporateGroupId:
+        entity?.canonicalCorporateGroupId ?? entity?.id ?? unresolvedIdentity,
+      supportedFieldPaths: [...item.supportedFieldPaths],
+    };
+  });
+}
+
+function storedResponsePathCandidates(
+  signal: Pick<
+    typeof globalRadarSignals.$inferSelect,
+    | "responsePathType"
+    | "responsePathUrl"
+    | "responseBusinessEmail"
+  >,
+  evidence: readonly StoredAdminEvidenceRow[],
+): readonly (ProfessionalResponsePath | null)[] {
+  if (
+    signal.responsePathType === null &&
+    signal.responsePathUrl === null &&
+    signal.responseBusinessEmail === null
+  ) {
+    return [null];
+  }
+  const emailPath = signal.responsePathType === "official_business_email";
+  if (
+    signal.responsePathType === null ||
+    (emailPath &&
+      (signal.responseBusinessEmail === null || signal.responsePathUrl !== null)) ||
+    (!emailPath &&
+      (signal.responsePathUrl === null || signal.responseBusinessEmail !== null))
+  ) {
+    return [];
+  }
+  return evidence
+    .filter(
+      (item) =>
+        item.isPrimarySource &&
+        item.supportedFieldPaths.some(isProfessionalResponsePathEvidenceField),
+    )
+    .map((item) => ({
+      type: signal.responsePathType!,
+      url: emailPath ? null : signal.responsePathUrl,
+      businessEmail: emailPath ? signal.responseBusinessEmail : null,
+      evidenceUrl: item.sourceUrl,
+    }));
+}
+
+function storedSensitiveDataAndCompliance(
+  signal: typeof globalRadarSignals.$inferSelect,
+): SensitiveDataAndCompliance {
+  return {
+    sensitiveDataFlags: {
+      faces: signal.faces,
+      voices: signal.voices,
+      biometrics: signal.biometrics,
+      gaze: signal.gaze,
+      health: signal.health,
+      children: signal.children,
+      home_interiors: signal.homeInteriors,
+      workplace_monitoring: signal.workplaceMonitoring,
+      precise_location: signal.preciseLocation,
+      road_users: signal.roadUsers,
+      employee_data: signal.employeeData,
+      industrial_secrets: signal.industrialSecrets,
+      defence_or_dual_use: signal.defenceOrDualUse,
+      copyrighted_material: signal.copyrightedMaterial,
+      export_controls: signal.exportControls,
+    },
+    complianceFacts: {
+      consent: signal.consent,
+      deIdentification: signal.deIdentification,
+      legalReview: signal.legalReview,
+      knownResidencyRequirements: signal.knownResidencyRequirements,
+      participantRightsComplexity: signal.participantRightsComplexity,
+    },
+  };
+}
+
+function directSnapshotComponents(
+  components: Readonly<{
+    explicitness: number | null;
+    evidenceConfidence: number | null;
+    freshness: number | null;
+    actionability: number | null;
+    indiaFit: number | null;
+    commercialPotential: number | null;
+    repeatability: number | null;
+    responseAccessibility: number | null;
+    strategicLearning: number | null;
+    complianceComplexity: number | null;
+  }>,
+): Readonly<Record<string, number | null>> {
+  return {
+    demandExplicitness: components.explicitness,
+    evidenceConfidence: components.evidenceConfidence,
+    freshness: components.freshness,
+    actionability: components.actionability,
+    indiaFit: components.indiaFit,
+    commercialPotential: components.commercialPotential,
+    repeatability: components.repeatability,
+    responseAccessibility: components.responseAccessibility,
+    strategicLearning: components.strategicLearning,
+    complianceComplexity: components.complianceComplexity,
+  };
+}
+
+function momentumSnapshotComponents(
+  momentum: Extract<
+    ReturnType<typeof deriveGlobalRadarAdminMomentum>,
+    { outcome: "derived" }
+  >["derivation"],
+): Readonly<Record<string, number>> {
+  return {
+    independentEntityCount: momentum.counts.independentEntities,
+    primarySourceCount: momentum.counts.primarySources,
+    sourceFamilyCount: momentum.counts.sourceFamilies,
+    volume7Days: momentum.windows.days7.recent,
+    volume30Days: momentum.windows.days30.recent,
+    volume90Days: momentum.windows.days90.recent,
+    independentEntityBreadth: momentum.components.independentEntityBreadth,
+    primarySourceDepth: momentum.components.primarySourceDepth,
+    sourceDiversity: momentum.components.sourceDiversity,
+    weightedVolume: momentum.components.weightedVolume,
+    growthVsPreviousPeriod: momentum.components.growthVsPreceding,
+    taxonomyConsistency: momentum.components.taxonomyConsistency,
+    evidenceQuality: momentum.components.evidenceQuality,
+  };
 }
 
 function isDirectDemandActive(
@@ -389,6 +695,29 @@ export function createGlobalRadarAdminRepository(
         .orderBy(...signalOrder(input.signalClass))
         .limit(PAGE_SIZE)
         .offset((filters.page - 1) * PAGE_SIZE);
+      const storedSignals = rows.length
+        ? await database
+            .select()
+            .from(globalRadarSignals)
+            .where(inArray(globalRadarSignals.id, rows.map(({ id }) => id)))
+        : [];
+      if (!hasExactSignalIdParity(rows.map(({ id }) => id), storedSignals)) {
+        return {
+          outcome: "conflict",
+          reason: "score_provenance_invalid",
+        };
+      }
+      const scoreProvenance =
+        await validateStoredGlobalRadarScoreProvenanceBatch(
+          database,
+          storedSignals,
+        );
+      if (!scoreProvenance.valid) {
+        return {
+          outcome: "conflict",
+          reason: "score_provenance_invalid",
+        };
+      }
       return {
         outcome: "listed",
         page: filters.page,
@@ -404,7 +733,7 @@ export function createGlobalRadarAdminRepository(
       now: Date;
     }): Promise<
       | { outcome: "listed"; metrics: GlobalRadarClassMetrics }
-      | { outcome: "conflict"; reason: "invalid_input" }
+      | { outcome: "conflict"; reason: GlobalRadarReadConflictReason }
     > {
       if (
         !signalClassLookup[input.signalClass] ||
@@ -413,48 +742,6 @@ export function createGlobalRadarAdminRepository(
       ) return { outcome: "conflict", reason: "invalid_input" };
       const filters = parseSignalFilters(input.signalClass, input.filters);
       if (!filters) return { outcome: "conflict", reason: "invalid_input" };
-      const rows = await database
-        .select({
-          id: globalRadarSignals.id,
-          status: globalRadarSignals.status,
-          sourceCountry: globalRadarSignals.sourceCountry,
-          indiaRelevanceType: globalRadarSignals.indiaRelevanceType,
-          demandDomain: globalRadarSignals.demandDomain,
-          scorePolicyVersion: globalRadarSignals.scorePolicyVersion,
-          directDemandScore: globalRadarSignals.directDemandScore,
-          precursorScore: globalRadarSignals.precursorScore,
-          momentumScore: globalRadarSignals.momentumScore,
-          demandExplicitness: globalRadarSignals.demandExplicitness,
-          evidenceConfidence: globalRadarSignals.evidenceConfidence,
-          proximityToExternalDemand: globalRadarSignals.proximityToExternalDemand,
-          momentumIndependentEntityCount: globalRadarSignals.momentumIndependentEntityCount,
-          momentumPrimarySourceCount: globalRadarSignals.momentumPrimarySourceCount,
-          momentumTaxonomyConsistency: globalRadarSignals.momentumTaxonomyConsistency,
-          momentumEvidenceQuality: globalRadarSignals.momentumEvidenceQuality,
-          momentumQualificationGatesPassed: globalRadarSignals.momentumQualificationGatesPassed,
-          expiresAt: globalRadarSignals.expiresAt,
-          evergreen: globalRadarSignals.evergreen,
-          reobserveBy: globalRadarSignals.reobserveBy,
-          estimatedTimeHorizon: globalRadarSignals.estimatedTimeHorizon,
-        })
-        .from(globalRadarSignals)
-        .where(and(...filterConditions(input.signalClass, filters)));
-      const ids = rows.map(({ id }) => id);
-      const requirements = ids.length
-        ? await database
-            .select({
-              signalId: globalSignalRequirements.signalId,
-              kind: globalSignalRequirements.kind,
-            })
-            .from(globalSignalRequirements)
-            .where(inArray(globalSignalRequirements.signalId, ids))
-        : [];
-      const kindsBySignal = new Map<string, Set<string>>();
-      requirements.forEach(({ signalId, kind }) => {
-        const kinds = kindsBySignal.get(signalId) ?? new Set<string>();
-        kinds.add(kind);
-        kindsBySignal.set(signalId, kinds);
-      });
       const byStatus: Partial<Record<SignalStatus, number>> = {};
       const demandFamilies: Record<string, number> = {};
       const horizon = {
@@ -474,7 +761,49 @@ export function createGlobalRadarAdminRepository(
       let active = 0;
       let expiring = 0;
       let qualified = 0;
-      for (const row of rows) {
+      let total = 0;
+      let cursor: string | null = null;
+      while (true) {
+        const rows = await database
+          .select()
+          .from(globalRadarSignals)
+          .where(
+            and(
+              ...filterConditions(input.signalClass, filters),
+              cursor === null ? undefined : gt(globalRadarSignals.id, cursor),
+            ),
+          )
+          .orderBy(asc(globalRadarSignals.id))
+          .limit(GLOBAL_RADAR_ADMIN_AGGREGATE_CHUNK_SIZE);
+        if (rows.length === 0) break;
+        const scoreProvenance =
+          await validateStoredGlobalRadarScoreProvenanceBatch(database, rows);
+        if (!scoreProvenance.valid) {
+          return {
+            outcome: "conflict",
+            reason: "score_provenance_invalid",
+          };
+        }
+        const requirements = await database
+          .select({
+            signalId: globalSignalRequirements.signalId,
+            kind: globalSignalRequirements.kind,
+          })
+          .from(globalSignalRequirements)
+          .where(
+            inArray(
+              globalSignalRequirements.signalId,
+              rows.map(({ id }) => id),
+            ),
+          );
+        const kindsBySignal = new Map<string, Set<string>>();
+        requirements.forEach(({ signalId, kind }) => {
+          const kinds = kindsBySignal.get(signalId) ?? new Set<string>();
+          kinds.add(kind);
+          kindsBySignal.set(signalId, kinds);
+        });
+        total += rows.length;
+        for (const row of rows) {
         byStatus[row.status] = (byStatus[row.status] ?? 0) + 1;
         if (
           globalRadarDemandFamilyLookup[
@@ -536,18 +865,21 @@ export function createGlobalRadarAdminRepository(
           score >= configuration.thresholds[input.signalClass] &&
           hardGates
         ) highQuality += 1;
+        }
+        cursor = rows.at(-1)!.id;
+        if (rows.length < GLOBAL_RADAR_ADMIN_AGGREGATE_CHUNK_SIZE) break;
       }
       return {
         outcome: "listed",
         metrics: {
-          total: rows.length,
+          total,
           highQuality,
           byStatus,
-          india: { explicit, inferred, other: rows.length - explicit - inferred },
+          india: { explicit, inferred, other: total - explicit - inferred },
           countries: {
             unitedStates,
             china,
-            other: rows.length - unitedStates - china,
+            other: total - unitedStates - china,
           },
           requirementMix: { physicalData, hardware },
           demandFamilies,
@@ -561,32 +893,13 @@ export function createGlobalRadarAdminRepository(
 
     async getOverviewMetrics(input: { now: Date }): Promise<
       | { outcome: "listed"; metrics: SafeGlobalRadarOverviewMetrics }
-      | { outcome: "conflict"; reason: "invalid_input" }
+      | { outcome: "conflict"; reason: GlobalRadarReadConflictReason }
     > {
       if (
         !(input.now instanceof Date) ||
         Number.isNaN(input.now.getTime())
       ) return { outcome: "conflict", reason: "invalid_input" };
-      const [signals, latestRuns, promotedRows] = await Promise.all([
-        database
-          .select({
-            id: globalRadarSignals.id,
-            signalClass: globalRadarSignals.signalClass,
-            status: globalRadarSignals.status,
-            sourceCountry: globalRadarSignals.sourceCountry,
-            indiaRelevanceType: globalRadarSignals.indiaRelevanceType,
-            observedAt: globalRadarSignals.observedAt,
-            expiresAt: globalRadarSignals.expiresAt,
-            evergreen: globalRadarSignals.evergreen,
-            reobserveBy: globalRadarSignals.reobserveBy,
-            evidenceConfidence: globalRadarSignals.evidenceConfidence,
-            proximityToExternalDemand:
-              globalRadarSignals.proximityToExternalDemand,
-            precursorScore: globalRadarSignals.precursorScore,
-            scorePolicyVersion: globalRadarSignals.scorePolicyVersion,
-            mergedIntoSignalId: globalRadarSignals.mergedIntoSignalId,
-          })
-          .from(globalRadarSignals),
+      const [latestRuns, promotedRows] = await Promise.all([
         database
           .select({
             id: globalRadarRuns.id,
@@ -603,32 +916,7 @@ export function createGlobalRadarAdminRepository(
           .from(globalEntities)
           .where(eq(globalEntities.entityStatus, "promoted_to_candidate")),
       ]);
-      const activeSignals = signals.filter(
-        ({ mergedIntoSignalId }) => mergedIntoSignalId === null,
-      );
-      const signalIds = activeSignals.map(({ id }) => id);
-      const requirements = signalIds.length
-        ? await database
-            .select({
-              signalId: globalSignalRequirements.signalId,
-              kind: globalSignalRequirements.kind,
-              capabilityTag: globalSignalRequirements.capabilityTag,
-            })
-            .from(globalSignalRequirements)
-            .where(inArray(globalSignalRequirements.signalId, signalIds))
-        : [];
-      const requirementKindsBySignal = new Map<string, Set<string>>();
       const capabilitySignals = new Map<string, Set<string>>();
-      for (const requirement of requirements) {
-        const kinds =
-          requirementKindsBySignal.get(requirement.signalId) ?? new Set<string>();
-        kinds.add(requirement.kind);
-        requirementKindsBySignal.set(requirement.signalId, kinds);
-        const capabilitySet =
-          capabilitySignals.get(requirement.capabilityTag) ?? new Set<string>();
-        capabilitySet.add(requirement.signalId);
-        capabilitySignals.set(requirement.capabilityTag, capabilitySet);
-      }
       let activeDirectDemand = 0;
       let highQualityPrecursors = 0;
       let explicitIndia = 0;
@@ -638,10 +926,74 @@ export function createGlobalRadarAdminRepository(
       let physicalData = 0;
       let hardware = 0;
       let expiringDirectDemand = 0;
+      let newSignals = 0;
+      let activeSignalCount = 0;
+      let mergedDuplicates = 0;
       const expiryWindowEnd = new Date(
         input.now.getTime() + 30 * 24 * 60 * 60 * 1_000,
       );
-      for (const signal of activeSignals) {
+      let cursor: string | null = null;
+      while (true) {
+        const rows = await database
+          .select()
+          .from(globalRadarSignals)
+          .where(
+            cursor === null ? undefined : gt(globalRadarSignals.id, cursor),
+          )
+          .orderBy(asc(globalRadarSignals.id))
+          .limit(GLOBAL_RADAR_ADMIN_AGGREGATE_CHUNK_SIZE);
+        if (rows.length === 0) break;
+        const activeSignals = rows.filter(
+          ({ mergedIntoSignalId }) => mergedIntoSignalId === null,
+        );
+        mergedDuplicates += rows.length - activeSignals.length;
+        activeSignalCount += activeSignals.length;
+        newSignals += countGlobalRadarSignalsObservedToday(
+          activeSignals.map(({ observedAt }) => observedAt),
+          input.now,
+        );
+        const precursorScoreProvenance =
+          await validateStoredGlobalRadarScoreProvenanceBatch(
+            database,
+            activeSignals.filter(
+              ({ signalClass }) => signalClass === "demand_precursor",
+            ),
+          );
+        if (!precursorScoreProvenance.valid) {
+          return {
+            outcome: "conflict",
+            reason: "score_provenance_invalid",
+          };
+        }
+        const requirements = activeSignals.length
+          ? await database
+              .select({
+                signalId: globalSignalRequirements.signalId,
+                kind: globalSignalRequirements.kind,
+                capabilityTag: globalSignalRequirements.capabilityTag,
+              })
+              .from(globalSignalRequirements)
+              .where(
+                inArray(
+                  globalSignalRequirements.signalId,
+                  activeSignals.map(({ id }) => id),
+                ),
+              )
+          : [];
+        const requirementKindsBySignal = new Map<string, Set<string>>();
+        for (const requirement of requirements) {
+          const kinds =
+            requirementKindsBySignal.get(requirement.signalId) ??
+            new Set<string>();
+          kinds.add(requirement.kind);
+          requirementKindsBySignal.set(requirement.signalId, kinds);
+          const capabilitySet =
+            capabilitySignals.get(requirement.capabilityTag) ??
+            new Set<string>();
+          capabilitySet.add(requirement.signalId);
+          capabilitySignals.set(requirement.capabilityTag, capabilitySet);
+        }
+        for (const signal of activeSignals) {
         if (signal.indiaRelevanceType === "explicit_India") explicitIndia += 1;
         if (signal.indiaRelevanceType === "inferred_India_compatible") {
           inferredIndia += 1;
@@ -676,22 +1028,22 @@ export function createGlobalRadarAdminRepository(
           (signal.evidenceConfidence ?? -1) >= 60 &&
           (signal.proximityToExternalDemand ?? -1) >= 50
         ) highQualityPrecursors += 1;
+        }
+        cursor = rows.at(-1)!.id;
+        if (rows.length < GLOBAL_RADAR_ADMIN_AGGREGATE_CHUNK_SIZE) break;
       }
       const latestRun = latestRuns[0];
       return {
         outcome: "listed",
         metrics: {
-          newSignals: countGlobalRadarSignalsObservedToday(
-            activeSignals.map(({ observedAt }) => observedAt),
-            input.now,
-          ),
+          newSignals,
           activeDirectDemand,
           highQualityPrecursors,
           india: { explicit: explicitIndia, inferred: inferredIndia },
           countries: {
             unitedStates,
             china,
-            other: activeSignals.length - unitedStates - china,
+            other: activeSignalCount - unitedStates - china,
           },
           requirementMix: { physicalData, hardware },
           capabilityFamilies: [...capabilitySignals.entries()]
@@ -713,7 +1065,7 @@ export function createGlobalRadarAdminRepository(
               }
             : null,
           sourceErrors: latestRun?.numberSourceErrors ?? 0,
-          mergedDuplicates: signals.length - activeSignals.length,
+          mergedDuplicates,
         },
       };
     },
@@ -782,6 +1134,23 @@ export function createGlobalRadarAdminRepository(
         if (signal.mergedIntoSignalId !== null) {
           return { outcome: "transition_not_allowed" as const };
         }
+        let validatedExistingScore: Awaited<
+          ReturnType<typeof validateStoredScoreEvidenceForReview>
+        >;
+        try {
+          validatedExistingScore =
+            await validateStoredScoreEvidenceForReview(tx, signal);
+        } catch (error) {
+          if (
+            input.command.type === "qualify" &&
+            error instanceof InvalidStoredScoreEvidenceError
+          ) {
+            return {
+              outcome: "qualification_requirements_not_met" as const,
+            };
+          }
+          throw error;
+        }
 
         let hardGatesPassed = false;
         let score =
@@ -794,6 +1163,10 @@ export function createGlobalRadarAdminRepository(
           ReturnType<typeof deriveGlobalRadarAdminMomentum>,
           { outcome: "derived" }
         >["derivation"] | null = null;
+        let refreshedMomentumEvidence: readonly (StoredScoreEvidenceRow &
+          Readonly<{ runId: string | null }>)[] = [];
+        let refreshedMomentumEvaluationEvidence: readonly StoredScoreEvaluationEvidenceRow[] = [];
+        let refreshedMomentumContributorIds: readonly string[] = [];
         if (signal.signalClass === "direct_demand") {
           hardGatesPassed =
             (signal.demandExplicitness ?? -1) >= 75 &&
@@ -814,6 +1187,7 @@ export function createGlobalRadarAdminRepository(
           const contributorIds = associations
             .filter(({ role }) => role === "contributor")
             .map(({ entityId }) => entityId);
+          refreshedMomentumContributorIds = contributorIds;
           const [entities, evidence] = contributorIds.length > 0
             ? await Promise.all([
                 tx
@@ -826,27 +1200,38 @@ export function createGlobalRadarAdminRepository(
                   .where(inArray(globalEntities.id, contributorIds)),
                 tx
                   .select({
-                    id: globalSignalEvidence.evidenceFingerprint,
+                    evidenceFingerprint:
+                      globalSignalEvidence.evidenceFingerprint,
                     runId: globalSignalEvidence.runId,
-                    entityId: globalSignalEvidence.globalEntityId,
-                    sourceId: globalSignalEvidence.evidenceFingerprint,
+                    globalEntityId: globalSignalEvidence.globalEntityId,
+                    sourceUrl: globalSignalEvidence.sourceUrl,
+                    sourceName: globalSignalEvidence.sourceName,
+                    evidenceClaim: globalSignalEvidence.evidenceClaim,
                     sourceFamily: globalSignalEvidence.sourceFamily,
+                    publishedAt: globalSignalEvidence.publishedAt,
                     isPrimarySource: globalSignalEvidence.isPrimarySource,
                     isSyndicated: globalSignalEvidence.isSyndicated,
                     observedAt: globalSignalEvidence.observedAt,
+                    evidenceConfidence:
+                      globalSignalEvidence.evidenceConfidence,
+                    supportedFieldPaths:
+                      globalSignalEvidence.supportedFieldPaths,
                   })
                   .from(globalSignalEvidence)
                   .where(
-                    and(
-                      eq(globalSignalEvidence.signalId, signal.id),
-                      eq(globalSignalEvidence.isSyndicated, false),
-                      isNotNull(globalSignalEvidence.globalEntityId),
-                      inArray(globalSignalEvidence.globalEntityId, contributorIds),
-                      gte(
-                        globalSignalEvidence.observedAt,
-                        new Date(canonical.now.getTime() - 180 * 24 * 60 * 60 * 1_000),
+                    eligibleMomentumEvidenceInWindowConditions({
+                      signalId: signal.id,
+                      contributorEntityIds: contributorIds,
+                      cutoff: new Date(
+                        canonical.now.getTime() -
+                          GLOBAL_RADAR_MOMENTUM_EVIDENCE_MAXIMUM_AGE_DAYS *
+                            24 *
+                            60 *
+                            60 *
+                            1_000,
                       ),
-                    ),
+                      asOf: canonical.now,
+                    }),
                   )
                   .orderBy(
                     desc(globalSignalEvidence.observedAt),
@@ -862,12 +1247,34 @@ export function createGlobalRadarAdminRepository(
             now: canonical.now,
             associations,
             entities,
-            evidence,
+            evidence: evidence.map((item) => ({
+              id: item.evidenceFingerprint,
+              runId: item.runId,
+              entityId: item.globalEntityId,
+              sourceId: item.evidenceFingerprint,
+              sourceFamily: item.sourceFamily,
+              isPrimarySource: item.isPrimarySource,
+              isSyndicated: item.isSyndicated,
+              observedAt: item.observedAt,
+            })),
           });
           if (momentum.outcome === "conflict") {
             return { outcome: "qualification_requirements_not_met" as const };
           }
           refreshedMomentum = momentum.derivation;
+          refreshedMomentumEvidence = evidence;
+          refreshedMomentumEvaluationEvidence = await tx
+            .select()
+            .from(globalSignalEvidence)
+            .where(eq(globalSignalEvidence.signalId, signal.id))
+            .orderBy(asc(globalSignalEvidence.ingestOrdinal))
+            .limit(MAX_GLOBAL_RADAR_ADMIN_MOMENTUM_EVIDENCE + 1);
+          if (
+            refreshedMomentumEvaluationEvidence.length >
+            MAX_GLOBAL_RADAR_ADMIN_MOMENTUM_EVIDENCE
+          ) {
+            return { outcome: "qualification_requirements_not_met" as const };
+          }
           score = refreshedMomentum.score;
           hardGatesPassed = refreshedMomentum.qualificationGatesPassed;
         }
@@ -904,13 +1311,275 @@ export function createGlobalRadarAdminRepository(
               transition.reason === "qualification_requirements_not_met"
                 ? ("qualification_requirements_not_met" as const)
                 : ("transition_not_allowed" as const),
-          };
+            };
         }
+        let reviewScoreValues: Partial<
+          typeof globalRadarSignals.$inferInsert
+        > = {};
+        if (refreshedMomentum) {
+          const existingEvidence = validatedExistingScore.evaluationEvidence;
+          const nextComponents = momentumSnapshotComponents(refreshedMomentum);
+          const scoreEvidenceSnapshot = rebaseStoredScoreEvidenceSnapshot({
+            existingSnapshot: signal.scoreEvidenceSnapshot,
+            signalClass: "ecosystem_momentum",
+            signalType: signal.signalType,
+            currentIndiaRelevanceType: signal.indiaRelevanceType,
+            nextIndiaRelevanceType: signal.indiaRelevanceType,
+            scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+            momentumPolicyVersion: GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
+            currentComponents: storedScoreComponents(signal),
+            nextComponents,
+            replacementComponents: [
+              "independentEntityCount",
+              "primarySourceCount",
+              "sourceFamilyCount",
+              "volume7Days",
+              "volume30Days",
+              "volume90Days",
+              "independentEntityBreadth",
+              "primarySourceDepth",
+              "sourceDiversity",
+              "weightedVolume",
+              "growthVsPreviousPeriod",
+            ],
+            momentumContributorEntityIds: refreshedMomentumContributorIds,
+            announcedAt: signal.announcedAt,
+            effectiveFrom: signal.effectiveFrom,
+            existingEvidence,
+            evidence: refreshedMomentumEvidence,
+            scoreAsOf: canonical.now,
+            evaluationEvidence: refreshedMomentumEvaluationEvidence,
+            scoreInputDigest:
+              validatedExistingScore.snapshot.scoreInputDigest,
+          });
+          reviewScoreValues = {
+            momentumIndependentEntityCount:
+              refreshedMomentum.counts.independentEntities,
+            momentumPrimarySourceCount:
+              refreshedMomentum.counts.primarySources,
+            momentumSourceFamilyCount:
+              refreshedMomentum.counts.sourceFamilies,
+            momentumVolume7Days: refreshedMomentum.windows.days7.recent,
+            momentumVolume30Days: refreshedMomentum.windows.days30.recent,
+            momentumVolume90Days: refreshedMomentum.windows.days90.recent,
+            momentumIndependentEntityBreadth:
+              refreshedMomentum.components.independentEntityBreadth,
+            momentumPrimarySourceDepth:
+              refreshedMomentum.components.primarySourceDepth,
+            momentumSourceDiversity:
+              refreshedMomentum.components.sourceDiversity,
+            momentumWeightedVolume:
+              refreshedMomentum.components.weightedVolume,
+            momentumGrowthVsPreviousPeriod:
+              refreshedMomentum.components.growthVsPreceding,
+            momentumTaxonomyConsistency:
+              refreshedMomentum.components.taxonomyConsistency,
+            momentumEvidenceQuality:
+              refreshedMomentum.components.evidenceQuality,
+            momentumScore: refreshedMomentum.score,
+            scoreCoverage: refreshedMomentum.scoreCoverage,
+            scorePolicyVersion: refreshedMomentum.scoreVersion,
+            momentumPolicyVersion: refreshedMomentum.policyVersion,
+            momentumQualificationGatesPassed:
+              refreshedMomentum.qualificationGatesPassed,
+            scoreEvidenceSnapshot,
+          };
+        } else if (input.command.type === "mark_no_india_fit") {
+          const existingEvidence = validatedExistingScore.evaluationEvidence;
+          const noFitNarrative = {
+            ...administratorNoCurrentIndiaFitValues,
+            indiaFitReasons: [
+              ...administratorNoCurrentIndiaFitValues.indiaFitReasons,
+            ],
+            indiaFitConstraints: [
+              ...administratorNoCurrentIndiaFitValues.indiaFitConstraints,
+            ],
+            indiaFitUnknowns: [
+              ...administratorNoCurrentIndiaFitValues.indiaFitUnknowns,
+            ],
+          };
+          const currentComponents = storedScoreComponents(signal);
+          if (signal.signalClass === "direct_demand") {
+            const recomputed = scoreDirectDemand({
+              explicitness: signal.demandExplicitness,
+              evidenceConfidence: signal.evidenceConfidence,
+              freshness: signal.freshness,
+              actionability: signal.actionability,
+              indiaFit: 0,
+              commercialPotential: signal.commercialPotential,
+              repeatability: signal.repeatability,
+              responseAccessibility: signal.responseAccessibility,
+              strategicLearning: signal.strategicLearning,
+              complianceComplexity: signal.complianceComplexity,
+            });
+            if (!recomputed.valid) {
+              throw new Error("Invalid stored Global Radar direct-demand score.");
+            }
+            const nextComponents = directSnapshotComponents(
+              recomputed.components,
+            );
+            reviewScoreValues = {
+              ...noFitNarrative,
+              indiaFit: 0,
+              directDemandScore: recomputed.score,
+              scoreCoverage: recomputed.scoreCoverage,
+              scoreEvidenceSnapshot: rebaseStoredScoreEvidenceSnapshot({
+                existingSnapshot: signal.scoreEvidenceSnapshot,
+                signalClass: signal.signalClass,
+                signalType: signal.signalType,
+                currentIndiaRelevanceType: signal.indiaRelevanceType,
+                nextIndiaRelevanceType: "no_current_India_fit",
+                scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+                momentumPolicyVersion: null,
+                currentComponents,
+                nextComponents,
+                replacementComponents: ["indiaFit"],
+                announcedAt: signal.announcedAt,
+                effectiveFrom: signal.effectiveFrom,
+                existingEvidence,
+                evidence: existingEvidence,
+                scoreInputDigest:
+                  validatedExistingScore.snapshot.scoreInputDigest,
+              }),
+            };
+          } else if (signal.signalClass === "demand_precursor") {
+            const recomputed = scoreDemandPrecursor({
+              evidenceConfidence: signal.evidenceConfidence,
+              proximityToExternalDemand: signal.proximityToExternalDemand,
+              fundingDeploymentMomentum: signal.fundingDeploymentMomentum,
+              likelyDataHardwareIntensity: signal.likelyDataHardwareIntensity,
+              indiaFit: 0,
+              estimatedTimeHorizon: signal.estimatedTimeHorizon,
+              strategicRelevance: signal.strategicRelevance,
+            });
+            if (!recomputed.valid) {
+              throw new Error("Invalid stored Global Radar precursor score.");
+            }
+            reviewScoreValues = {
+              ...noFitNarrative,
+              indiaFit: 0,
+              precursorScore: recomputed.score,
+              scoreCoverage: recomputed.scoreCoverage,
+              scoreEvidenceSnapshot: rebaseStoredScoreEvidenceSnapshot({
+                existingSnapshot: signal.scoreEvidenceSnapshot,
+                signalClass: signal.signalClass,
+                signalType: signal.signalType,
+                currentIndiaRelevanceType: signal.indiaRelevanceType,
+                nextIndiaRelevanceType: "no_current_India_fit",
+                scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+                momentumPolicyVersion: null,
+                currentComponents,
+                nextComponents: recomputed.components,
+                replacementComponents: ["indiaFit"],
+                announcedAt: signal.announcedAt,
+                effectiveFrom: signal.effectiveFrom,
+                existingEvidence,
+                evidence: existingEvidence,
+                scoreInputDigest:
+                  validatedExistingScore.snapshot.scoreInputDigest,
+              }),
+            };
+          } else {
+            const contributorAssociations = await tx
+              .select({
+                globalEntityId: globalRadarSignalEntities.globalEntityId,
+              })
+              .from(globalRadarSignalEntities)
+              .where(
+                and(
+                  eq(globalRadarSignalEntities.signalId, signal.id),
+                  eq(globalRadarSignalEntities.role, "contributor"),
+                ),
+              );
+            reviewScoreValues = {
+              ...noFitNarrative,
+              scoreEvidenceSnapshot: rebaseStoredScoreEvidenceSnapshot({
+                existingSnapshot: signal.scoreEvidenceSnapshot,
+                signalClass: signal.signalClass,
+                signalType: signal.signalType,
+                currentIndiaRelevanceType: signal.indiaRelevanceType,
+                nextIndiaRelevanceType: "no_current_India_fit",
+                scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+                momentumPolicyVersion:
+                  GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
+                currentComponents,
+                nextComponents: currentComponents,
+                replacementComponents: [],
+                momentumContributorEntityIds:
+                  contributorAssociations.map(
+                    ({ globalEntityId }) => globalEntityId,
+                  ),
+                announcedAt: signal.announcedAt,
+                effectiveFrom: signal.effectiveFrom,
+                existingEvidence,
+                evidence: existingEvidence,
+                scoreInputDigest:
+                  validatedExistingScore.snapshot.scoreInputDigest,
+              }),
+            };
+          }
+        }
+        const nextSignal = {
+          ...signal,
+          ...reviewScoreValues,
+          status: transition.status,
+          indiaRelevanceType: transition.indiaRelevanceType,
+        } as typeof signal;
+        const nextEvaluationEvidence = refreshedMomentum
+          ? refreshedMomentumEvaluationEvidence
+          : validatedExistingScore.evaluationEvidence;
+        const nextScoreAsOf = refreshedMomentum
+          ? canonical.now
+          : new Date(validatedExistingScore.snapshot.scoreAsOf);
+        const actionabilityInput =
+          signal.signalClass === "direct_demand"
+            ? (validatedExistingScore.snapshot.componentEvidence.find(
+                ({ component }) => component === "actionability",
+              )?.inputValue ?? null)
+            : null;
+        const scoreInputDigest = await createAdminGlobalRadarScoreInputDigest(
+          tx,
+          {
+            signal,
+            scoreAsOf: nextScoreAsOf,
+            actionabilityInput,
+            evidence: nextEvaluationEvidence,
+            overrides: nextSignal,
+          },
+        );
+        reviewScoreValues.scoreEvidenceSnapshot =
+          rebaseStoredScoreEvidenceSnapshot({
+            existingSnapshot:
+              reviewScoreValues.scoreEvidenceSnapshot ??
+              signal.scoreEvidenceSnapshot,
+            signalClass: nextSignal.signalClass,
+            signalType: nextSignal.signalType,
+            currentIndiaRelevanceType: nextSignal.indiaRelevanceType,
+            nextIndiaRelevanceType: nextSignal.indiaRelevanceType,
+            scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+            momentumPolicyVersion:
+              nextSignal.signalClass === "ecosystem_momentum"
+                ? GLOBAL_RADAR_MOMENTUM_POLICY_VERSION
+                : null,
+            currentComponents: storedScoreComponents(nextSignal),
+            nextComponents: storedScoreComponents(nextSignal),
+            replacementComponents: [],
+            momentumContributorEntityIds:
+              nextSignal.signalClass === "ecosystem_momentum"
+                ? validatedExistingScore.momentumContributorEntityIds
+                : undefined,
+            announcedAt: nextSignal.announcedAt,
+            effectiveFrom: nextSignal.effectiveFrom,
+            existingEvidence: nextEvaluationEvidence,
+            evidence: nextEvaluationEvidence,
+            scoreInputDigest,
+          });
         const previousSafeState = signalSafeState(signal);
         const revision = signal.revision + 1;
         const [updated] = await tx
           .update(globalRadarSignals)
           .set({
+            ...reviewScoreValues,
             ...(refreshedMomentum
               ? {
                   momentumIndependentEntityCount:
@@ -1110,6 +1779,48 @@ export function createGlobalRadarAdminRepository(
         if (!expiryStatus.valid) {
           return { outcome: "invalid_input" as const };
         }
+        const validatedScore = await validateStoredScoreEvidenceForReview(
+          tx,
+          signal,
+        );
+        const nextSignal = {
+          ...signal,
+          evergreen: input.expiry.evergreen,
+          expiresAt,
+          reobserveBy,
+          status: expiryStatus.status,
+        };
+        const actionabilityInput =
+          validatedScore.snapshot.componentEvidence.find(
+            ({ component }) => component === "actionability",
+          )?.inputValue ?? null;
+        const scoreInputDigest = await createAdminGlobalRadarScoreInputDigest(
+          tx,
+          {
+            signal,
+            scoreAsOf: new Date(validatedScore.snapshot.scoreAsOf),
+            actionabilityInput,
+            evidence: validatedScore.evaluationEvidence,
+            overrides: nextSignal,
+          },
+        );
+        const scoreEvidenceSnapshot = rebaseStoredScoreEvidenceSnapshot({
+          existingSnapshot: signal.scoreEvidenceSnapshot,
+          signalClass: signal.signalClass,
+          signalType: signal.signalType,
+          currentIndiaRelevanceType: signal.indiaRelevanceType,
+          nextIndiaRelevanceType: signal.indiaRelevanceType,
+          scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+          momentumPolicyVersion: null,
+          currentComponents: storedScoreComponents(signal),
+          nextComponents: storedScoreComponents(signal),
+          replacementComponents: [],
+          announcedAt: signal.announcedAt,
+          effectiveFrom: signal.effectiveFrom,
+          existingEvidence: validatedScore.evaluationEvidence,
+          evidence: validatedScore.evaluationEvidence,
+          scoreInputDigest,
+        });
         const previousSafeState = signalSafeState(signal);
         const [updated] = await tx
           .update(globalRadarSignals)
@@ -1118,6 +1829,7 @@ export function createGlobalRadarAdminRepository(
             expiresAt,
             reobserveBy,
             status: expiryStatus.status,
+            scoreEvidenceSnapshot,
             revision: signal.revision + 1,
             updatedAt: canonical.now,
           })
@@ -1260,19 +1972,30 @@ export function createGlobalRadarAdminRepository(
           tx
             .select({
               id: globalSignalEvidence.id,
+              ingestOrdinal: globalSignalEvidence.ingestOrdinal,
               runId: globalSignalEvidence.runId,
               globalEntityId: globalSignalEvidence.globalEntityId,
               evidenceFingerprint: globalSignalEvidence.evidenceFingerprint,
               sourceUrl: globalSignalEvidence.sourceUrl,
               sourceName: globalSignalEvidence.sourceName,
               canonicalSourceUrl: globalSignalEvidence.canonicalSourceUrl,
+              sourceType: globalSignalEvidence.sourceType,
+              sourceLanguage: globalSignalEvidence.sourceLanguage,
+              sourceCountry: globalSignalEvidence.sourceCountry,
               sourceFamily: globalSignalEvidence.sourceFamily,
+              evidenceClaim: globalSignalEvidence.evidenceClaim,
+              sourceExcerpt: globalSignalEvidence.sourceExcerpt,
+              englishSummary: globalSignalEvidence.englishSummary,
               publishedAt: globalSignalEvidence.publishedAt,
               observedAt: globalSignalEvidence.observedAt,
               evidenceConfidence: globalSignalEvidence.evidenceConfidence,
+              translationConfidence:
+                globalSignalEvidence.translationConfidence,
               isPrimarySource: globalSignalEvidence.isPrimarySource,
               isSyndicated: globalSignalEvidence.isSyndicated,
               supportsDirectDemand: globalSignalEvidence.supportsDirectDemand,
+              supportsIndiaRelevance:
+                globalSignalEvidence.supportsIndiaRelevance,
               supportedFieldPaths: globalSignalEvidence.supportedFieldPaths,
             })
             .from(globalSignalEvidence)
@@ -1289,68 +2012,6 @@ export function createGlobalRadarAdminRepository(
             .where(eq(globalRadarSignalEntities.signalId, signal.id)),
         ]);
         if (evidence.length > MAX_GLOBAL_RADAR_ADMIN_MOMENTUM_EVIDENCE) {
-          return { outcome: "classification_requirements_not_met" as const };
-        }
-        const missingScoreEvidencePaths =
-          classification.signalClass === "ecosystem_momentum"
-            ? missingMomentumWorkerScoredMetricEvidencePaths({
-                momentumMetrics: classification.components,
-                evidence,
-              })
-            : missingWorkerScoredComponentEvidencePaths({
-                signalClass: classification.signalClass,
-                scoreComponents: classification.components,
-                evidence,
-              });
-        if (missingScoreEvidencePaths.length > 0) {
-          return { outcome: "classification_requirements_not_met" as const };
-        }
-        if (
-          classification.signalClass !== "ecosystem_momentum" &&
-          !hasCompleteScoreComponentEvidenceAssociations({
-            signalClass: classification.signalClass,
-            signalType: classification.signalType,
-            indiaRelevanceType: signal.indiaRelevanceType,
-            freshnessEvidencePath:
-              classification.signalClass === "direct_demand"
-                ? selectDirectDemandFreshnessEvidencePath({
-                    announcedAt: signal.announcedAt?.toISOString() ?? null,
-                    effectiveFrom: signal.effectiveFrom?.toISOString() ?? null,
-                    evidence: evidence.map(({ publishedAt }) => ({
-                      publishedAt: publishedAt?.toISOString() ?? null,
-                    })),
-                  })
-                : undefined,
-            components: classification.components,
-            evidence: evidence.map(
-              ({
-                id,
-                globalEntityId,
-                sourceUrl,
-                sourceName,
-                evidenceConfidence,
-                publishedAt,
-                observedAt,
-                isPrimarySource,
-                isSyndicated,
-                sourceFamily,
-                supportedFieldPaths,
-              }) => ({
-                id,
-                sourceUrl,
-                sourceName,
-                contributorEntityId: globalEntityId,
-                evidenceConfidence,
-                publishedAt: publishedAt?.toISOString() ?? null,
-                observedAt: observedAt.toISOString(),
-                isPrimarySource,
-                isSyndicated,
-                sourceFamily,
-                supportedFieldPaths,
-              }),
-            ),
-          })
-        ) {
           return { outcome: "classification_requirements_not_met" as const };
         }
         const targetGraph = createGlobalRadarClassificationGraph({
@@ -1371,15 +2032,43 @@ export function createGlobalRadarAdminRepository(
         ) {
           return { outcome: "classification_requirements_not_met" as const };
         }
-        const entityIds = [...new Set([
+        const missingScoreEvidencePaths =
+          classification.signalClass === "ecosystem_momentum"
+            ? missingMomentumWorkerScoredMetricEvidencePaths({
+                momentumMetrics: classification.assessments,
+                momentumContributorEntityIds:
+                  targetGraph.associations.flatMap(({ entityId, role }) =>
+                    role === "contributor" ? [entityId] : [],
+                  ),
+                evidence: evidence.map((item) => ({
+                  supportedFieldPaths: item.supportedFieldPaths,
+                  contributorEntityId: item.globalEntityId,
+                  isSyndicated: item.isSyndicated,
+                })),
+              })
+            : missingWorkerScoredComponentEvidencePaths({
+                signalClass: classification.signalClass,
+                scoreComponents: classification.assessments,
+                evidence,
+              });
+        if (missingScoreEvidencePaths.length > 0) {
+          return { outcome: "classification_requirements_not_met" as const };
+        }
+        const targetEntityIds = [...new Set([
           ...(targetGraph.primaryEntityId === null
             ? []
             : [targetGraph.primaryEntityId]),
           ...targetGraph.associations.map(({ entityId }) => entityId),
         ])];
-        if (entityIds.length === 0) {
+        if (targetEntityIds.length === 0) {
           return { outcome: "classification_requirements_not_met" as const };
         }
+        const entityIds = [...new Set([
+          ...targetEntityIds,
+          ...evidence.flatMap(({ globalEntityId }) =>
+            globalEntityId === null ? [] : [globalEntityId],
+          ),
+        ])];
         const entityAnchors = await tx
           .select({
             id: globalEntities.id,
@@ -1387,10 +2076,15 @@ export function createGlobalRadarAdminRepository(
             canonicalCorporateGroupId: globalEntities.canonicalCorporateGroupId,
           })
           .from(globalEntities)
-          .where(inArray(globalEntities.id, entityIds));
+          .where(inArray(globalEntities.id, entityIds))
+          .for("key share");
         if (entityAnchors.length !== entityIds.length) {
           return { outcome: "classification_requirements_not_met" as const };
         }
+        const candidateEvidence = candidateEvidenceFromStoredRows(
+          evidence,
+          entityAnchors,
+        );
         const primaryPublicEvidence = evidence.some(
           ({ isPrimarySource, isSyndicated }) =>
             isPrimarySource && !isSyndicated,
@@ -1408,10 +2102,12 @@ export function createGlobalRadarAdminRepository(
               ({
                 isPrimarySource,
                 isSyndicated,
+                sourceFamily,
                 supportsDirectDemand,
                 supportedFieldPaths,
               }) =>
-                isPrimarySource &&
+                (isPrimarySource ||
+                  sourceFamily === "public_procurement_and_rfp_portals") &&
                 !isSyndicated &&
                 supportsDirectDemand &&
                 supportedFieldPaths.includes(exactSubtypePath!),
@@ -1437,8 +2133,8 @@ export function createGlobalRadarAdminRepository(
             ? deriveGlobalRadarAdminMomentum({
                 taxonomy: classification.demandDomain,
                 taxonomyConsistency:
-                  classification.components.taxonomyConsistency,
-                evidenceQuality: classification.components.evidenceQuality,
+                  classification.assessments.taxonomyConsistency,
+                evidenceQuality: classification.assessments.evidenceQuality,
                 now: canonical.now,
                 associations: targetGraph.associations,
                 entities: entityAnchors,
@@ -1467,6 +2163,133 @@ export function createGlobalRadarAdminRepository(
           momentumResult?.outcome === "derived"
             ? momentumResult.derivation
             : null;
+        let reclassification: Extract<
+          ReturnType<typeof deriveGlobalRadarReclassification>,
+          { valid: true }
+        > | null = null;
+        let reclassificationFailure:
+          | "classification_requirements_not_met"
+          | "invalid_input" = "classification_requirements_not_met";
+        if (classification.signalClass !== "ecosystem_momentum") {
+          const responsePaths = storedResponsePathCandidates(signal, evidence);
+          if (responsePaths.length === 0) {
+            return { outcome: "classification_requirements_not_met" as const };
+          }
+          for (const responsePath of responsePaths) {
+            const result =
+              classification.signalClass === "direct_demand"
+                ? deriveGlobalRadarReclassification({
+                    signalClass: "direct_demand",
+                    signalType: classification.signalType,
+                    currentStatus: signal.status,
+                    indiaRelevanceType: signal.indiaRelevanceType,
+                    announcedAt: signal.announcedAt?.toISOString() ?? null,
+                    effectiveFrom: signal.effectiveFrom?.toISOString() ?? null,
+                    observedAt: signal.observedAt.toISOString(),
+                    expiresAt: classification.expiresAt?.toISOString() ?? null,
+                    responsePath,
+                    sensitiveDataAndCompliance:
+                      storedSensitiveDataAndCompliance(signal),
+                    assessments: classification.assessments,
+                    evidence: candidateEvidence,
+                    now: canonical.now,
+                  })
+                : deriveGlobalRadarReclassification({
+                    signalClass: "demand_precursor",
+                    signalType: classification.signalType,
+                    currentStatus: signal.status,
+                    indiaRelevanceType: signal.indiaRelevanceType,
+                    announcedAt: signal.announcedAt?.toISOString() ?? null,
+                    effectiveFrom: signal.effectiveFrom?.toISOString() ?? null,
+                    observedAt: signal.observedAt.toISOString(),
+                    responsePath,
+                    sensitiveDataAndCompliance:
+                      storedSensitiveDataAndCompliance(signal),
+                    assessments: classification.assessments,
+                    evidence: candidateEvidence,
+                    now: canonical.now,
+                  });
+            if (result.valid) {
+              reclassification = result;
+              break;
+            }
+            if (result.reason === "invalid_input") {
+              reclassificationFailure = result.reason;
+            }
+          }
+          if (!reclassification) {
+            return { outcome: reclassificationFailure };
+          }
+        }
+        const scoreComponents =
+          reclassification?.signalClass === "direct_demand"
+            ? directSnapshotComponents(reclassification.score.components)
+            : reclassification?.signalClass === "demand_precursor"
+              ? reclassification.score.components
+              : momentumSnapshotComponents(momentumDerivation!);
+        const directReclassification =
+          reclassification?.signalClass === "direct_demand"
+            ? reclassification
+            : null;
+        const precursorReclassification =
+          reclassification?.signalClass === "demand_precursor"
+            ? reclassification
+            : null;
+        const freshnessEvidencePath =
+          classification.signalClass === "direct_demand"
+            ? selectDirectDemandFreshnessEvidencePath({
+                announcedAt: signal.announcedAt?.toISOString() ?? null,
+                effectiveFrom: signal.effectiveFrom?.toISOString() ?? null,
+                evidence: evidence.map(({ publishedAt }) => ({
+                  publishedAt: publishedAt?.toISOString() ?? null,
+                })),
+              })
+            : undefined;
+        const contributorEntityIds = targetGraph.associations.flatMap(
+          ({ entityId, role }) => (role === "contributor" ? [entityId] : []),
+        );
+        if (
+          !hasCompleteScoreComponentEvidenceAssociations({
+            signalClass: classification.signalClass,
+            signalType: classification.signalType,
+            indiaRelevanceType: signal.indiaRelevanceType,
+            assessmentAuthority: "administrator",
+            momentumContributorEntityIds: contributorEntityIds,
+            freshnessEvidencePath,
+            components: scoreComponents,
+            evidence: evidence.map(
+              ({
+                evidenceFingerprint,
+                globalEntityId,
+                sourceUrl,
+                sourceName,
+                evidenceClaim,
+                evidenceConfidence,
+                publishedAt,
+                observedAt,
+                isPrimarySource,
+                isSyndicated,
+                sourceFamily,
+                supportedFieldPaths,
+              }) => ({
+                id: evidenceFingerprint,
+                sourceUrl,
+                sourceName,
+                evidenceClaim,
+                contributorEntityId: globalEntityId,
+                evidenceConfidence,
+                publishedAt: publishedAt?.toISOString() ?? null,
+                observedAt: observedAt.toISOString(),
+                isPrimarySource,
+                isSyndicated,
+                sourceFamily,
+                supportedFieldPaths,
+              }),
+            ),
+          })
+        ) {
+          return { outcome: "classification_requirements_not_met" as const };
+        }
         const directExpiryStatus =
           classification.signalClass === "direct_demand"
             ? resolveDirectDemandExpiryStatus({
@@ -1585,58 +2408,55 @@ export function createGlobalRadarAdminRepository(
           expiresAt: null,
           evergreen: null,
           reobserveBy: null,
-          responsePathType: null,
-          responsePathUrl: null,
-          responseBusinessEmail: null,
-          partnerApplicationUrl: null,
         };
         const targetClassValues =
           classification.signalClass === "direct_demand"
             ? {
-                demandExplicitness: classification.components.explicitness,
+                demandExplicitness:
+                  directReclassification!.score.components.explicitness,
                 evidenceConfidence:
-                  classification.components.evidenceConfidence,
-                freshness: classification.components.freshness,
-                actionability: classification.components.actionability,
-                indiaFit: classification.components.indiaFit,
+                  directReclassification!.score.components.evidenceConfidence,
+                freshness: directReclassification!.score.components.freshness,
+                actionability:
+                  directReclassification!.score.components.actionability,
+                indiaFit: directReclassification!.score.components.indiaFit,
                 commercialPotential:
-                  classification.components.commercialPotential,
-                repeatability: classification.components.repeatability,
+                  directReclassification!.score.components.commercialPotential,
+                repeatability:
+                  directReclassification!.score.components.repeatability,
                 responseAccessibility:
-                  classification.components.responseAccessibility,
+                  directReclassification!.score.components.responseAccessibility,
                 strategicLearning:
-                  classification.components.strategicLearning,
+                  directReclassification!.score.components.strategicLearning,
                 complianceComplexity:
-                  classification.components.complianceComplexity,
-                directDemandScore: classification.score,
+                  directReclassification!.score.components.complianceComplexity,
+                directDemandScore: directReclassification!.score.score,
                 expiresAt: classification.expiresAt,
                 evergreen: classification.evergreen,
                 reobserveBy: classification.reobserveBy,
-                ...(signal.signalClass === "direct_demand"
-                  ? {
-                      responsePathType: signal.responsePathType,
-                      responsePathUrl: signal.responsePathUrl,
-                      responseBusinessEmail: signal.responseBusinessEmail,
-                      partnerApplicationUrl: signal.partnerApplicationUrl,
-                    }
-                  : {}),
               }
             : classification.signalClass === "demand_precursor"
               ? {
                   evidenceConfidence:
-                    classification.components.evidenceConfidence,
-                  indiaFit: classification.components.indiaFit,
+                    precursorReclassification!.score.components.evidenceConfidence,
+                  indiaFit:
+                    precursorReclassification!.score.components.indiaFit,
                   proximityToExternalDemand:
-                    classification.components.proximityToExternalDemand,
+                    precursorReclassification!.score.components
+                      .proximityToExternalDemand,
                   fundingDeploymentMomentum:
-                    classification.components.fundingDeploymentMomentum,
+                    precursorReclassification!.score.components
+                      .fundingDeploymentMomentum,
                   likelyDataHardwareIntensity:
-                    classification.components.likelyDataHardwareIntensity,
+                    precursorReclassification!.score.components
+                      .likelyDataHardwareIntensity,
                   estimatedTimeHorizon:
-                    classification.components.estimatedTimeHorizon,
+                    precursorReclassification!.score.components
+                      .estimatedTimeHorizon,
                   strategicRelevance:
-                    classification.components.strategicRelevance,
-                  precursorScore: classification.score,
+                    precursorReclassification!.score.components
+                      .strategicRelevance,
+                  precursorScore: precursorReclassification!.score.score,
                 }
               : {
                   globalEntityId: null,
@@ -1675,6 +2495,56 @@ export function createGlobalRadarAdminRepository(
           ...clearedClassValues,
           ...targetClassValues,
         };
+        const nextStatus =
+          directExpiryStatus?.valid === true
+            ? directExpiryStatus.status
+            : signal.status;
+        const scoreInputSignal = {
+          ...signal,
+          ...classValues,
+          signalClass: classification.signalClass,
+          signalType: classification.signalType,
+          demandDomain: classification.demandDomain,
+          scoreCoverage:
+            classification.signalClass === "ecosystem_momentum"
+              ? momentumDerivation!.scoreCoverage
+              : directReclassification?.score.scoreCoverage ??
+                precursorReclassification!.score.scoreCoverage,
+          scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+          status: nextStatus,
+        } as typeof signal;
+        const scoreInputDigest = createStoredGlobalRadarScoreInputDigest({
+          scoreAsOf: canonical.now,
+          signal: scoreInputSignal,
+          actionabilityInput:
+            directReclassification?.actionabilityInput ?? null,
+          associations: targetGraph.associations.map(({ entityId, role }) => ({
+            globalEntityId: entityId,
+            role,
+          })),
+          entities: entityAnchors,
+        });
+        const scoreEvidenceSnapshot = createStoredScoreEvidenceSnapshot({
+          scoreInputDigest,
+          scoreAsOf: canonical.now,
+          signalClass: classification.signalClass,
+          signalType: classification.signalType,
+          indiaRelevanceType: signal.indiaRelevanceType,
+          scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+          momentumPolicyVersion:
+            classification.signalClass === "ecosystem_momentum"
+              ? GLOBAL_RADAR_MOMENTUM_POLICY_VERSION
+              : null,
+          assessmentAuthority: "administrator",
+          actionabilityInput:
+            directReclassification?.actionabilityInput ?? null,
+          momentumContributorEntityIds: contributorEntityIds,
+          announcedAt: signal.announcedAt,
+          effectiveFrom: signal.effectiveFrom,
+          freshnessEvidencePath,
+          components: scoreComponents,
+          evidence,
+        });
         const [updated] = await tx
           .update(globalRadarSignals)
           .set({
@@ -1685,12 +2555,15 @@ export function createGlobalRadarAdminRepository(
             scoreCoverage:
               classification.signalClass === "ecosystem_momentum"
                 ? momentumDerivation!.scoreCoverage
-                : classification.scoreCoverage,
+                : directReclassification?.score.scoreCoverage ??
+                  precursorReclassification!.score.scoreCoverage,
             scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
-            status:
-              directExpiryStatus?.valid === true
-                ? directExpiryStatus.status
-                : signal.status,
+            scoreEvidenceSnapshot,
+            responsePathType: signal.responsePathType,
+            responsePathUrl: signal.responsePathUrl,
+            responseBusinessEmail: signal.responseBusinessEmail,
+            partnerApplicationUrl: signal.partnerApplicationUrl,
+            status: nextStatus,
             dedupeKey,
             revision: signal.revision + 1,
             updatedAt: canonical.now,
@@ -1861,10 +2734,15 @@ export function createGlobalRadarAdminRepository(
           )
           .limit(1);
         if (duplicate) return { outcome: "invalid_input" as const };
+        const [maximumOrdinal] = await tx
+          .select({ value: max(globalSignalEvidence.ingestOrdinal) })
+          .from(globalSignalEvidence)
+          .where(eq(globalSignalEvidence.signalId, signal.id));
         const [created] = await tx
           .insert(globalSignalEvidence)
           .values({
             signalId: signal.id,
+            ingestOrdinal: (maximumOrdinal?.value ?? 0) + 1,
             runId: null,
             globalEntityId: evidence.globalEntityId,
             sourceUrl: evidence.sourceUrl,
@@ -1961,14 +2839,11 @@ export function createGlobalRadarAdminRepository(
         }
     > {
       const canonical = canonicalAdminEnvelope(input.actor, input.envelope);
-      const body = typeof input.body === "string"
-        ? input.body.trim().replace(/\s+/g, " ")
-        : "";
+      const body = globalRadarAuthoredAuditTextSchema.safeParse(input.body);
       if (
         !canonical ||
         !UUID_PATTERN.test(input.signalId) ||
-        body.length < 1 ||
-        body.length > 2_000
+        !body.success
       ) return { outcome: "conflict", reason: "invalid_input" };
       const fingerprint = requestFingerprint({
         action: "note_appended",
@@ -1978,7 +2853,7 @@ export function createGlobalRadarAdminRepository(
         expectedRevision: canonical.expectedRevision,
         idempotencyKey: canonical.idempotencyKey,
         reason: canonical.reason,
-        body,
+        body: body.data,
       });
       const result = await database.transaction(async (tx) => {
         const [signal] = await tx
@@ -2020,7 +2895,7 @@ export function createGlobalRadarAdminRepository(
           actorType: "administrator",
           actorId: canonical.actor.userId,
           actorEmail: canonical.actor.email,
-          reason: body,
+          reason: body.data,
           observedAt: canonical.now,
           idempotencyKey: canonical.idempotencyKey,
           createdAt: canonical.now,
@@ -2157,6 +3032,14 @@ export function createGlobalRadarAdminRepository(
         if (survivor.signalClass !== duplicate.signalClass) {
           return { outcome: "classification_requirements_not_met" as const };
         }
+        const scoreProvenance =
+          await validateStoredGlobalRadarScoreProvenanceBatch(tx, [
+            survivor,
+            duplicate,
+          ]);
+        if (!scoreProvenance.valid) {
+          return { outcome: "score_provenance_invalid" as const };
+        }
         const survivorRevision = survivor.revision + 1;
         const duplicateRevision = duplicate.revision + 1;
         await tx
@@ -2237,8 +3120,15 @@ export function createGlobalRadarAdminRepository(
         result.outcome === "revision_mismatch" ||
         result.outcome === "idempotency_mismatch" ||
         result.outcome === "classification_requirements_not_met" ||
+        result.outcome === "score_provenance_invalid" ||
         result.outcome === "already_merged"
       ) {
+        if (result.outcome === "score_provenance_invalid") {
+          return {
+            outcome: "conflict",
+            reason: "classification_requirements_not_met",
+          };
+        }
         if (result.outcome === "not_found") {
           return { outcome: "conflict", reason: result.outcome };
         }
@@ -2779,7 +3669,7 @@ export function createGlobalRadarAdminRepository(
       now: Date;
     }): Promise<
       | { outcome: "listed"; items: SafeGlobalRadarWatchlistEnrichment[] }
-      | { outcome: "conflict"; reason: "invalid_input" }
+      | { outcome: "conflict"; reason: GlobalRadarReadConflictReason }
     > {
       if (
         !Array.isArray(input.globalEntityIds) ||
@@ -2870,6 +3760,34 @@ export function createGlobalRadarAdminRepository(
             asc(globalRadarPromotions.id),
           ),
       ]);
+      const selectedSignalIds = [
+        ...new Set(
+          [...primarySignals, ...associatedSignals].map(({ id }) => id),
+        ),
+      ];
+      const selectedSignals = selectedSignalIds.length
+        ? await database
+            .select()
+            .from(globalRadarSignals)
+            .where(inArray(globalRadarSignals.id, selectedSignalIds))
+        : [];
+      if (!hasExactSignalIdParity(selectedSignalIds, selectedSignals)) {
+        return {
+          outcome: "conflict",
+          reason: "score_provenance_invalid",
+        };
+      }
+      const scoreProvenance =
+        await validateStoredGlobalRadarScoreProvenanceBatch(
+          database,
+          selectedSignals,
+        );
+      if (!scoreProvenance.valid) {
+        return {
+          outcome: "conflict",
+          reason: "score_provenance_invalid",
+        };
+      }
       const signalCandidates = [...primarySignals, ...associatedSignals]
         .filter(
           (row): row is typeof row & { watchlistEntityId: string } =>

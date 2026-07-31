@@ -313,6 +313,50 @@ describe("Global Radar worker CLI submission", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("rejects exact claim and worker credentials embedded in a submission", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        outcome: "completed",
+        run: terminalRun(),
+      }),
+    );
+    const claim = claimedResponse().claim;
+
+    for (const credential of [claim.leaseToken, RADAR_WORKER_SECRET]) {
+      const batch = JSON.parse(readFileSync(validBatchFile, "utf8")) as {
+        planFingerprint: string;
+        entities: Array<{ shortDescription: string }>;
+      };
+      batch.planFingerprint = claim.plan.fingerprint;
+      batch.entities[0]!.shortDescription =
+        `Public company summary followed by ${credential}.`;
+      const batchFile = temporaryFile(
+        JSON.stringify(batch),
+        "credential-batch.json",
+      );
+      const result = await runCommand(
+        [
+          "submit",
+          "--claim-file",
+          privateClaimFile(),
+          "--file",
+          batchFile,
+        ],
+        defaultRuntime({ fetch }),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(JSON.parse(result.stderr)).toEqual({
+        ok: false,
+        error: "The Global Radar batch must not contain worker credentials.",
+      });
+      expect(result.stderr).not.toContain(credential);
+    }
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("preserves the exact claim and batch files after an unknown submission outcome", async () => {
     const claimFile = privateClaimFile();
     const batchFile = submissionBatchFile();
@@ -450,13 +494,113 @@ describe("Global Radar worker CLI failure and orphan recovery", () => {
     expect(longFail.stderr).not.toContain("xxxxx");
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("rejects private diagnostics and exact credentials before fail or abandon", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        outcome: "completed",
+        run: terminalRun("failed"),
+      }),
+    );
+    const claim = claimedResponse().claim;
+    const cases = [
+      {
+        arguments: [
+          "fail",
+          "--claim-file",
+          privateClaimFile(),
+          "--message",
+          `Adapter stopped after ${claim.leaseToken}.`,
+        ],
+        privateValue: claim.leaseToken,
+      },
+      {
+        arguments: [
+          "fail",
+          "--claim-file",
+          privateClaimFile(),
+          "--message",
+          `Adapter stopped after ${RADAR_WORKER_SECRET}.`,
+        ],
+        privateValue: RADAR_WORKER_SECRET,
+      },
+      {
+        arguments: [
+          "fail",
+          "--claim-file",
+          privateClaimFile(),
+          "--message",
+          "request_payload={private}",
+        ],
+        privateValue: "request_payload={private}",
+      },
+      {
+        arguments: [
+          "abandon",
+          "--run-id",
+          claim.runId,
+          "--message",
+          `Claim lost after ${RADAR_WORKER_SECRET}.`,
+        ],
+        privateValue: RADAR_WORKER_SECRET,
+      },
+      {
+        arguments: [
+          "abandon",
+          "--run-id",
+          claim.runId,
+          "--message",
+          "claim_path=/private/tmp/radar-claim.json",
+        ],
+        privateValue: "/private/tmp/radar-claim.json",
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const result = await runCommand(
+        testCase.arguments,
+        defaultRuntime({ fetch }),
+      );
+      expect(result.exitCode).toBe(1);
+      expect(JSON.parse(result.stderr)).toEqual({
+        ok: false,
+        error: "Global Radar worker --message must be concise and payload-free.",
+      });
+      expect(result.stderr).not.toContain(testCase.privateValue);
+    }
+
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "token: private-value",
+    "secret=private-value",
+    "credentials: private-value",
+  ])("rejects a generic credential label in diagnostics", async (message) => {
+    const result = await runCommand([
+      "abandon",
+      "--run-id",
+      claimedResponse().claim.runId,
+      "--message",
+      message,
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(JSON.parse(result.stderr)).toEqual({
+      ok: false,
+      error: "Global Radar worker --message must be concise and payload-free.",
+    });
+    expect(result.stderr).not.toContain(message);
+  });
 });
 
 describe("Global Radar worker CLI response safety", () => {
-  it("accepts bounded notice presentation copy while preserving code and count", async () => {
+  it("accepts only the fixed notice presentation copy with a safe optional count", async () => {
     const notice = {
       code: "source_errors",
-      message: "Some public sources were unavailable during this run.",
+      message: "One or more public sources could not be processed.",
       count: 1,
     };
     const run = {
@@ -483,6 +627,110 @@ describe("Global Radar worker CLI response safety", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({
       run: { notices: [notice] },
     });
+
+    for (const malformedNotice of [
+      { ...notice, message: "Internal diagnostics: private upstream detail" },
+      {
+        code: "run_failed",
+        message: "One or more public sources could not be processed.",
+      },
+      { ...notice, count: -1 },
+    ]) {
+      const rejected = await runCommand(
+        [
+          "submit",
+          "--claim-file",
+          privateClaimFile(),
+          "--file",
+          submissionBatchFile(),
+        ],
+        defaultRuntime({
+          fetch: vi.fn(async () =>
+            Response.json({
+              ok: true,
+              outcome: "completed",
+              run: { ...run, notices: [malformedNotice] },
+            }),
+          ),
+        }),
+      );
+
+      expect(rejected.exitCode).toBe(1);
+      expect(rejected.stdout).toBe("");
+      expect(rejected.stderr).not.toContain(malformedNotice.message);
+    }
+  });
+
+  it("rejects credentials and sensitive diagnostics anywhere in printed run data", async () => {
+    const discoverySecret =
+      "discovery-worker-secret-that-is-at-least-thirty-two-characters";
+    const privateValues = [
+      RADAR_WORKER_SECRET,
+      discoverySecret,
+      "private-radar-lease-token",
+      "Authorization: Bearer private-api-credential-value",
+      "internalDiagnostics: private upstream detail",
+    ];
+
+    for (const privateValue of privateValues) {
+      const result = await runCommand(
+        [
+          "submit",
+          "--claim-file",
+          privateClaimFile(),
+          "--file",
+          submissionBatchFile(),
+        ],
+        defaultRuntime({
+          environment: {
+            GLOBAL_RADAR_API_BASE_URL: "https://mewtuals.example",
+            GLOBAL_RADAR_WORKER_SECRET: RADAR_WORKER_SECRET,
+            DISCOVERY_WORKER_SECRET: discoverySecret,
+          },
+          fetch: vi.fn(async () =>
+            Response.json({
+              ok: true,
+              outcome: "completed",
+              run: {
+                ...terminalRun(),
+                sourceCountries: ["United States", privateValue],
+              },
+            }),
+          ),
+        }),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).not.toContain(privateValue);
+      expect(JSON.parse(result.stderr)).toMatchObject({
+        ok: false,
+        outcome: "unknown_success",
+        reason: "invalid_response",
+      });
+    }
+
+    const noWork = await runCommand(
+      ["claim"],
+      defaultRuntime({
+        fetch: vi.fn(async () =>
+          Response.json({
+            ok: true,
+            outcome: "no_work",
+            reason: "active_run",
+            run: {
+              ...terminalRun(),
+              status: "running",
+              completedAt: null,
+              sourceCountries: [RADAR_WORKER_SECRET],
+            },
+          }),
+        ),
+      }),
+    );
+    expect(noWork.exitCode).toBe(1);
+    expect(noWork.stdout).toBe("");
+    expect(noWork.stderr).not.toContain(RADAR_WORKER_SECRET);
   });
 
   it("uses the settled terminal conflict reason contract exactly", async () => {
@@ -1049,6 +1297,24 @@ describe("Global Radar worker CLI validation and arguments", () => {
     expect(result.stderr).toBe("");
   });
 
+  it("rejects the configured worker secret during local validation", async () => {
+    const batch = JSON.parse(readFileSync(validBatchFile, "utf8")) as {
+      entities: Array<{ shortDescription: string }>;
+    };
+    batch.entities[0]!.shortDescription =
+      `Public company summary followed by ${RADAR_WORKER_SECRET}.`;
+    const file = temporaryFile(JSON.stringify(batch));
+
+    const result = await runCommand(["validate", "--file", file]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stderr)).toEqual({
+      ok: false,
+      error: "The Global Radar batch must not contain worker credentials.",
+    });
+    expect(result.stderr).not.toContain(RADAR_WORKER_SECRET);
+  });
+
   it("reports at most twenty bounded schema issues without echoing rejected content", async () => {
     const batch = JSON.parse(readFileSync(validBatchFile, "utf8")) as Record<
       string,
@@ -1124,6 +1390,33 @@ describe("Global Radar worker CLI validation and arguments", () => {
       });
       expect(result.stderr).not.toContain(RADAR_WORKER_SECRET);
     }
+  });
+
+  it("never echoes an attacker-controlled option name", async () => {
+    const privateOption = `--${RADAR_WORKER_SECRET}`;
+    const duplicate = await runCommand([
+      "validate",
+      privateOption,
+      "first",
+      privateOption,
+      "second",
+    ]);
+    const unsupported = await runCommand([
+      "claim",
+      privateOption,
+      "value",
+    ]);
+
+    expect(JSON.parse(duplicate.stderr)).toEqual({
+      ok: false,
+      error: "Global Radar worker command options are invalid.",
+    });
+    expect(JSON.parse(unsupported.stderr)).toEqual({
+      ok: false,
+      error: "Global Radar worker command contains an unsupported option.",
+    });
+    expect(duplicate.stderr).not.toContain(RADAR_WORKER_SECRET);
+    expect(unsupported.stderr).not.toContain(RADAR_WORKER_SECRET);
   });
 
   it("accepts only locked claim selectors and applies scheduled daily defaults", async () => {

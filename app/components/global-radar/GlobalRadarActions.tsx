@@ -3,12 +3,23 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
-  directDemandAskTypes,
   globalRadarDemandFamilies,
   globalRadarSourceFamilies,
   globalRadarThemes,
-  precursorDevelopmentTypes,
 } from "../../domain/global-radar";
+import {
+  assessmentDraftValue,
+  assessmentFieldsFor,
+  createClassificationRequest,
+  createInitialAssessmentDrafts,
+  createInitialSignalTypeDrafts,
+  isSignalTypeForClass,
+  signalClasses,
+  signalTypeOptions,
+  type AssessmentDraftsByClass,
+  type AssessmentKeyByClass,
+  type SignalTypeDraftsByClass,
+} from "./classification-action-contract";
 import {
   type GlobalRadarActionRequest,
   GlobalRadarPromotionActions,
@@ -52,52 +63,6 @@ const reviewActions = [
   ["mark_no_india_fit", "Mark no India fit"],
 ] as const satisfies readonly (readonly [GlobalRadarAllowedAction, string])[];
 
-type ScoreField = Readonly<{
-  key: string;
-  sourceKey: string;
-  label: string;
-}>;
-
-const scoreFields: Record<GlobalRadarSignalClass, readonly ScoreField[]> = {
-  direct_demand: [
-    { key: "explicitness", sourceKey: "demandExplicitness", label: "Demand explicitness" },
-    { key: "evidenceConfidence", sourceKey: "evidenceConfidence", label: "Evidence confidence" },
-    { key: "freshness", sourceKey: "freshness", label: "Freshness" },
-    { key: "actionability", sourceKey: "actionability", label: "Actionability" },
-    { key: "indiaFit", sourceKey: "indiaFit", label: "India fit" },
-    { key: "commercialPotential", sourceKey: "commercialPotential", label: "Commercial potential" },
-    { key: "repeatability", sourceKey: "repeatability", label: "Repeatability" },
-    { key: "responseAccessibility", sourceKey: "responseAccessibility", label: "Response accessibility" },
-    { key: "strategicLearning", sourceKey: "strategicLearning", label: "Strategic learning" },
-    { key: "complianceComplexity", sourceKey: "complianceComplexity", label: "Compliance complexity" },
-  ],
-  demand_precursor: [
-    { key: "evidenceConfidence", sourceKey: "evidenceConfidence", label: "Evidence confidence" },
-    { key: "proximityToExternalDemand", sourceKey: "proximityToExternalDemand", label: "Proximity to external demand" },
-    { key: "fundingDeploymentMomentum", sourceKey: "fundingDeploymentMomentum", label: "Funding deployment momentum" },
-    { key: "likelyDataHardwareIntensity", sourceKey: "likelyDataHardwareIntensity", label: "Likely data hardware intensity" },
-    { key: "indiaFit", sourceKey: "indiaFit", label: "India fit" },
-    { key: "estimatedTimeHorizon", sourceKey: "estimatedTimeHorizon", label: "Estimated time horizon" },
-    { key: "strategicRelevance", sourceKey: "strategicRelevance", label: "Strategic relevance" },
-  ],
-  ecosystem_momentum: [
-    { key: "taxonomyConsistency", sourceKey: "taxonomyConsistency", label: "Taxonomy consistency" },
-    { key: "evidenceQuality", sourceKey: "evidenceQuality", label: "Evidence quality" },
-  ],
-};
-
-const signalClasses: readonly GlobalRadarSignalClass[] = [
-  "direct_demand",
-  "demand_precursor",
-  "ecosystem_momentum",
-];
-
-const signalTypeOptions: Record<GlobalRadarSignalClass, readonly string[]> = {
-  direct_demand: directDemandAskTypes,
-  demand_precursor: precursorDevelopmentTypes,
-  ecosystem_momentum: ["ecosystem_direction"],
-};
-
 function mutationEnvelope(detail: GlobalRadarSignalDetail, reason: string) {
   return {
     expectedRevision: detail.revision,
@@ -108,12 +73,6 @@ function mutationEnvelope(detail: GlobalRadarSignalDetail, reason: string) {
 
 function splitValues(value: string) {
   return value.split(/[,\n]/).map((part) => part.trim()).filter(Boolean);
-}
-
-function numberOrNull(value: string) {
-  if (!value.trim()) return null;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 100 ? parsed : undefined;
 }
 
 function useFeedbackFocus(feedback: Feedback | null) {
@@ -172,7 +131,13 @@ type ActionFormProps = {
 function ClassificationAction({ detail, pending, run, invalid }: ActionFormProps) {
   const classification = detailSection(detail, "signal_class");
   const timeline = record(detailSection(detail, "scale_and_timeline").timeline);
-  const components = record(detailSection(detail, "score_rationale").components);
+  const scoreRationale = detailSection(detail, "score_rationale");
+  const components = record(scoreRationale.components);
+  const actionabilityInputValue = Array.isArray(scoreRationale.componentEvidence)
+    ? scoreRationale.componentEvidence
+        .filter(isGlobalRadarRecord)
+        .find(({ component }) => component === "actionability")?.inputValue
+    : undefined;
   const primary = primaryOrganisation(detail);
   const entityOptions = [
     primary,
@@ -186,15 +151,12 @@ function ClassificationAction({ detail, pending, run, invalid }: ActionFormProps
     candidates.findIndex(({ id }) => id === candidate.id) === index);
   const [reason, setReason] = useState("");
   const [targetClass, setTargetClass] = useState<GlobalRadarSignalClass>(detail.signalClass);
-  const [signalTypesByClass, setSignalTypesByClass] = useState<Record<GlobalRadarSignalClass, string>>(() => {
-    const existingSignalType = text(classification.signalType, "");
-    return Object.fromEntries(signalClasses.map((signalClass) => [
-      signalClass,
-      signalClass === detail.signalClass && signalTypeOptions[signalClass].includes(existingSignalType)
-        ? existingSignalType
-        : "",
-    ])) as Record<GlobalRadarSignalClass, string>;
-  });
+  const [signalTypesByClass, setSignalTypesByClass] =
+    useState<SignalTypeDraftsByClass>(() =>
+      createInitialSignalTypeDrafts(
+        detail.signalClass,
+        text(classification.signalType, ""),
+      ));
   const [demandDomain, setDemandDomain] = useState(() => text(classification.demandDomain, ""));
   const [primaryEntityId, setPrimaryEntityId] = useState(() => optionalText(primary.id) ?? "");
   const [evergreen, setEvergreen] = useState(() =>
@@ -205,59 +167,64 @@ function ClassificationAction({ detail, pending, run, invalid }: ActionFormProps
     detail.signalClass === "direct_demand" ? optionalText(timeline.expiresAt) ?? "" : "");
   const [reobserveBy, setReobserveBy] = useState(() =>
     detail.signalClass === "direct_demand" ? optionalText(timeline.reobserveBy) ?? "" : "");
-  const [scoresByClass, setScoresByClass] = useState<Record<GlobalRadarSignalClass, Record<string, string>>>(() =>
-    Object.fromEntries(signalClasses.map((signalClass) => [
-      signalClass,
-      Object.fromEntries(scoreFields[signalClass].map((field) => [
-        field.key,
-        signalClass === detail.signalClass && typeof components[field.sourceKey] === "number"
-          ? String(components[field.sourceKey])
-          : "",
-      ])),
-    ])) as Record<GlobalRadarSignalClass, Record<string, string>>);
-  const fields = scoreFields[targetClass];
-  const scores = scoresByClass[targetClass];
+  const [assessmentsByClass, setAssessmentsByClass] =
+    useState<AssessmentDraftsByClass>(() =>
+      createInitialAssessmentDrafts(
+        detail.signalClass,
+        components,
+        actionabilityInputValue,
+      ));
+  const fields = assessmentFieldsFor(targetClass);
   const signalType = signalTypesByClass[targetClass];
 
-  function setScore(key: string, value: string) {
-    setScoresByClass((current) => ({
+  function setAssessment<SignalClass extends GlobalRadarSignalClass>(
+    signalClass: SignalClass,
+    key: AssessmentKeyByClass[SignalClass],
+    value: string,
+  ) {
+    setAssessmentsByClass((current) => ({
       ...current,
-      [targetClass]: { ...current[targetClass], [key]: value },
-    }));
+      [signalClass]: { ...current[signalClass], [key]: value },
+    }) as AssessmentDraftsByClass);
+  }
+
+  function setSignalType<SignalClass extends GlobalRadarSignalClass>(
+    signalClass: SignalClass,
+    value: string,
+  ) {
+    if (value !== "" && !isSignalTypeForClass(signalClass, value)) return;
+    setSignalTypesByClass((current) => ({
+      ...current,
+      [signalClass]: value,
+    }) as SignalTypeDraftsByClass);
   }
 
   function submit() {
-    const parsedComponents: Record<string, number | null> = {};
-    for (const field of fields) {
-      const parsed = numberOrNull(scores[field.key] ?? "");
-      if (parsed === undefined || (targetClass === "ecosystem_momentum" && parsed === null)) {
-        invalid("Every classification score must be an integer from 0 to 100, or blank where allowed.");
-        return;
-      }
-      parsedComponents[field.key] = parsed;
+    const classificationResult = createClassificationRequest({
+      targetClass,
+      signalTypesByClass,
+      demandDomain,
+      primaryEntityId,
+      assessmentsByClass,
+      evergreen,
+      expiresAt,
+      reobserveBy,
+    });
+    if (!classificationResult.valid) {
+      invalid(
+        classificationResult.reason === "invalid_assessments"
+          ? "Every classification assessment must be an integer from 0 to 100, or blank where allowed."
+          : "Review the classification target and reason.",
+      );
+      return;
     }
-    if (!reason.trim() || !signalTypeOptions[targetClass].includes(signalType) ||
-        !globalRadarDemandFamilies.includes(demandDomain as (typeof globalRadarDemandFamilies)[number]) ||
+    if (!reason.trim() ||
         (targetClass !== "ecosystem_momentum" &&
-          !entityOptions.some(({ id }) => id === primaryEntityId)) ||
-        (targetClass === "direct_demand" && !["true", "false"].includes(evergreen))) {
+          !entityOptions.some(({ id }) => id === primaryEntityId))) {
       invalid("Review the classification target and reason.");
       return;
     }
-    const classificationBody: Record<string, unknown> = {
-      signalClass: targetClass,
-      signalType,
-      demandDomain,
-      ...(targetClass !== "ecosystem_momentum" ? { primaryEntityId } : {}),
-      components: parsedComponents,
-      ...(targetClass === "direct_demand" ? {
-        activity: {
-          evergreen: evergreen === "true",
-          expiresAt: expiresAt.trim() || null,
-          reobserveBy: reobserveBy.trim() || null,
-        },
-      } : {}),
-    };
+    const classificationBody = classificationResult.request;
     run({
       key: "classification",
       path: `/api/admin/global-demand-radar/signals/${detail.id}`,
@@ -278,10 +245,10 @@ function ClassificationAction({ detail, pending, run, invalid }: ActionFormProps
         <legend>Classification</legend>
         <label><span>Classification reason</span><textarea maxLength={2_000} onChange={(event) => setReason(event.target.value)} required value={reason} /></label>
         <label><span>Target signal class</span><select onChange={(event) => setTargetClass(event.target.value as GlobalRadarSignalClass)} value={targetClass}>{signalClasses.map((signalClass) => <option key={signalClass} value={signalClass}>{displayLabel(signalClass)}</option>)}</select></label>
-        <label><span>Signal type</span><select onChange={(event) => setSignalTypesByClass((current) => ({ ...current, [targetClass]: event.target.value }))} required value={signalType}><option value="">Select a signal type</option>{signalTypeOptions[targetClass].map((option) => <option key={option} value={option}>{displayLabel(option)}</option>)}</select></label>
+        <label><span>Signal type</span><select onChange={(event) => setSignalType(targetClass, event.target.value)} required value={signalType}><option value="">Select a signal type</option>{signalTypeOptions[targetClass].map((option) => <option key={option} value={option}>{displayLabel(option)}</option>)}</select></label>
         <label><span>Demand domain</span><select onChange={(event) => setDemandDomain(event.target.value)} required value={demandDomain}><option value="">Select a demand domain</option>{globalRadarDemandFamilies.map((domain) => <option key={domain} value={domain}>{displayLabel(domain)}</option>)}</select></label>
         {targetClass !== "ecosystem_momentum" ? <label><span>Primary organisation</span><select onChange={(event) => setPrimaryEntityId(event.target.value)} required value={primaryEntityId}><option value="">Select a primary organisation</option>{entityOptions.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}</select></label> : null}
-        <div className={styles.scoreGrid}>{fields.map((field) => <label key={field.key}><span>{field.label}</span><input max={100} min={0} onChange={(event) => setScore(field.key, event.target.value)} type="number" value={scores[field.key] ?? ""} /></label>)}</div>
+        <div className={styles.scoreGrid}>{fields.map((field) => <label key={field.key}><span>{field.label}</span><input max={100} min={0} onChange={(event) => setAssessment(targetClass, field.key, event.target.value)} required={targetClass === "direct_demand" && field.key === "actionability"} type="number" value={assessmentDraftValue(assessmentsByClass, targetClass, field.key)} /></label>)}</div>
         {targetClass === "direct_demand" ? <div className={styles.actionGrid}><label><span>Evergreen classification</span><select onChange={(event) => setEvergreen(event.target.value)} required value={evergreen}><option value="">Select an activity type</option><option value="false">No</option><option value="true">Yes</option></select></label><label><span>Classification expires at (ISO timestamp)</span><input onChange={(event) => setExpiresAt(event.target.value)} value={expiresAt} /></label><label><span>Classification re-observe by (ISO timestamp)</span><input onChange={(event) => setReobserveBy(event.target.value)} value={reobserveBy} /></label></div> : null}
         <button type="submit">Save classification</button>
       </fieldset>

@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 import {
-  evidenceSupportsDocumentedIndianRelationship,
+  containsKnownGlobalRadarSecret,
+  globalRadarAuthoredAuditTextSchema,
   promotionEligibilityPaths,
   type IndiaRelevanceType,
   type PromotionEligibilityPath,
@@ -11,7 +12,7 @@ import { serializeGlobalRadarPromotion } from "./dto";
 import type { GlobalRadarAdminActor } from "./run-service";
 
 const uuidSchema = z.string().uuid();
-const boundedReasonSchema = z.string().trim().min(1).max(2_000);
+const boundedReasonSchema = globalRadarAuthoredAuditTextSchema;
 
 export type GlobalRadarPromotionSignal = Readonly<{
   id: string;
@@ -22,6 +23,7 @@ export type GlobalRadarPromotionSignal = Readonly<{
   scoreVersion: string;
   hardGatesPassed: boolean;
   indiaRelevanceType: IndiaRelevanceType;
+  hasIndiaEligibilityEvidence: boolean;
   observedAt: Date;
 }>;
 
@@ -40,6 +42,7 @@ export type GlobalRadarPromotionContext = Readonly<{
     isPrimarySource: boolean;
     isSyndicated: boolean;
     supportsDocumentedIndianRelationship: boolean;
+    supportsExceptionalStrategicRelevance: boolean;
   }>[];
   /** Complete persisted selection, including the primary exactly once. */
   promotionSupportingSignalIds: readonly string[];
@@ -80,11 +83,14 @@ type StoredGlobalRadarPromotionContext = Readonly<{
   supportingSignals: readonly StoredGlobalRadarPromotionSignal[];
   evidence: readonly Readonly<{
     signalId: string;
+    globalEntityId: string | null;
     canonicalSourceUrl: string;
+    evidenceClaim: string;
     isPrimarySource: boolean;
     isSyndicated: boolean;
     supportsIndiaRelevance: boolean;
     supportedFieldPaths: readonly string[];
+    selectionRoles: readonly string[];
   }>[];
   promotionSupportingSignalIds: readonly string[];
   eligibilityFacts: Readonly<{
@@ -139,6 +145,7 @@ export type GlobalRadarPromotionRepositoryPort = {
     globalEntityId: string;
     primarySignalId: string;
     supportingSignalIds: readonly string[];
+    eligibilityPath: PromotionEligibilityPath;
   }): Promise<
     | {
         outcome: "found";
@@ -167,6 +174,8 @@ export type GlobalRadarPromotionRepositoryPort = {
 export type GlobalRadarPromotionServiceDependencies = Readonly<{
   repository: GlobalRadarPromotionRepositoryPort;
   adminEmails: readonly string[];
+  knownSecrets?: readonly (string | null | undefined)[];
+  containsKnownSecret?(value: unknown): boolean;
   thresholds: Readonly<Record<SignalClass, number>>;
   scoreVersion: string;
   now?: () => Date;
@@ -245,6 +254,12 @@ function promotionContext(
     scoreVersion: signal.scorePolicyVersion,
     hardGatesPassed: storedSignalHardGatesPassed(signal, now),
     indiaRelevanceType: signal.indiaRelevanceType,
+    hasIndiaEligibilityEvidence: value.evidence.some(
+      ({ signalId, selectionRoles }) =>
+        signalId === signal.id &&
+        (selectionRoles.includes("qualified_india_direct_demand") ||
+          selectionRoles.includes("repeated_india_compatible_signal")),
+    ),
     observedAt: signal.observedAt,
   });
   return {
@@ -267,9 +282,14 @@ function promotionContext(
         isPrimarySource: evidence.isPrimarySource,
         isSyndicated: evidence.isSyndicated,
         supportsDocumentedIndianRelationship:
+          evidence.globalEntityId === value.entity.id &&
           evidence.supportsIndiaRelevance &&
-          evidenceSupportsDocumentedIndianRelationship(
-            evidence.supportedFieldPaths,
+          evidence.selectionRoles.includes(
+            "documented_indian_relationship",
+          ),
+        supportsExceptionalStrategicRelevance:
+          evidence.selectionRoles.includes(
+            "exceptional_strategic_relevance",
           ),
       })),
     promotionSupportingSignalIds: [...value.promotionSupportingSignalIds],
@@ -322,17 +342,27 @@ export function evaluateGlobalRadarPromotionEligibility(
     if (primarySignal.indiaRelevanceType === "no_current_India_fit") {
       return { eligible: false, reason: "primary_signal_not_india_compatible" };
     }
+    if (!primarySignal.hasIndiaEligibilityEvidence) {
+      return { eligible: false, reason: "primary_signal_not_india_compatible" };
+    }
   } else if (input.eligibilityPath === "repeated_india_compatible_signals") {
     const cutoff = input.now.getTime() - 180 * 24 * 60 * 60 * 1_000;
-    const qualifying = [primarySignal, ...supportingSignals].filter(
+    const selectedSignals = [primarySignal, ...supportingSignals];
+    const everySelectedSignalQualifies = selectedSignals.every(
       (signal) =>
         ["direct_demand", "demand_precursor"].includes(signal.signalClass) &&
         signal.indiaRelevanceType !== "no_current_India_fit" &&
+        signal.hasIndiaEligibilityEvidence &&
         signal.observedAt.getTime() >= cutoff &&
         signal.observedAt <= input.now &&
         qualifiesAtCurrentPolicy(signal, input),
     );
-    if (new Set(qualifying.map(({ id }) => id)).size < 3) {
+    if (
+      selectedSignals.length < 3 ||
+      new Set(selectedSignals.map(({ id }) => id)).size !==
+        selectedSignals.length ||
+      !everySelectedSignalQualifies
+    ) {
       return { eligible: false, reason: "insufficient_repeated_signals" };
     }
   } else if (input.eligibilityPath === "documented_indian_relationship") {
@@ -356,7 +386,10 @@ export function evaluateGlobalRadarPromotionEligibility(
     const independentPrimarySources = new Set(
       primaryEvidence
         .filter(
-          (evidence) => evidence.isPrimarySource && !evidence.isSyndicated,
+          (evidence) =>
+            evidence.isPrimarySource &&
+            !evidence.isSyndicated &&
+            evidence.supportsExceptionalStrategicRelevance,
         )
         .map(({ sourceKey }) => sourceKey.trim().toLowerCase())
         .filter(Boolean),
@@ -406,6 +439,17 @@ const promotionInputSchema = z
       context.addIssue({
         code: "custom",
         message: "Supporting signal revisions must exactly match selected signals.",
+      });
+    }
+    const isRepeatedPath =
+      value.eligibilityPath === "repeated_india_compatible_signals";
+    if (
+      (isRepeatedPath && supportingIds.size < 2) ||
+      (!isRepeatedPath && supportingIds.size !== 0)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "The eligibility path must use its exact signal selection.",
       });
     }
     if (`${value.reason}\nRationale: ${value.rationale}`.length > 2_000) {
@@ -498,6 +542,12 @@ export function createGlobalRadarPromotionService(
   const adminEmails = new Set(
     dependencies.adminEmails.map((email) => email.trim().toLowerCase()),
   );
+  const containsKnownSecret = (value: unknown): boolean =>
+    dependencies.containsKnownSecret?.(value) === true ||
+    containsKnownGlobalRadarSecret(
+      value,
+      dependencies.knownSecrets ?? [],
+    );
 
   async function promote(
     actor: GlobalRadarAdminActor | null,
@@ -506,7 +556,12 @@ export function createGlobalRadarPromotionService(
     const administrator = normalizedActor(actor, adminEmails);
     if (!administrator) return { outcome: "forbidden" as const };
     const parsed = promotionInputSchema.safeParse(value);
-    if (!parsed.success) return { outcome: "invalid" as const };
+    if (
+      !parsed.success ||
+      containsKnownSecret(parsed.data)
+    ) {
+      return { outcome: "invalid" as const };
+    }
     const input = parsed.data;
     const evaluatedAt = now();
     const selectedSignalIds = [
@@ -541,6 +596,7 @@ export function createGlobalRadarPromotionService(
       globalEntityId: input.entityId,
       primarySignalId: input.primarySignalId,
       supportingSignalIds: input.supportingSignalIds,
+      eligibilityPath: input.eligibilityPath,
     });
     if (loaded.outcome === "not_found") return loaded;
     if (loaded.outcome === "invalid_input") {
@@ -575,7 +631,12 @@ export function createGlobalRadarPromotionService(
     const administrator = normalizedActor(actor, adminEmails);
     if (!administrator) return { outcome: "forbidden" as const };
     const parsed = reversalInputSchema.safeParse(value);
-    if (!parsed.success) return { outcome: "invalid" as const };
+    if (
+      !parsed.success ||
+      containsKnownSecret(parsed.data)
+    ) {
+      return { outcome: "invalid" as const };
+    }
     return mappedRepositoryResult(
       await dependencies.repository.reverse({
         globalEntityId: parsed.data.entityId,

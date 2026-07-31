@@ -1,4 +1,5 @@
 import {
+  containsKnownGlobalRadarSecret,
   globalRadarThemes,
   type GlobalRadarLanguage,
   type GlobalRadarTheme,
@@ -19,8 +20,9 @@ const supportedSources = new Set(["codex_public_web"]);
 const defaultCountries = ["United States", "China"] as const;
 const defaultLanguages = ["en", "zh-CN"] as const;
 const defaultSources = ["codex_public_web"] as const;
+const globalRadarKnownSecretGuard = Symbol("globalRadarKnownSecretGuard");
 
-export type GlobalRadarConfig = Readonly<{
+export type GlobalRadarConfigValues = Readonly<{
   workerSecret: string;
   apiBaseUrl?: URL;
   countries: readonly string[];
@@ -30,6 +32,16 @@ export type GlobalRadarConfig = Readonly<{
   resultLimit: number;
   thresholds: Readonly<Record<SignalClass, number>>;
 }>;
+
+type GlobalRadarKnownSecretGuard = (
+  value: unknown,
+  additionalKnownSecrets?: readonly (string | null | undefined)[],
+) => boolean;
+
+export type GlobalRadarConfig = GlobalRadarConfigValues &
+  Readonly<{
+    [globalRadarKnownSecretGuard]: GlobalRadarKnownSecretGuard;
+  }>;
 
 export type PublicGlobalRadarConfig = Readonly<{
   countries: readonly string[];
@@ -42,6 +54,74 @@ export type PublicGlobalRadarConfig = Readonly<{
 
 function invalidConfiguration(detail: string): never {
   throw new Error(`Invalid Global Radar configuration: ${detail}`);
+}
+
+export function globalRadarConfigContainsKnownSecret(
+  config: GlobalRadarConfig,
+  value: unknown,
+  additionalKnownSecrets: readonly (string | null | undefined)[] = [],
+): boolean {
+  const guard = config[globalRadarKnownSecretGuard];
+  if (typeof guard !== "function") return true;
+  try {
+    return guard(value, additionalKnownSecrets);
+  } catch {
+    return true;
+  }
+}
+
+export function createGlobalRadarConfig(
+  values: GlobalRadarConfigValues,
+  additionalKnownSecrets: readonly (string | null | undefined)[] = [],
+): GlobalRadarConfig {
+  const inheritedGuard = (
+    values as Partial<GlobalRadarConfig>
+  )[globalRadarKnownSecretGuard];
+  const guard: GlobalRadarKnownSecretGuard = Object.freeze(
+    (value: unknown, runtimeKnownSecrets = []): boolean =>
+      (typeof inheritedGuard === "function" &&
+        inheritedGuard(value, runtimeKnownSecrets)) ||
+      containsKnownGlobalRadarSecret(value, [
+        values.workerSecret,
+        ...additionalKnownSecrets,
+        ...runtimeKnownSecrets,
+      ]),
+  );
+  return Object.freeze({
+    workerSecret: values.workerSecret,
+    ...(values.apiBaseUrl ? { apiBaseUrl: values.apiBaseUrl } : {}),
+    countries: Object.freeze([...values.countries]),
+    languages: Object.freeze([...values.languages]),
+    themes: Object.freeze([...values.themes]),
+    enabledSources: Object.freeze(["codex_public_web"] as const),
+    resultLimit: values.resultLimit,
+    thresholds: Object.freeze({ ...values.thresholds }),
+    [globalRadarKnownSecretGuard]: guard,
+  });
+}
+
+function publicConfigFields(
+  config: GlobalRadarConfig,
+): PublicGlobalRadarConfig {
+  return {
+    countries: Object.freeze([...config.countries]),
+    languages: Object.freeze([...config.languages]),
+    themes: Object.freeze([...config.themes]),
+    enabledSources: Object.freeze(["codex_public_web"] as const),
+    resultLimit: config.resultLimit,
+    thresholds: Object.freeze({ ...config.thresholds }),
+  };
+}
+
+function assertPublicConfigContainsNoWorkerSecret(
+  fields: PublicGlobalRadarConfig,
+  knownSecrets: readonly (string | null | undefined)[],
+): void {
+  if (containsKnownGlobalRadarSecret(fields, knownSecrets)) {
+    invalidConfiguration(
+      "public configuration must not contain worker credentials.",
+    );
+  }
 }
 
 function configuredList(
@@ -205,7 +285,7 @@ export function readGlobalRadarConfig(
     ),
   }) satisfies Readonly<Record<SignalClass, number>>;
 
-  return Object.freeze({
+  const config = createGlobalRadarConfig({
     workerSecret,
     apiBaseUrl: apiBaseUrl(source.GLOBAL_RADAR_API_BASE_URL),
     countries,
@@ -220,18 +300,22 @@ export function readGlobalRadarConfig(
       20,
     ),
     thresholds,
-  });
+  }, [discoveryWorkerSecret]);
+  assertPublicConfigContainsNoWorkerSecret(
+    publicConfigFields(config),
+    [workerSecret, discoveryWorkerSecret],
+  );
+  return config;
 }
 
 export function publicGlobalRadarConfig(
   config: GlobalRadarConfig,
 ): PublicGlobalRadarConfig {
-  return Object.freeze({
-    countries: Object.freeze([...config.countries]),
-    languages: Object.freeze([...config.languages]),
-    themes: Object.freeze([...config.themes]),
-    enabledSources: Object.freeze(["codex_public_web"] as const),
-    resultLimit: config.resultLimit,
-    thresholds: Object.freeze({ ...config.thresholds }),
-  });
+  const fields = publicConfigFields(config);
+  if (globalRadarConfigContainsKnownSecret(config, fields)) {
+    invalidConfiguration(
+      "public configuration must not contain worker credentials.",
+    );
+  }
+  return Object.freeze(fields);
 }

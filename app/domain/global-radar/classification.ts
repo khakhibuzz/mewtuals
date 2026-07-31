@@ -99,6 +99,12 @@ function normalizedFieldPath(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+export function isProfessionalResponsePathEvidenceField(
+  value: string,
+): boolean {
+  return responseFieldNames.has(normalizedFieldPath(value));
+}
+
 function hasEngineDomain(host: string, engine: string): boolean {
   const labels = host.split(".");
   const engineIndex = labels.lastIndexOf(engine);
@@ -459,9 +465,7 @@ function citedResponseEvidence(
         item.isPrimarySource &&
         item.sourceKind === "original" &&
         actualEvidenceUrl(item) === citedUrl &&
-        item.supportedFieldPaths.some((fieldPath) =>
-          responseFieldNames.has(normalizedFieldPath(fieldPath)),
-        ),
+        item.supportedFieldPaths.some(isProfessionalResponsePathEvidenceField),
     )?.item ?? null
   );
 }

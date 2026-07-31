@@ -2,8 +2,6 @@ import {
   directDemandAskTypeLookup,
   globalRadarDemandFamilyLookup,
   precursorDevelopmentTypeLookup,
-  scoreDemandPrecursor,
-  scoreDirectDemand,
 } from "../../app/domain/global-radar";
 
 const UUID_PATTERN =
@@ -18,15 +16,10 @@ type ClassificationTarget = Readonly<{
 type DirectClassificationInput = ClassificationTarget & Readonly<{
   signalClass: "direct_demand";
   primaryEntityId?: string;
-  components: Readonly<{
-    explicitness: number | null;
-    evidenceConfidence: number | null;
-    freshness: number | null;
+  assessments: Readonly<{
     actionability: number | null;
-    indiaFit: number | null;
     commercialPotential: number | null;
     repeatability: number | null;
-    responseAccessibility: number | null;
     strategicLearning: number | null;
     complianceComplexity: number | null;
   }>;
@@ -40,20 +33,17 @@ type DirectClassificationInput = ClassificationTarget & Readonly<{
 type PrecursorClassificationInput = ClassificationTarget & Readonly<{
   signalClass: "demand_precursor";
   primaryEntityId?: string;
-  components: Readonly<{
-    evidenceConfidence: number | null;
+  assessments: Readonly<{
     proximityToExternalDemand: number | null;
     fundingDeploymentMomentum: number | null;
     likelyDataHardwareIntensity: number | null;
-    indiaFit: number | null;
-    estimatedTimeHorizon: number | null;
     strategicRelevance: number | null;
   }>;
 }>;
 
 type MomentumClassificationInput = ClassificationTarget & Readonly<{
   signalClass: "ecosystem_momentum";
-  components: Readonly<{
+  assessments: Readonly<{
     taxonomyConsistency: number;
     evidenceQuality: number;
   }>;
@@ -70,12 +60,7 @@ export type CanonicalGlobalRadarAdminClassification =
       signalType: string;
       demandDomain: string;
       primaryEntityId: string | null;
-      components: Extract<
-        ReturnType<typeof scoreDirectDemand>,
-        { valid: true }
-      >["components"];
-      score: number;
-      scoreCoverage: number;
+      assessments: DirectClassificationInput["assessments"];
       expiresAt: Date | null;
       evergreen: boolean;
       reobserveBy: Date | null;
@@ -85,22 +70,34 @@ export type CanonicalGlobalRadarAdminClassification =
       signalType: string;
       demandDomain: string;
       primaryEntityId: string | null;
-      components: Extract<
-        ReturnType<typeof scoreDemandPrecursor>,
-        { valid: true }
-      >["components"];
-      score: number;
-      scoreCoverage: number;
+      assessments: PrecursorClassificationInput["assessments"];
     }>
   | Readonly<{
       signalClass: "ecosystem_momentum";
       signalType: string;
       demandDomain: string;
-      components: Readonly<{
-        taxonomyConsistency: number;
-        evidenceQuality: number;
-      }>;
+      assessments: MomentumClassificationInput["assessments"];
     }>;
+
+const directAssessmentKeys = [
+  "actionability",
+  "commercialPotential",
+  "repeatability",
+  "strategicLearning",
+  "complianceComplexity",
+] as const;
+
+const precursorAssessmentKeys = [
+  "proximityToExternalDemand",
+  "fundingDeploymentMomentum",
+  "likelyDataHardwareIntensity",
+  "strategicRelevance",
+] as const;
+
+const momentumAssessmentKeys = [
+  "taxonomyConsistency",
+  "evidenceQuality",
+] as const;
 
 function boundedValue(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -115,6 +112,31 @@ function timestamp(value: unknown): Date | null {
   if (typeof value !== "string") return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function canonicalAssessmentValues(
+  value: unknown,
+  keys: readonly string[],
+  nullable: boolean,
+): Readonly<Record<string, number | null>> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const assessments = value as Record<string, unknown>;
+  if (
+    Object.keys(assessments).length !== keys.length ||
+    Object.keys(assessments).some((key) => !keys.includes(key)) ||
+    keys.some((key) => !Object.prototype.hasOwnProperty.call(assessments, key))
+  ) return null;
+  for (const key of keys) {
+    const assessment = assessments[key];
+    if (nullable && assessment === null) continue;
+    if (
+      typeof assessment !== "number" ||
+      !Number.isInteger(assessment) ||
+      assessment < 0 ||
+      assessment > 100
+    ) return null;
+  }
+  return { ...assessments } as Readonly<Record<string, number | null>>;
 }
 
 export function canonicalizeGlobalRadarAdminClassification(
@@ -140,7 +162,7 @@ export function canonicalizeGlobalRadarAdminClassification(
             "signalType",
             "demandDomain",
             "primaryEntityId",
-            "components",
+            "assessments",
             "activity",
           ].includes(key),
       ) ||
@@ -152,7 +174,11 @@ export function canonicalizeGlobalRadarAdminClassification(
       (value.primaryEntityId !== undefined &&
         !UUID_PATTERN.test(value.primaryEntityId))
     ) return null;
-    const scored = scoreDirectDemand(value.components);
+    const assessments = canonicalAssessmentValues(
+      value.assessments,
+      directAssessmentKeys,
+      true,
+    ) as DirectClassificationInput["assessments"] | null;
     const expiresAt =
       value.activity.expiresAt === null
         ? null
@@ -162,8 +188,7 @@ export function canonicalizeGlobalRadarAdminClassification(
         ? null
         : timestamp(value.activity.reobserveBy);
     if (
-      !scored.valid ||
-      scored.score === null ||
+      !assessments ||
       (value.activity.expiresAt !== null && expiresAt === null) ||
       (value.activity.reobserveBy !== null && reobserveBy === null) ||
       (value.activity.evergreen &&
@@ -175,9 +200,7 @@ export function canonicalizeGlobalRadarAdminClassification(
       signalType,
       demandDomain: value.demandDomain,
       primaryEntityId: value.primaryEntityId?.toLowerCase() ?? null,
-      components: scored.components,
-      score: scored.score,
-      scoreCoverage: scored.scoreCoverage,
+      assessments,
       expiresAt,
       evergreen: value.activity.evergreen,
       reobserveBy,
@@ -194,22 +217,24 @@ export function canonicalizeGlobalRadarAdminClassification(
             "signalType",
             "demandDomain",
             "primaryEntityId",
-            "components",
+            "assessments",
           ].includes(key),
       ) ||
       (value.primaryEntityId !== undefined &&
         !UUID_PATTERN.test(value.primaryEntityId))
     ) return null;
-    const scored = scoreDemandPrecursor(value.components);
-    if (!scored.valid || scored.score === null) return null;
+    const assessments = canonicalAssessmentValues(
+      value.assessments,
+      precursorAssessmentKeys,
+      true,
+    ) as PrecursorClassificationInput["assessments"] | null;
+    if (!assessments) return null;
     return {
       signalClass: value.signalClass,
       signalType,
       demandDomain: value.demandDomain,
       primaryEntityId: value.primaryEntityId?.toLowerCase() ?? null,
-      components: scored.components,
-      score: scored.score,
-      scoreCoverage: scored.scoreCoverage,
+      assessments,
     };
   }
 
@@ -218,30 +243,22 @@ export function canonicalizeGlobalRadarAdminClassification(
       signalType !== "ecosystem_direction" ||
       Object.keys(value).some(
         (key) =>
-          !["signalClass", "signalType", "demandDomain", "components"].includes(
+          !["signalClass", "signalType", "demandDomain", "assessments"].includes(
             key,
           ),
       )
     ) return null;
-    const components = value.components;
-    if (
-      !components ||
-      typeof components !== "object" ||
-      Object.keys(components).some(
-        (key) => !["taxonomyConsistency", "evidenceQuality"].includes(key),
-      ) ||
-      !Number.isInteger(components.taxonomyConsistency) ||
-      components.taxonomyConsistency < 0 ||
-      components.taxonomyConsistency > 100 ||
-      !Number.isInteger(components.evidenceQuality) ||
-      components.evidenceQuality < 0 ||
-      components.evidenceQuality > 100
-    ) return null;
+    const assessments = canonicalAssessmentValues(
+      value.assessments,
+      momentumAssessmentKeys,
+      false,
+    ) as MomentumClassificationInput["assessments"] | null;
+    if (!assessments) return null;
     return {
       signalClass: value.signalClass,
       signalType,
       demandDomain: value.demandDomain,
-      components: { ...components },
+      assessments,
     };
   }
   return null;

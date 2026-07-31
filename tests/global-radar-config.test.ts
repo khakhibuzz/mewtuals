@@ -5,6 +5,7 @@ import {
   type GlobalRadarTheme,
 } from "../app/domain/global-radar";
 import {
+  createGlobalRadarConfig,
   publicGlobalRadarConfig,
   readGlobalRadarConfig,
 } from "../app/server/global-radar/config";
@@ -243,6 +244,71 @@ describe("Global Radar configuration", () => {
       "Invalid Global Radar configuration: Radar and Discovery worker secrets must be distinct.",
     );
     expect((thrown as Error).message).not.toContain(sharedSecret);
+  });
+
+  it.each(["radar", "discovery"] as const)(
+    "rejects the %s worker secret anywhere in public configuration",
+    (secretKind) => {
+      const radarSecret = "radar-private-config-value";
+      const discoverySecret = "discovery-private-config-value";
+      const secret = secretKind === "radar" ? radarSecret : discoverySecret;
+
+      expect(() =>
+        readGlobalRadarConfig(
+          testEnvironment({
+            GLOBAL_RADAR_WORKER_SECRET: radarSecret,
+            DISCOVERY_WORKER_SECRET: discoverySecret,
+            GLOBAL_RADAR_COUNTRIES: `United States,${secret}`,
+          }),
+        ),
+      ).toThrow(
+        "Invalid Global Radar configuration: public configuration must not contain worker credentials.",
+      );
+    },
+  );
+
+  it("fails closed when a public projection is tampered with a worker secret", () => {
+    const privateConfig = readGlobalRadarConfig(testEnvironment());
+    const tampered = {
+      ...privateConfig,
+      themes: [privateConfig.workerSecret],
+    } as unknown as typeof privateConfig;
+
+    expect(() => publicGlobalRadarConfig(tampered)).toThrow(
+      "Invalid Global Radar configuration: public configuration must not contain worker credentials.",
+    );
+  });
+
+  it("preserves the Discovery credential guard across clones and injected configs", () => {
+    const discoverySecret = "discovery-secret-never-public";
+    const original = readGlobalRadarConfig(
+      testEnvironment({ DISCOVERY_WORKER_SECRET: discoverySecret }),
+    );
+    const cloned = {
+      ...original,
+      countries: ["United States", discoverySecret],
+    };
+    const injected = createGlobalRadarConfig(
+      {
+        workerSecret: original.workerSecret,
+        countries: ["United States", discoverySecret],
+        languages: original.languages,
+        themes: original.themes,
+        enabledSources: original.enabledSources,
+        resultLimit: original.resultLimit,
+        thresholds: original.thresholds,
+      },
+      [discoverySecret],
+    );
+
+    expect(() => publicGlobalRadarConfig(cloned)).toThrow(
+      "Invalid Global Radar configuration: public configuration must not contain worker credentials.",
+    );
+    expect(() => publicGlobalRadarConfig(injected)).toThrow(
+      "Invalid Global Radar configuration: public configuration must not contain worker credentials.",
+    );
+    expect(JSON.stringify(original)).not.toContain(discoverySecret);
+    expect(Object.keys(original)).not.toContain("knownSecrets");
   });
 
   it("returns an explicit public projection without secret or API base URL", () => {

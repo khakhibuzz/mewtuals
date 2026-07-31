@@ -78,9 +78,272 @@ async function insertGlobalEntity() {
   return entity.id;
 }
 
+const validDirectScoreEvidenceSnapshot = {
+  snapshotVersion: "global-radar-active-score-snapshot-v2",
+  evidenceVersion: "global-radar-score-evidence-v1",
+  scoreAsOf: "2026-07-29T10:00:00.000Z",
+  evidenceBoundaryOrdinal: 1,
+  evidenceSetCount: 1,
+  evidenceSetDigest: hash,
+  scoreInputDigest: hash,
+  signalClass: "direct_demand",
+  signalType: "supplier_search",
+  indiaRelevanceType: "globally_open",
+  scorePolicyVersion: "global-radar-score-v1",
+  momentumPolicyVersion: null,
+  assessmentAuthority: "worker",
+  componentEvidence: [{}],
+} as const;
+
+const validMomentumScoreEvidenceSnapshot = {
+  ...validDirectScoreEvidenceSnapshot,
+  signalClass: "ecosystem_momentum",
+  signalType: "ecosystem_activity",
+  indiaRelevanceType: "inferred_India_compatible",
+  momentumPolicyVersion: "global-radar-momentum-v1",
+} as const;
+
+type MutablePartial<Value> = {
+  -readonly [Key in keyof Value]?: Value[Key];
+};
+
+const snapshotWithoutAssessmentAuthority: MutablePartial<
+  typeof validDirectScoreEvidenceSnapshot
+> = { ...validDirectScoreEvidenceSnapshot };
+delete snapshotWithoutAssessmentAuthority.assessmentAuthority;
+const snapshotWithoutVersion: MutablePartial<
+  typeof validDirectScoreEvidenceSnapshot
+> = { ...validDirectScoreEvidenceSnapshot };
+delete snapshotWithoutVersion.snapshotVersion;
+const snapshotWithoutScoreInputDigest: MutablePartial<
+  typeof validDirectScoreEvidenceSnapshot
+> = { ...validDirectScoreEvidenceSnapshot };
+delete snapshotWithoutScoreInputDigest.scoreInputDigest;
+
+const invalidScoreEvidenceSnapshots = [
+  ["JSON null", null],
+  ["a JSON scalar", "not-a-snapshot"],
+  [
+    "a missing assessment authority",
+    snapshotWithoutAssessmentAuthority,
+  ],
+  ["a missing score-input digest", snapshotWithoutScoreInputDigest],
+  [
+    "a null assessment authority",
+    {
+      ...validDirectScoreEvidenceSnapshot,
+      assessmentAuthority: null,
+    },
+  ],
+  [
+    "a missing snapshot version",
+    snapshotWithoutVersion,
+  ],
+  [
+    "a null score-policy version",
+    {
+      ...validDirectScoreEvidenceSnapshot,
+      scorePolicyVersion: null,
+    },
+  ],
+  [
+    "a mismatched signal type",
+    {
+      ...validDirectScoreEvidenceSnapshot,
+      signalType: "procurement",
+    },
+  ],
+  [
+    "a mismatched India relevance type",
+    {
+      ...validDirectScoreEvidenceSnapshot,
+      indiaRelevanceType: "explicit_India",
+    },
+  ],
+] as const;
+
+async function insertDirectSignalWithSnapshot(snapshot: postgres.JSONValue) {
+  const runId = await insertQueuedRun();
+  const entityId = await insertGlobalEntity();
+  const [signal] = await sql<{ id: string }[]>`
+    insert into global_radar_signals (
+      global_entity_id,
+      signal_class,
+      demand_domain,
+      signal_type,
+      title,
+      factual_summary,
+      interpretation_summary,
+      theme,
+      source_country,
+      industry,
+      india_relevance_type,
+      india_relevance_rationale,
+      india_fit_confidence,
+      score_coverage,
+      score_policy_version,
+      score_evidence_snapshot,
+      observed_at,
+      evergreen,
+      source_language,
+      extraction_method,
+      taxonomy_version,
+      dedupe_key,
+      dedupe_version,
+      first_run_id,
+      most_recent_run_id
+    ) values (
+      ${entityId},
+      'direct_demand',
+      'robotics_hardware',
+      'supplier_search',
+      'Robotics supplier search',
+      'A buyer is searching for a robotics supplier.',
+      'The signal represents direct external demand.',
+      'physical_ai',
+      'United States',
+      'robotics',
+      'globally_open',
+      'The published request accepts international suppliers.',
+      80,
+      0,
+      'global-radar-score-v1',
+      coalesce(${sql.json(snapshot)}::jsonb, 'null'::jsonb),
+      '2026-07-29T10:00:00Z',
+      false,
+      'en',
+      'codex_public_web',
+      'global-radar-v1',
+      ${hash},
+      'global-radar-dedupe-v1',
+      ${runId},
+      ${runId}
+    )
+    returning id
+  `;
+  if (!signal) throw new Error("Expected a Global Radar signal fixture.");
+  return signal.id;
+}
+
 describe("Global Radar PostgreSQL constraints", () => {
   afterAll(async () => {
     await sql.end({ timeout: 5 });
+  });
+
+  it.each(invalidScoreEvidenceSnapshots)(
+    "rejects %s active score-evidence snapshot",
+    async (_description, snapshot) => {
+      await withinRollback(async () => {
+        await expect(
+          insertDirectSignalWithSnapshot(snapshot),
+        ).rejects.toMatchObject({
+          code: "23514",
+          constraint_name:
+            "global_radar_signals_score_evidence_snapshot_check",
+        });
+      });
+    },
+  );
+
+  it("enforces positive per-signal evidence ingest ordinals and uniqueness", async () => {
+    await withinRollback(async () => {
+      const signalId = await insertDirectSignalWithSnapshot(
+        validDirectScoreEvidenceSnapshot,
+      );
+      const insertEvidence = (
+        ingestOrdinal: number,
+        evidenceFingerprint: string,
+      ) => sql`
+        insert into global_signal_evidence (
+          signal_id,
+          ingest_ordinal,
+          source_url,
+          canonical_source_url,
+          source_name,
+          source_type,
+          source_language,
+          source_country,
+          source_family,
+          evidence_claim,
+          english_summary,
+          observed_at,
+          evidence_confidence,
+          is_primary_source,
+          is_syndicated,
+          supports_direct_demand,
+          supports_india_relevance,
+          evidence_fingerprint,
+          supported_field_paths
+        ) values (
+          ${signalId},
+          ${ingestOrdinal},
+          'https://schema-evidence.example/source',
+          'https://schema-evidence.example/source',
+          'Schema evidence',
+          'official_update',
+          'en',
+          'United States',
+          'official_company_material',
+          'A public schema constraint fixture.',
+          'A public schema constraint fixture.',
+          '2026-07-29T10:00:00Z',
+          80,
+          true,
+          false,
+          true,
+          false,
+          ${evidenceFingerprint},
+          array['signal.factualSummary']::text[]
+        )
+      `;
+      await insertEvidence(1, "b".repeat(64));
+      await expect(insertEvidence(2, "c".repeat(64))).resolves.toBeDefined();
+      await expect(insertEvidence(2, "d".repeat(64))).rejects.toMatchObject({
+        code: "23505",
+        constraint_name: "global_signal_evidence_signal_ordinal_unique",
+      });
+    });
+    await withinRollback(async () => {
+      const signalId = await insertDirectSignalWithSnapshot(
+        validDirectScoreEvidenceSnapshot,
+      );
+      await expect(sql`
+        insert into global_signal_evidence (
+          signal_id,
+          ingest_ordinal,
+          source_url,
+          canonical_source_url,
+          source_name,
+          source_type,
+          source_language,
+          source_country,
+          source_family,
+          evidence_claim,
+          english_summary,
+          observed_at,
+          evidence_confidence,
+          is_primary_source,
+          is_syndicated,
+          supports_direct_demand,
+          supports_india_relevance,
+          evidence_fingerprint,
+          supported_field_paths
+        ) values (
+          ${signalId}, 0,
+          'https://schema-evidence.example/invalid',
+          'https://schema-evidence.example/invalid',
+          'Invalid schema evidence', 'official_update', 'en',
+          'United States', 'official_company_material',
+          'A public schema constraint fixture.',
+          'A public schema constraint fixture.',
+          '2026-07-29T10:00:00Z', 80, true, false, true, false,
+          ${"e".repeat(64)}, array['signal.factualSummary']::text[]
+        )
+      `).rejects.toMatchObject({
+        code: "23514",
+        constraint_name: "global_signal_evidence_ingest_ordinal_check",
+      });
+    });
   });
 
   it("rejects a running run without a lease expiry", async () => {
@@ -264,6 +527,7 @@ describe("Global Radar PostgreSQL constraints", () => {
           direct_demand_score,
           score_coverage,
           score_policy_version,
+          score_evidence_snapshot,
           observed_at,
           evergreen,
           source_language,
@@ -304,7 +568,8 @@ describe("Global Radar PostgreSQL constraints", () => {
           20,
           80,
           100,
-          'scoring-v1',
+          'global-radar-score-v1',
+          ${sql.json(validDirectScoreEvidenceSnapshot)}::jsonb,
           '2026-07-29T10:00:00Z',
           false,
           'en',
@@ -358,6 +623,7 @@ describe("Global Radar PostgreSQL constraints", () => {
           momentum_score,
           score_coverage,
           score_policy_version,
+          score_evidence_snapshot,
           momentum_policy_version,
           momentum_qualification_gates_passed,
           observed_at,
@@ -398,6 +664,7 @@ describe("Global Radar PostgreSQL constraints", () => {
           78,
           100,
           'global-radar-score-v1',
+          ${sql.json(validMomentumScoreEvidenceSnapshot)}::jsonb,
           'global-radar-momentum-v1',
           true,
           '2026-07-29T10:00:00Z',

@@ -1,6 +1,7 @@
 import {
   canonicalizeEvidenceUrl,
   createEvidenceFingerprint,
+  evidenceClaimSupportsPositiveIndiaPath,
   isGlobalRadarEvidenceFieldPathSupported,
   persistableRadarEvidenceSchema,
 } from "../../app/domain/global-radar";
@@ -96,6 +97,17 @@ export function canonicalizeGlobalRadarAdminEvidence(
   if (
     supportedFieldPaths.some(
       (path) => !isGlobalRadarEvidenceFieldPathSupported(path),
+    )
+  ) return null;
+  if (
+    supportedFieldPaths.some(
+      (path) =>
+        path.startsWith("indiaRelevance.") &&
+        !path.startsWith("indiaRelevance.no_current_India_fit.") &&
+        !evidenceClaimSupportsPositiveIndiaPath({
+          supportedFieldPath: path,
+          evidenceClaim: value.claim,
+        }),
     )
   ) return null;
   const supportsDirectDemand = supportedFieldPaths.some((path) =>

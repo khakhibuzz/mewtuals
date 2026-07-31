@@ -10,6 +10,7 @@ import {
 } from "drizzle-orm";
 
 import {
+  GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
   GLOBAL_RADAR_SCORE_VERSION,
   globalRadarDemandFamilyLookup,
   globalRadarLeafIdentifierLookup,
@@ -24,6 +25,9 @@ import {
   type RadarRunTrigger,
   type RadarScanMode,
   type RequirementKind,
+  type ScoreAssessmentBasis,
+  type ScoreEvidenceBasis,
+  type ScoreEvidenceComponent,
   type SensitiveDataFlagState,
   type SignalClass,
   type SignalStatus,
@@ -93,6 +97,10 @@ export type SafeGlobalRadarSignalListItem = Readonly<{
   }>;
 }>;
 
+export type GlobalRadarReadConflictReason =
+  | "invalid_input"
+  | "score_provenance_invalid";
+
 export type ListGlobalRadarSignalsResult =
   | Readonly<{
       outcome: "listed";
@@ -101,7 +109,10 @@ export type ListGlobalRadarSignalsResult =
       total: number;
       items: SafeGlobalRadarSignalListItem[];
     }>
-  | Readonly<{ outcome: "conflict"; reason: "invalid_input" }>;
+  | Readonly<{
+      outcome: "conflict";
+      reason: GlobalRadarReadConflictReason;
+    }>;
 
 export type GlobalRadarClassMetrics = Readonly<{
   total: number;
@@ -289,6 +300,21 @@ export type GlobalRadarAllowedAction =
   | "promote"
   | "reverse_promotion";
 
+export type SafeGlobalRadarScoreEvidenceAssociation = Readonly<{
+  component: ScoreEvidenceComponent;
+  value: number;
+  basis: ScoreEvidenceBasis;
+  assessmentBasis: ScoreAssessmentBasis | null;
+  inputValue: number | null;
+  rationale: string;
+  evidence: readonly Readonly<{
+    id: string;
+    sourceUrl: string;
+    sourceName: string;
+    matchedFieldPaths: readonly string[];
+  }>[];
+}>;
+
 export type SafeGlobalRadarSignalDetail = Readonly<{
   organisation: SafeGlobalRadarOrganisation | null;
   associatedOrganisations: SafeChildCollection<SafeGlobalRadarAssociatedOrganisation>;
@@ -370,6 +396,8 @@ export type SafeGlobalRadarSignalDetail = Readonly<{
     }>;
     coverage: number;
     policyVersion: string;
+    evidenceVersion: typeof GLOBAL_RADAR_SCORE_EVIDENCE_VERSION;
+    componentEvidence: readonly SafeGlobalRadarScoreEvidenceAssociation[];
   }>;
   timeline: Readonly<{
     announcedAt: Date | null;

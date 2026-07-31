@@ -6,6 +6,7 @@ import {
 } from "../app/server/global-radar/admin-service";
 
 const NOW = new Date("2026-07-31T12:00:00.000Z");
+const KNOWN_WORKER_SECRET = "opaque-radar-capability-value-1234567890";
 const ACTOR = {
   userId: "00000000-0000-4000-8000-000000000001",
   email: " Admin@Example.com ",
@@ -128,6 +129,26 @@ function signalDetailReadModel() {
       momentum: { score: null },
       coverage: 100,
       policyVersion: "global-radar-score-v1",
+      evidenceVersion: "global-radar-score-evidence-v1",
+      componentEvidence: [
+        {
+          component: "evidenceConfidence",
+          value: 80,
+          basis: "server_derived",
+          assessmentBasis: null,
+          inputValue: null,
+          rationale:
+            "Server-derived from the confidence recorded on public evidence.",
+          evidence: [
+            {
+              id: "00000000-0000-4000-8000-000000000011",
+              sourceUrl: "https://example.com/suppliers",
+              sourceName: "Fictional Robotics",
+              matchedFieldPaths: ["evidence.evidenceConfidence"],
+            },
+          ],
+        },
+      ],
     },
     timeline: {
       announcedAt: NOW,
@@ -231,6 +252,7 @@ function createService(
   return createGlobalRadarAdminService({
     repository,
     adminEmails: ["admin@example.com"],
+    knownSecrets: [KNOWN_WORKER_SECRET],
     now: () => NOW,
     queueManualRun: vi.fn(),
     promote: vi.fn(),
@@ -259,6 +281,71 @@ describe("Global Radar administrator service", () => {
       outcome: "not_found",
     });
     expect(repository.getSignalDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["listSignals", "getClassMetrics", "getOverviewMetrics"] as const)(
+    "preserves the generic score-provenance conflict from %s without partial class data",
+    async (failingRead) => {
+      const repository = repositoryDouble({
+        listSignals: vi.fn(async () => ({
+          outcome: "listed",
+          page: 1,
+          pageSize: 25,
+          total: 0,
+          items: [],
+        })),
+        getClassMetrics: vi.fn(async () => ({
+          outcome: "listed",
+          metrics: {},
+        })),
+        getOverviewMetrics: vi.fn(async () => ({
+          outcome: "listed",
+          metrics: {},
+        })),
+        [failingRead]: vi.fn(async () => ({
+          outcome: "conflict",
+          reason: "score_provenance_invalid",
+        })),
+      });
+
+      const result = await createService(repository).getClassSummary(ACTOR, {
+        signalClass: "direct_demand",
+        filters: {},
+      });
+
+      expect(result).toEqual({
+        outcome: "conflict",
+        reason: "score_provenance_invalid",
+      });
+      expect(JSON.stringify(result)).not.toMatch(/"items"|"metrics"|"score":/);
+    },
+  );
+
+  it("preserves the generic score-provenance conflict from watchlist enrichment without partial entries", async () => {
+    const entry = watchlistReadModel();
+    const service = createService(
+      repositoryDouble({
+        listWatchlist: vi.fn(async () => ({
+          outcome: "listed",
+          page: 1,
+          pageSize: 25,
+          total: 1,
+          entries: [entry],
+        })),
+        getWatchlistEnrichment: vi.fn(async () => ({
+          outcome: "conflict",
+          reason: "score_provenance_invalid",
+        })),
+      }),
+    );
+
+    const result = await service.listWatchlist(ACTOR, { page: 1 });
+
+    expect(result).toEqual({
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
+    expect(JSON.stringify(result)).not.toMatch(/"entries"|"items"|"score":/);
   });
 
   it("validates class filters and converts Kolkata calendar dates to half-open instants", async () => {
@@ -632,6 +719,95 @@ describe("Global Radar administrator service", () => {
         rawPayload: { private: true },
       }),
     ).resolves.toEqual({ outcome: "invalid" });
+  });
+
+  it("rejects sensitive mutation reasons and note bodies at the service boundary", async () => {
+    const repository = repositoryDouble({
+      reviewSignal: vi.fn(async () => ({
+        outcome: "conflict",
+        reason: "revision_mismatch",
+      })),
+      appendNote: vi.fn(async () => ({ outcome: "appended", revision: 5 })),
+    });
+    const service = createService(repository);
+    const base = {
+      expectedRevision: 4,
+      idempotencyKey: IDEMPOTENCY_KEY,
+    };
+
+    await expect(
+      service.reviewSignal(ACTOR, SIGNAL_ID, {
+        ...base,
+        reason: "Authorization: Bearer private-administrator-secret",
+        command: { type: "monitor" },
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    await expect(
+      service.appendNote(ACTOR, SIGNAL_ID, {
+        ...base,
+        reason: "Administrator documented a public review.",
+        body: "request_payload=private upstream response",
+      }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    expect(repository.reviewSignal).not.toHaveBeenCalled();
+    expect(repository.appendNote).not.toHaveBeenCalled();
+
+    const longPublicReason = Array.from(
+      { length: 100 },
+      (_, index) => `public-review-${index}`,
+    ).join(" ");
+    await service.reviewSignal(ACTOR, SIGNAL_ID, {
+      ...base,
+      reason: longPublicReason,
+      command: { type: "monitor" },
+    });
+    expect(repository.reviewSignal).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an exact configured credential in reasons, notes, and evidence", async () => {
+    const repository = repositoryDouble({
+      reviewSignal: vi.fn(async () => ({
+        outcome: "conflict",
+        reason: "revision_mismatch",
+      })),
+      appendNote: vi.fn(async () => ({ outcome: "appended", revision: 5 })),
+      appendEvidence: vi.fn(async () => ({ outcome: "appended", revision: 5 })),
+    });
+    const service = createService(repository);
+    const base = {
+      expectedRevision: 4,
+      idempotencyKey: IDEMPOTENCY_KEY,
+      reason: "Administrator reviewed current public evidence.",
+    };
+
+    const results = await Promise.all([
+      service.reviewSignal(ACTOR, SIGNAL_ID, {
+        ...base,
+        reason: `Administrator review ${KNOWN_WORKER_SECRET}`,
+        command: { type: "monitor" },
+      }),
+      service.appendNote(ACTOR, SIGNAL_ID, {
+        ...base,
+        body: `Administrator note ${KNOWN_WORKER_SECRET}`,
+      }),
+      service.appendEvidence(ACTOR, SIGNAL_ID, {
+        ...base,
+        evidence: {
+          sourceUrl: "https://example.com/public-evidence",
+          rawMetadata: { publicSummary: KNOWN_WORKER_SECRET },
+        },
+      }),
+    ]);
+
+    expect(results).toEqual([
+      { outcome: "invalid" },
+      { outcome: "invalid" },
+      { outcome: "invalid" },
+    ]);
+    expect(JSON.stringify(results)).not.toContain(KNOWN_WORKER_SECRET);
+    expect(repository.reviewSignal).not.toHaveBeenCalled();
+    expect(repository.appendNote).not.toHaveBeenCalled();
+    expect(repository.appendEvidence).not.toHaveBeenCalled();
   });
 
   it("returns exact allowlisted mutation DTOs for success and conflict outcomes", async () => {

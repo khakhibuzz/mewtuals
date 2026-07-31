@@ -14,10 +14,13 @@ import {
   GLOBAL_RADAR_PROMPT_VERSION,
   GLOBAL_RADAR_SCHEMA_VERSION,
   canonicalizeGlobalRadarPersistenceBatch,
+  containsKnownGlobalRadarSecret,
   createGlobalRadarFingerprint,
   createGlobalRadarMomentumPolicy,
   generateGlobalRadarQueries,
+  globalRadarAuthoredAuditTextSchema,
   globalRadarExecutedQueriesMatchPlan,
+  globalRadarOperationalDiagnosticSchema,
   momentumPolicySchema,
   parseGlobalRadarPlanSnapshot,
   radarRunTriggers,
@@ -546,11 +549,8 @@ function requireLeaseHash(
 }
 
 function canonicalReason(reason: unknown): string | null {
-  if (typeof reason !== "string") return null;
-  const normalized = reason.trim().replace(/\s+/g, " ");
-  return normalized.length > 0 && normalized.length <= 1_000
-    ? normalized
-    : null;
+  const parsed = globalRadarOperationalDiagnosticSchema.safeParse(reason);
+  return parsed.success ? parsed.data : null;
 }
 
 function storedFailure(run: GlobalRadarRun): SafeRadarFailure | null {
@@ -597,17 +597,20 @@ function canonicalSourceErrors(
     ) {
       return null;
     }
-    const sourceName = sourceError.sourceName.trim().replace(/\s+/g, " ");
-    const message = sourceError.message.trim().replace(/\s+/g, " ");
+    const sourceName = globalRadarAuthoredAuditTextSchema.safeParse(
+      sourceError.sourceName,
+    );
+    const message = globalRadarOperationalDiagnosticSchema.safeParse(
+      sourceError.message,
+    );
     if (
-      !sourceName ||
-      sourceName.length > 200 ||
-      !message ||
-      message.length > 1_000
+      !sourceName.success ||
+      sourceName.data.length > 200 ||
+      !message.success
     ) {
       return null;
     }
-    normalized.push({ sourceName, message });
+    normalized.push({ sourceName: sourceName.data, message: message.data });
   }
   return normalized;
 }
@@ -974,7 +977,8 @@ export function createGlobalRadarRepository(
         !SHA256_PATTERN.test(input.submissionHash) ||
         !SHA256_PATTERN.test(input.batchFingerprint) ||
         !(input.now instanceof Date) ||
-        Number.isNaN(input.now.getTime())
+        Number.isNaN(input.now.getTime()) ||
+        containsKnownGlobalRadarSecret(input.batch, [input.leaseToken])
       ) {
         return { outcome: "conflict", reason: "invalid_input" };
       }
@@ -1148,7 +1152,8 @@ export function createGlobalRadarRepository(
         !reason ||
         !SHA256_PATTERN.test(input.leaseToken) ||
         !(input.now instanceof Date) ||
-        Number.isNaN(input.now.getTime())
+        Number.isNaN(input.now.getTime()) ||
+        containsKnownGlobalRadarSecret(reason, [input.leaseToken])
       ) {
         return { outcome: "conflict", reason: "invalid_input" };
       }

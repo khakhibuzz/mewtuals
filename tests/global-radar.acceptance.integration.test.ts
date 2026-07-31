@@ -8,7 +8,10 @@ import {
   createGlobalRadarApplication,
   createGlobalRadarApplicationDependencies,
 } from "../app/server/global-radar";
-import type { GlobalRadarConfig } from "../app/server/global-radar/config";
+import {
+  createGlobalRadarConfig,
+  type GlobalRadarConfig,
+} from "../app/server/global-radar/config";
 import { hashGlobalRadarLeaseToken } from "../app/server/global-radar/worker-auth";
 import {
   globalRadarBatchProposalSchema,
@@ -62,7 +65,7 @@ const DISCOVERY_CANDIDATE_URL =
   "https://saffron-navigation.example/about";
 const ADMIN_NOTE = "Acceptance review recorded from the public evidence.";
 
-const radarConfig: GlobalRadarConfig = {
+const radarConfig: GlobalRadarConfig = createGlobalRadarConfig({
   workerSecret: RADAR_WORKER_SECRET,
   countries: ["United Kingdom"],
   languages: ["en"],
@@ -74,7 +77,7 @@ const radarConfig: GlobalRadarConfig = {
     demand_precursor: 65,
     ecosystem_momentum: 70,
   },
-};
+}, [DISCOVERY_WORKER_SECRET]);
 
 const discoveryConfig: DiscoveryConfig = {
   campaignKey: DISCOVERY_CAMPAIGN,

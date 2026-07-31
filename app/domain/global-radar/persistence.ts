@@ -14,6 +14,8 @@ import {
   confidenceSchema,
   directDemandAskTypes,
   fingerprintSchema,
+  globalRadarJsonContainsSensitiveContent,
+  globalRadarOperationalDiagnosticSchema,
   indiaRelevanceTypes,
   isoTimestampSchema,
   linkedinOrganizationUrlSchema,
@@ -31,6 +33,7 @@ import {
   createGlobalRadarFingerprint,
   type EntityIdentity,
 } from "./normalization";
+import { evidenceClaimSupportsPositiveIndiaPath } from "./india-relevance";
 import { generateGlobalRadarQueries } from "./query-generator";
 import { parseGlobalRadarPlanSnapshot } from "./planner";
 import {
@@ -47,7 +50,10 @@ import {
   scoreDemandPrecursor,
   scoreDirectDemand,
 } from "./scoring";
-import { systemsContextSchema } from "./systems-context";
+import {
+  assessComplianceReview,
+  systemsContextSchema,
+} from "./systems-context";
 
 export const GLOBAL_RADAR_DEDUPE_VERSION =
   "global-radar-dedupe-v1" as const;
@@ -63,6 +69,11 @@ const nullableBoundedArray = z.array(boundedShortStringSchema).max(50).nullable(
 const scoreComponentSchema = z.number().int().min(0).max(100);
 const documentMarkupPattern =
   /<(?:!doctype\b|\?xml\b|!\[cdata\[|\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\/?>)/i;
+const allowedGlobalRadarBatchSensitiveKeys: ReadonlySet<string> = new Set([
+  "canonicalsubmissionhash",
+  "industrialsecrets",
+  "rawmetadata",
+]);
 
 const stablePublicIdentifierSchema = z.strictObject({
   namespace: applicationRefSchema,
@@ -101,7 +112,7 @@ export const persistableRadarExecutedQuerySchema = z.strictObject({
   ordinal: z.number().int().min(0).max(119),
   executedAt: isoTimestampSchema,
   resultsExamined: z.number().int().min(0).max(10_000),
-  error: boundedText(1_000).nullable(),
+  error: globalRadarOperationalDiagnosticSchema.nullable(),
 });
 
 export const persistableRadarEvidenceSchema = z.strictObject({
@@ -239,6 +250,7 @@ const baseSignalShape = {
   effectiveFrom: isoTimestampSchema.nullable(),
   expiresAt: isoTimestampSchema.nullable(),
   observedAt: isoTimestampSchema,
+  scoreAsOf: isoTimestampSchema,
   initialStatus: z.enum(["newly_discovered", "needs_review"]),
   responsePath: professionalResponsePathSchema.nullable(),
   partnerApplicationUrl: publicHttpUrlSchema.nullable(),
@@ -257,6 +269,7 @@ const directDemandSignalSchema = z.strictObject({
   signalClass: z.literal("direct_demand"),
   signalType: z.enum(directDemandAskTypes),
   primaryEntityRef: applicationRefSchema,
+  actionabilityInput: scoreComponentSchema.nullable(),
   score: directDemandScoreSchema,
   evergreen: z.boolean(),
   reobserveBy: isoTimestampSchema.nullable(),
@@ -350,16 +363,30 @@ const rejectionCountsSchema = z
     }
   });
 
-export const persistableGlobalRadarBatchObjectSchema = z.strictObject({
-  runId: z.string().uuid(),
-  planFingerprint: fingerprintSchema,
-  canonicalSubmissionHash: fingerprintSchema,
-  executedQueries: z.array(persistableRadarExecutedQuerySchema).max(120),
-  entities: z.array(persistableRadarEntitySchema).max(50),
-  signals: z.array(persistableRadarSignalSchema).max(20),
-  sourceErrors: z.array(sourceErrorSchema).max(50),
-  rejections: rejectionCountsSchema,
-});
+export const persistableGlobalRadarBatchObjectSchema = z
+  .strictObject({
+    runId: z.string().uuid(),
+    planFingerprint: fingerprintSchema,
+    canonicalSubmissionHash: fingerprintSchema,
+    executedQueries: z.array(persistableRadarExecutedQuerySchema).max(120),
+    entities: z.array(persistableRadarEntitySchema).max(50),
+    signals: z.array(persistableRadarSignalSchema).max(20),
+    sourceErrors: z.array(sourceErrorSchema).max(50),
+    rejections: rejectionCountsSchema,
+  })
+  .superRefine((batch, context) => {
+    if (
+      globalRadarJsonContainsSensitiveContent(
+        batch,
+        allowedGlobalRadarBatchSensitiveKeys,
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Global Radar batch must not contain sensitive content.",
+      });
+    }
+  });
 
 function jsonByteLength(value: unknown): number {
   try {
@@ -677,6 +704,10 @@ export function canonicalizeGlobalRadarPersistenceBatch(
 ): CanonicalPersistenceBatchResult {
   if (
     containsFictionalExample(input) ||
+    globalRadarJsonContainsSensitiveContent(
+      input,
+      allowedGlobalRadarBatchSensitiveKeys,
+    ) ||
     jsonByteLength(input) > MAX_BATCH_BYTES
   ) {
     return Object.freeze({ valid: false, reason: "invalid_batch" });
@@ -835,7 +866,18 @@ export function canonicalizeGlobalRadarPersistenceBatch(
           isPrimarySource: evidence.isPrimarySource,
         }) !== evidence.evidenceFingerprint ||
         (evidence.publishedAt !== null &&
-          Date.parse(evidence.publishedAt) > Date.parse(evidence.observedAt))
+          Date.parse(evidence.publishedAt) > Date.parse(evidence.observedAt)) ||
+        evidence.supportedFieldPaths.some(
+          (supportedFieldPath) =>
+            supportedFieldPath.startsWith("indiaRelevance.") &&
+            !supportedFieldPath.startsWith(
+              "indiaRelevance.no_current_India_fit.",
+            ) &&
+            !evidenceClaimSupportsPositiveIndiaPath({
+              supportedFieldPath,
+              evidenceClaim: evidence.claim,
+            }),
+        )
       ) {
         return Object.freeze({ valid: false, reason: "invalid_batch" });
       }
@@ -851,6 +893,24 @@ export function canonicalizeGlobalRadarPersistenceBatch(
       return Object.freeze({ valid: false, reason: "invalid_batch" });
     }
     if (signal.signalClass === "direct_demand") {
+      const reviewedActionability =
+        signal.actionabilityInput === null
+          ? null
+          : assessComplianceReview({
+              currentStatus: "newly_discovered",
+              actionability: signal.actionabilityInput,
+              assessment: signal.sensitiveDataAndCompliance,
+            });
+      if (
+        (reviewedActionability === null &&
+          signal.score.components.actionability !== null) ||
+        (reviewedActionability !== null &&
+          (!reviewedActionability.valid ||
+            reviewedActionability.actionability !==
+              signal.score.components.actionability))
+      ) {
+        return Object.freeze({ valid: false, reason: "invalid_batch" });
+      }
       const recomputed = scoreDirectDemand(signal.score.components);
       if (!recomputed.valid || !sameJson(recomputed, signal.score)) {
         return Object.freeze({ valid: false, reason: "invalid_batch" });

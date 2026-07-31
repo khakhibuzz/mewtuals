@@ -351,13 +351,54 @@ describe("Global Radar signal actions", () => {
 
   it("submits an exact direct-demand classification from the safe detail fields", async () => {
     const user = userEvent.setup();
+    const initialDetail = globalRadarDetailFixture({
+      allowedActions: ["edit_classification"],
+    });
+    const scoreRationale = initialDetail.sections.find(
+      ({ id }) => id === "score_rationale",
+    )!;
+    const scoreData = scoreRationale.data as unknown as {
+      componentEvidence: Array<Record<string, unknown>>;
+    };
+    scoreData.componentEvidence = [
+      ...scoreData.componentEvidence.filter(
+        ({ component }) => component !== "actionability",
+      ),
+      {
+        component: "actionability",
+        value: 75,
+        basis: "server_adjusted",
+        assessmentBasis: "administrator_assessed",
+        inputValue: 85,
+        rationale: "Compliance policy adjusts the submitted base actionability.",
+        evidence: [
+          {
+            id: "00000000-0000-4000-8000-000000000014",
+            sourceUrl: "https://fictional-robotics.example/suppliers",
+            sourceName: "Official supplier notice",
+            matchedFieldPaths: ["scoreComponents.actionability"],
+          },
+        ],
+      },
+    ];
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({
       ok: true,
       outcome: "updated",
       detail: globalRadarDetailFixture({ allowedActions: ["edit_classification"], revision: 5 }),
     })));
-    renderDetail({ allowedActions: ["edit_classification"] });
+    render(
+      <GlobalRadarSignalDetail
+        initialDetail={initialDetail as never}
+        returnTo="/admin/global-demand-radar/direct-demand"
+      />,
+    );
 
+    expect(screen.getByLabelText("Base actionability")).toHaveValue(85);
+    expect(screen.queryByLabelText("Demand explicitness")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Evidence confidence")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Freshness")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("India fit")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Response accessibility")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Classification reason"), "Recalculate reviewed classification.");
     await user.click(screen.getByRole("button", { name: "Save classification" }));
 
@@ -372,15 +413,10 @@ describe("Global Radar signal actions", () => {
         signalType: "supplier_registration",
         demandDomain: "robotics_hardware_and_ecosystem_demand",
         primaryEntityId: RADAR_ENTITY_ID,
-        components: {
-          explicitness: 90,
-          evidenceConfidence: 88,
-          freshness: 84,
-          actionability: 75,
-          indiaFit: 80,
+        assessments: {
+          actionability: 85,
           commercialPotential: 70,
           repeatability: 65,
-          responseAccessibility: 90,
           strategicLearning: 72,
           complianceComplexity: 35,
         },
@@ -391,6 +427,25 @@ describe("Global Radar signal actions", () => {
         },
       },
     });
+  });
+
+  it("requires base actionability when its provenance input is absent", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    renderDetail({ allowedActions: ["edit_classification"] });
+
+    const actionability = screen.getByLabelText("Base actionability");
+    expect(actionability).toHaveValue(null);
+    expect(actionability).toBeRequired();
+
+    await user.type(
+      screen.getByLabelText("Classification reason"),
+      "Reassess base actionability from public evidence.",
+    );
+    await user.click(screen.getByRole("button", { name: "Save classification" }));
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("reclassifies to a precursor with explicit scores and a selected contributor", async () => {
@@ -409,15 +464,15 @@ describe("Global Radar signal actions", () => {
     await user.selectOptions(screen.getByLabelText("Target signal class"), "demand_precursor");
     expect(screen.getByLabelText("Signal type")).toHaveValue("");
     await user.selectOptions(screen.getByLabelText("Signal type"), "deployment");
-    expect(screen.getByLabelText("Evidence confidence")).toHaveValue(null);
+    expect(screen.queryByLabelText("Evidence confidence")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("India fit")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Estimated time horizon")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Proximity to external demand")).toHaveValue(null);
     await user.selectOptions(screen.getByLabelText("Primary organisation"), RADAR_ASSOCIATED_ENTITY_ID);
     for (const [label, value] of [
-      ["Evidence confidence", "81"],
       ["Proximity to external demand", "70"],
       ["Funding deployment momentum", "69"],
       ["Likely data hardware intensity", "77"],
-      ["India fit", "83"],
-      ["Estimated time horizon", "60"],
       ["Strategic relevance", "74"],
     ] as const) {
       await user.type(screen.getByLabelText(label), value);
@@ -434,13 +489,10 @@ describe("Global Radar signal actions", () => {
         signalType: "deployment",
         demandDomain: "robotics_hardware_and_ecosystem_demand",
         primaryEntityId: RADAR_ASSOCIATED_ENTITY_ID,
-        components: {
-          evidenceConfidence: 81,
+        assessments: {
           proximityToExternalDemand: 70,
           fundingDeploymentMomentum: 69,
           likelyDataHardwareIntensity: 77,
-          indiaFit: 83,
-          estimatedTimeHorizon: 60,
           strategicRelevance: 74,
         },
       },
@@ -477,7 +529,7 @@ describe("Global Radar signal actions", () => {
         signalClass: "ecosystem_momentum",
         signalType: "ecosystem_direction",
         demandDomain: "robotics_hardware_and_ecosystem_demand",
-        components: {
+        assessments: {
           taxonomyConsistency: 86,
           evidenceQuality: 79,
         },

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assessIndiaRelevance,
+  evidenceClaimSupportsPositiveIndiaPath,
   indiaEvidenceFactKinds,
 } from "../app/domain/global-radar/india-relevance";
 import { normalizeRequirements } from "../app/domain/global-radar/requirements";
@@ -115,6 +116,65 @@ function assessmentInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Global Radar India relevance", () => {
+  it.each([
+    [
+      "indiaRelevance.explicit_India.collection",
+      "We collect physical data in India.",
+      true,
+    ],
+    [
+      "indiaRelevance.explicit_India.collection",
+      "We do not collect physical data in India.",
+      false,
+    ],
+    [
+      "indiaRelevance.India_expansion.distribution",
+      "We considered expanding distribution into India but cancelled the plan.",
+      false,
+    ],
+    [
+      "indiaRelevance.globally_open.requirement_access",
+      "Applications are open to suppliers worldwide.",
+      true,
+    ],
+    [
+      "indiaRelevance.globally_open.requirement_access",
+      "Applications are open worldwide except India.",
+      false,
+    ],
+    [
+      "indiaRelevance.globally_open.manufacturing",
+      "Applications are open to suppliers worldwide.",
+      false,
+    ],
+    [
+      "indiaRelevance.inferred_India_compatible.requirement_access",
+      "Applications are open to suppliers worldwide.",
+      true,
+    ],
+    [
+      "indiaRelevance.inferred_India_compatible.requirement_access",
+      "Applications are not currently open worldwide.",
+      false,
+    ],
+    [
+      "indiaRelevance.no_current_India_fit.exclusion",
+      "India is excluded from this opportunity.",
+      false,
+    ],
+    ["indiaRelevance.globally_open", "Applications are open worldwide.", false],
+  ] as const)(
+    "validates positive India path %s against its evidence claim",
+    (supportedFieldPath, evidenceClaim, expected) => {
+      expect(
+        evidenceClaimSupportsPositiveIndiaPath({
+          supportedFieldPath,
+          evidenceClaim,
+        }),
+      ).toBe(expected);
+    },
+  );
+
   it("fails closed without throwing on invalid runtime input", () => {
     expect(() => assessIndiaRelevance({ proposedType: "explicit_India" })).not
       .toThrow();

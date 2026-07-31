@@ -14,7 +14,6 @@ import {
   globalRadarPromotions,
   globalRadarSignalEntities,
   globalRadarSignals,
-  globalSignalEvidence,
   globalSignalUpdates,
 } from "../global-radar-schema";
 import {
@@ -58,17 +57,40 @@ import {
   type PromotionAttemptReason,
   type PromotionContext,
   type ReverseGlobalRadarPromotionResult,
+  type SelectedPromotionEvidence,
 } from "./global-radar-promotion-contracts";
 import {
   discoveryCandidateIdentityProbe,
   entitySafeSnapshot,
+  hasInvalidDocumentedIndianRelationshipClaim,
   mappedDiscoveryCandidate,
   promotionEligibilityMet,
+  selectPromotionEvidence,
   signalSafeSnapshot,
   sourceSnapshotDigest,
   storedAttemptReason,
   storedSafeString,
 } from "./global-radar-promotion-policy";
+import {
+  createStoredGlobalRadarScoreInputDigest,
+  rebaseStoredScoreEvidenceSnapshot,
+  storedScoreComponents,
+} from "./global-radar-score-evidence";
+import {
+  validateStoredGlobalRadarScoreProvenance,
+  validateStoredGlobalRadarScoreProvenanceSelection,
+} from "./global-radar-stored-score-provenance";
+
+type UnselectedPromotionContext = Omit<PromotionContext, "evidence"> &
+  Readonly<{ evidence: GlobalSignalEvidence[] }>;
+
+type ValidPromotionScoreProvenance = Extract<
+  Awaited<ReturnType<typeof validateStoredGlobalRadarScoreProvenanceSelection>>,
+  { valid: true }
+>;
+
+type ValidStoredScoreProvenance =
+  ValidPromotionScoreProvenance["items"][number]["provenance"];
 
 export {
   GlobalRadarPromotionUnavailableError,
@@ -192,19 +214,26 @@ async function loadPromotionContext(
   if (!primarySignal || supportingSignals.length !== input.supportingSignalIds.length) {
     return { outcome: "not_found", entity };
   }
-  const evidence = await transaction
-    .select()
-    .from(globalSignalEvidence)
-    .where(inArray(globalSignalEvidence.signalId, input.supportingSignalIds))
-    .orderBy(
-      asc(globalSignalEvidence.signalId),
-      asc(globalSignalEvidence.canonicalSourceUrl),
-      asc(globalSignalEvidence.evidenceFingerprint),
-    );
-  return {
-    outcome: "found",
-    context: { entity, primarySignal, supportingSignals, evidence },
+  const contextWithoutEvidence: UnselectedPromotionContext = {
+    entity,
+    primarySignal,
+    supportingSignals,
+    evidence: [],
   };
+  const scoreProvenance = await promotionScoreProvenance(
+    transaction,
+    input,
+    contextWithoutEvidence,
+  );
+  if (!scoreProvenance.valid) return { outcome: "not_found", entity };
+  const rawContext = contextWithEvaluationEvidence(
+    contextWithoutEvidence,
+    scoreProvenance,
+  );
+  const context = selectedPromotionContext(input, rawContext, scoreProvenance);
+  return context === null
+    ? { outcome: "not_found", entity }
+    : { outcome: "found", context };
 }
 
 function evidenceForPromotionEntity(
@@ -219,8 +248,158 @@ function evidenceForPromotionEntity(
   );
   return evidence.filter(
     ({ signalId, globalEntityId }) =>
-      !momentumSignalIds.has(signalId) || globalEntityId === entityId,
+      (globalEntityId === null || globalEntityId === entityId) &&
+      (!momentumSignalIds.has(signalId) || globalEntityId === entityId),
   );
+}
+
+function contextWithEvaluationEvidence(
+  context: UnselectedPromotionContext,
+  scoreProvenance: ValidPromotionScoreProvenance,
+): UnselectedPromotionContext {
+  return {
+    ...context,
+    evidence: evidenceForPromotionEntity(
+      context.entity.id,
+      context.supportingSignals,
+      scoreProvenance.items.flatMap(
+        ({ provenance }) => provenance.evaluationEvidence,
+      ),
+    ),
+  };
+}
+
+function scoreBearingSignalsForPromotion(
+  input: Pick<CanonicalPromotionInput, "eligibilityPath">,
+  context: Pick<UnselectedPromotionContext, "primarySignal" | "supportingSignals">,
+): readonly GlobalRadarSignal[] {
+  return input.eligibilityPath === "repeated_india_compatible_signals"
+    ? context.supportingSignals
+    : [context.primarySignal];
+}
+
+async function promotionScoreProvenance(
+  transaction: DiscoveryTransaction,
+  input: Pick<CanonicalPromotionInput, "eligibilityPath">,
+  context: Pick<UnselectedPromotionContext, "primarySignal" | "supportingSignals">,
+) {
+  const signals = [...scoreBearingSignalsForPromotion(input, context)].sort(
+    (left, right) => left.id.localeCompare(right.id),
+  );
+  return validateStoredGlobalRadarScoreProvenanceSelection(
+    transaction,
+    signals,
+  );
+}
+
+async function rebindScoreSnapshotForStatus(
+  transaction: DiscoveryTransaction,
+  signal: GlobalRadarSignal,
+  nextStatus: GlobalRadarSignal["status"],
+  provenance: ValidStoredScoreProvenance,
+) {
+  const associations = await transaction
+    .select({
+      globalEntityId: globalRadarSignalEntities.globalEntityId,
+      role: globalRadarSignalEntities.role,
+    })
+    .from(globalRadarSignalEntities)
+    .where(eq(globalRadarSignalEntities.signalId, signal.id))
+    .orderBy(
+      asc(globalRadarSignalEntities.globalEntityId),
+      asc(globalRadarSignalEntities.role),
+    )
+    .for("share");
+  const referencedEntityIds = [
+    ...new Set([
+      ...(signal.globalEntityId === null ? [] : [signal.globalEntityId]),
+      ...associations.map(({ globalEntityId }) => globalEntityId),
+      ...provenance.evaluationEvidence.flatMap(({ globalEntityId }) =>
+        globalEntityId === null ? [] : [globalEntityId],
+      ),
+    ]),
+  ].sort();
+  const entities =
+    referencedEntityIds.length === 0
+      ? []
+      : await transaction
+          .select({
+            id: globalEntities.id,
+            canonicalCorporateGroupId:
+              globalEntities.canonicalCorporateGroupId,
+          })
+          .from(globalEntities)
+          .where(inArray(globalEntities.id, referencedEntityIds))
+          .orderBy(asc(globalEntities.id))
+          .for("share");
+  if (entities.length !== referencedEntityIds.length) {
+    throw new Error("Radar promotion score-input entities are incomplete.");
+  }
+
+  const nextSignal = { ...signal, status: nextStatus };
+  const scoreAsOf = new Date(provenance.snapshot.scoreAsOf);
+  const actionabilityInput =
+    signal.signalClass === "direct_demand"
+      ? (provenance.snapshot.componentEvidence.find(
+          ({ component }) => component === "actionability",
+        )?.inputValue ?? null)
+      : null;
+  const scoreInputDigest = createStoredGlobalRadarScoreInputDigest({
+    scoreAsOf,
+    signal: nextSignal,
+    actionabilityInput,
+    associations,
+    entities,
+  });
+  const components = storedScoreComponents(signal);
+  return rebaseStoredScoreEvidenceSnapshot({
+    scoreInputDigest,
+    scoreAsOf,
+    existingSnapshot: provenance.snapshot,
+    signalClass: signal.signalClass,
+    signalType: signal.signalType,
+    currentIndiaRelevanceType: signal.indiaRelevanceType,
+    nextIndiaRelevanceType: signal.indiaRelevanceType,
+    scorePolicyVersion: "global-radar-score-v1",
+    momentumPolicyVersion:
+      signal.signalClass === "ecosystem_momentum"
+        ? "global-radar-momentum-v1"
+        : null,
+    currentComponents: components,
+    nextComponents: components,
+    replacementComponents: [],
+    momentumContributorEntityIds:
+      signal.signalClass === "ecosystem_momentum"
+        ? provenance.momentumContributorEntityIds
+        : undefined,
+    announcedAt: signal.announcedAt,
+    effectiveFrom: signal.effectiveFrom,
+    existingEvidence: provenance.evaluationEvidence,
+    evidence: provenance.evaluationEvidence,
+    evaluationEvidence: provenance.evaluationEvidence,
+  });
+}
+
+function selectedPromotionContext(
+  input: Pick<CanonicalPromotionInput, "eligibilityPath">,
+  context: UnselectedPromotionContext,
+  scoreProvenance: ValidPromotionScoreProvenance,
+): PromotionContext | null {
+  const selection = selectPromotionEvidence({
+    eligibilityPath: input.eligibilityPath,
+    entity: context.entity,
+    primarySignal: context.primarySignal,
+    supportingSignals: context.supportingSignals,
+    availableEvidence: context.evidence,
+    scoreEvidence: scoreProvenance.items.map(({ signalId, provenance }) => ({
+      signalId,
+      evaluationEvidence: provenance.evaluationEvidence,
+      citedEvidence: provenance.citedEvidence,
+    })),
+  });
+  return selection.valid
+    ? { ...context, evidence: selection.evidence }
+    : null;
 }
 
 async function readPromotionContext(
@@ -229,6 +408,7 @@ async function readPromotionContext(
     globalEntityId: string;
     primarySignalId: string;
     promotionSupportingSignalIds: string[];
+    eligibilityPath: CanonicalPromotionInput["eligibilityPath"];
   }>,
 ): Promise<LoadedGlobalRadarPromotionContext | null> {
   return database.transaction(async (transaction) => {
@@ -255,20 +435,6 @@ async function readPromotionContext(
       !primarySignal ||
       supportingSignals.length !== input.promotionSupportingSignalIds.length
     ) return null;
-    const evidence = await transaction
-      .select()
-      .from(globalSignalEvidence)
-      .where(
-        inArray(
-          globalSignalEvidence.signalId,
-          input.promotionSupportingSignalIds,
-        ),
-      )
-      .orderBy(
-        asc(globalSignalEvidence.signalId),
-        asc(globalSignalEvidence.canonicalSourceUrl),
-        asc(globalSignalEvidence.evidenceFingerprint),
-      );
     const identityProbe = discoveryCandidateIdentityProbe(entity);
     const identityConflict = identityProbe
       ? await inspectDiscoveryCandidateIdentityConflict(
@@ -276,15 +442,26 @@ async function readPromotionContext(
           identityProbe,
         )
       : null;
-    return {
+    const contextWithoutEvidence: UnselectedPromotionContext = {
       entity,
       primarySignal,
       supportingSignals,
-      evidence: evidenceForPromotionEntity(
-        entity.id,
-        supportingSignals,
-        evidence,
-      ),
+      evidence: [],
+    };
+    const scoreProvenance = await promotionScoreProvenance(
+      transaction,
+      input,
+      contextWithoutEvidence,
+    );
+    if (!scoreProvenance.valid) return null;
+    const rawContext = contextWithEvaluationEvidence(
+      contextWithoutEvidence,
+      scoreProvenance,
+    );
+    const context = selectedPromotionContext(input, rawContext, scoreProvenance);
+    if (!context) return null;
+    return {
+      ...context,
       promotionSupportingSignalIds: input.promotionSupportingSignalIds,
       eligibilityFacts: {
         hasPublicIdentityEvidence: identityProbe !== null,
@@ -431,7 +608,7 @@ async function signalsBelongToEntity(
 }
 
 function discoverySources(
-  evidence: readonly GlobalSignalEvidence[],
+  evidence: readonly SelectedPromotionEvidence[],
   candidateId: string,
 ): DiscoveryCandidateSourceWrite[] {
   const sourceByIdentity = new Map<string, DiscoveryCandidateSourceWrite>();
@@ -445,10 +622,12 @@ function discoverySources(
       rawMetadata: {
         source: "global_demand_radar",
         globalRadarSignalId: source.signalId,
+        globalRadarEvidenceIngestOrdinal: source.ingestOrdinal,
         evidenceFingerprint: source.evidenceFingerprint,
         sourceFamily: source.sourceFamily,
         isPrimarySource: source.isPrimarySource,
         supportsIndiaRelevance: source.supportsIndiaRelevance,
+        selectionRoles: source.selectionRoles,
       },
     };
     sourceByIdentity.set(`${sourceName}\n${source.sourceUrl}`, row);
@@ -456,7 +635,7 @@ function discoverySources(
   return [...sourceByIdentity.values()].slice(0, 100);
 }
 
-function discoverySourceNames(evidence: readonly GlobalSignalEvidence[]) {
+function discoverySourceNames(evidence: readonly SelectedPromotionEvidence[]) {
   return [
     ...new Set(
       evidence
@@ -471,6 +650,7 @@ async function persistPromotion(
   input: CanonicalPromotionInput,
   context: PromotionContext,
   candidate: DiscoveryBatchCandidate,
+  primaryScoreProvenance: ValidStoredScoreProvenance,
 ): Promise<GlobalRadarPromotionSuccess> {
   const [run] = await transaction
     .insert(discoveryRuns)
@@ -525,6 +705,12 @@ async function persistPromotion(
 
   const promotedEntityRevision = context.entity.revision + 1;
   const promotedPrimarySignalRevision = context.primarySignal.revision + 1;
+  const promotedScoreEvidenceSnapshot = await rebindScoreSnapshotForStatus(
+    transaction,
+    context.primarySignal,
+    "promoted",
+    primaryScoreProvenance,
+  );
   const [promotion] = await transaction
     .insert(globalRadarPromotions)
     .values({
@@ -574,6 +760,7 @@ async function persistPromotion(
     .update(globalRadarSignals)
     .set({
       status: "promoted",
+      scoreEvidenceSnapshot: promotedScoreEvidenceSnapshot,
       revision: promotedPrimarySignalRevision,
       updatedAt: input.now,
     })
@@ -733,9 +920,16 @@ async function persistReversal(
   promotion: GlobalRadarPromotion,
   entity: GlobalEntity,
   primarySignal: GlobalRadarSignal,
+  primaryScoreProvenance: ValidStoredScoreProvenance,
 ): Promise<ReverseGlobalRadarPromotionResult> {
   const restoredEntityRevision = entity.revision + 1;
   const restoredPrimarySignalRevision = primarySignal.revision + 1;
+  const restoredScoreEvidenceSnapshot = await rebindScoreSnapshotForStatus(
+    transaction,
+    primarySignal,
+    promotion.previousPrimarySignalStatus,
+    primaryScoreProvenance,
+  );
   const [reversedPromotion] = await transaction
     .update(globalRadarPromotions)
     .set({
@@ -764,6 +958,7 @@ async function persistReversal(
     .update(globalRadarSignals)
     .set({
       status: promotion.previousPrimarySignalStatus,
+      scoreEvidenceSnapshot: restoredScoreEvidenceSnapshot,
       revision: restoredPrimarySignalRevision,
       updatedAt: input.now,
     })
@@ -906,27 +1101,48 @@ export function createGlobalRadarPromotionRepository(
           if (!primarySignal) {
             return { outcome: "conflict", reason: "not_found" };
           }
-          const evidence = await transaction
-            .select()
-            .from(globalSignalEvidence)
-            .where(
-              inArray(globalSignalEvidence.signalId, input.supportingSignalIds),
-            )
-            .orderBy(
-              asc(globalSignalEvidence.signalId),
-              asc(globalSignalEvidence.canonicalSourceUrl),
-              asc(globalSignalEvidence.evidenceFingerprint),
-            );
-          const context: PromotionContext = {
+          const contextWithoutEvidence: UnselectedPromotionContext = {
             entity,
             primarySignal,
             supportingSignals,
-            evidence: evidenceForPromotionEntity(
-              entity.id,
-              supportingSignals,
-              evidence,
-            ),
+            evidence: [],
           };
+          const scoreProvenance = await promotionScoreProvenance(
+            transaction,
+            input,
+            contextWithoutEvidence,
+          );
+          if (!scoreProvenance.valid) {
+            return { outcome: "conflict", reason: "eligibility_not_met" };
+          }
+          const rawContext = contextWithEvaluationEvidence(
+            contextWithoutEvidence,
+            scoreProvenance,
+          );
+          if (
+            input.eligibilityPath === "documented_indian_relationship" &&
+            hasInvalidDocumentedIndianRelationshipClaim({
+              entityId: entity.id,
+              primarySignalId: primarySignal.id,
+              evidence: rawContext.evidence,
+            })
+          ) {
+            return { outcome: "conflict", reason: "eligibility_not_met" };
+          }
+          const context = selectedPromotionContext(
+            input,
+            rawContext,
+            scoreProvenance,
+          );
+          if (!context) {
+            return { outcome: "conflict", reason: "eligibility_not_met" };
+          }
+          const primaryScoreProvenance = scoreProvenance.items.find(
+            ({ signalId }) => signalId === primarySignal.id,
+          )?.provenance;
+          if (!primaryScoreProvenance) {
+            return { outcome: "conflict", reason: "eligibility_not_met" };
+          }
           if (activePromotion) {
             return conflictPromotion(
               transaction,
@@ -976,12 +1192,10 @@ export function createGlobalRadarPromotionRepository(
             );
           }
           if (!promotionEligibilityMet(input, context, configuration)) {
-            return conflictPromotion(
-              transaction,
-              input,
-              context,
-              "eligibility_not_met",
-            );
+            return {
+              outcome: "conflict" as const,
+              reason: "eligibility_not_met" as const,
+            };
           }
           const mappedCandidate = mappedDiscoveryCandidate(input, context);
           if (mappedCandidate.outcome === "conflict") {
@@ -1009,6 +1223,7 @@ export function createGlobalRadarPromotionRepository(
             input,
             context,
             mappedCandidate.candidate,
+            primaryScoreProvenance,
           );
           return { outcome: "promoted" as const, ...success };
         });
@@ -1126,6 +1341,18 @@ export function createGlobalRadarPromotionRepository(
           .limit(1)
           .for("update");
         if (!primarySignal) return { outcome: "conflict", reason: "not_found" };
+        const primaryScoreProvenance =
+          await validateStoredGlobalRadarScoreProvenance(
+            transaction,
+            primarySignal,
+          );
+        if (!primaryScoreProvenance.valid) {
+          return {
+            outcome: "conflict",
+            reason: "restoration_not_safe",
+            promotion,
+          };
+        }
         if (!(await actorIsPersistedAdministrator(transaction, input.actor))) {
           await reversalConflictEvent(
             transaction,
@@ -1186,6 +1413,7 @@ export function createGlobalRadarPromotionRepository(
           promotion,
           entity,
           primarySignal,
+          primaryScoreProvenance,
         );
       });
     },

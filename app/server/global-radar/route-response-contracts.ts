@@ -10,6 +10,7 @@ import {
   GLOBAL_RADAR_SCORE_VERSION,
   GLOBAL_RADAR_TAXONOMY_VERSION,
   globalRadarDemandFamilies,
+  globalRadarJsonEntryContainsSensitiveContent,
   globalRadarSourceFamilies,
   globalRadarThemes,
   globalRadarValidationProposalSchema,
@@ -42,26 +43,6 @@ const nullableStringArray = (
   maximumLength = 2_000,
 ) => stringArray(maximumItems, maximumLength).nullable();
 
-const forbiddenNestedKeyMarkers = [
-  "apikey",
-  "claimpath",
-  "databaseurl",
-  "errorbody",
-  "fullpage",
-  "fullpagetext",
-  "leasetoken",
-  "leasetokenhash",
-  "pagecontent",
-  "privatefailure",
-  "promptinternals",
-  "rawmetadata",
-  "rawpayload",
-  "rejectedbody",
-  "stacktrace",
-  "submissionhash",
-  "workersecret",
-] as const;
-
 type JsonLimits = Readonly<{
   maximumDepth: number;
   maximumNodes: number;
@@ -71,13 +52,8 @@ type JsonLimits = Readonly<{
   maximumStringLength: number;
 }>;
 
-function forbiddenNestedKey(key: string): boolean {
+function assertSafePrototypeKey(key: string): void {
   const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const tokens = key
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(Boolean);
   if (
     normalized === "proto" ||
     normalized === "constructor" ||
@@ -85,15 +61,6 @@ function forbiddenNestedKey(key: string): boolean {
   ) {
     throw new Error("Global Radar response contains a prototype key.");
   }
-  if (normalized === "industrialsecrets") return false;
-  return (
-    tokens.some((token) =>
-      ["authorization", "exception", "password", "secret", "secrets", "sql"].includes(
-        token,
-      ),
-    ) ||
-    forbiddenNestedKeyMarkers.some((marker) => normalized.includes(marker))
-  );
 }
 
 function sanitizeBoundedJson(
@@ -116,7 +83,14 @@ function sanitizeBoundedJson(
       return candidate;
     }
     if (typeof candidate === "string") {
-      if (candidate.length > limits.maximumStringLength) {
+      if (
+        candidate.length > limits.maximumStringLength ||
+        globalRadarJsonEntryContainsSensitiveContent(
+          null,
+          candidate,
+          allowedSensitiveKeys,
+        )
+      ) {
         throw new Error("Global Radar response string exceeds its bounds.");
       }
       return candidate;
@@ -125,7 +99,16 @@ function sanitizeBoundedJson(
       if (candidate.length > limits.maximumArrayItems) {
         throw new Error("Global Radar response array exceeds its bounds.");
       }
-      return candidate.map((item) => visit(item, depth + 1));
+      return candidate
+        .filter(
+          (item) =>
+            !globalRadarJsonEntryContainsSensitiveContent(
+              null,
+              item,
+              allowedSensitiveKeys,
+            ),
+        )
+        .map((item) => visit(item, depth + 1));
     }
     if (candidate === null || typeof candidate !== "object") {
       throw new Error("Global Radar response contains a non-JSON value.");
@@ -143,10 +126,13 @@ function sanitizeBoundedJson(
       if (key.length > limits.maximumKeyLength) {
         throw new Error("Global Radar response key exceeds its bounds.");
       }
-      const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+      assertSafePrototypeKey(key);
       if (
-        forbiddenNestedKey(key) &&
-        !allowedSensitiveKeys.has(normalizedKey)
+        globalRadarJsonEntryContainsSensitiveContent(
+          key,
+          item,
+          allowedSensitiveKeys,
+        )
       ) {
         continue;
       }
@@ -175,18 +161,27 @@ function boundedJsonSchema(
   });
 }
 
-const publicJsonSchema = boundedJsonSchema({
+const publicJsonLimits = {
   maximumDepth: 8,
   maximumNodes: 1_000,
   maximumArrayItems: 100,
   maximumObjectEntries: 100,
   maximumKeyLength: 200,
   maximumStringLength: 2_048,
-});
+} as const;
+const publicJsonSchema = boundedJsonSchema(publicJsonLimits);
+const publicJsonWithIndustrialSecretsSchema = boundedJsonSchema(
+  publicJsonLimits,
+  new Set(["industrialsecrets"]),
+);
 
 const publicJsonObjectSchema = publicJsonSchema.pipe(
   z.record(z.string(), z.unknown()).nullable(),
 );
+const publicJsonObjectWithIndustrialSecretsSchema =
+  publicJsonWithIndustrialSecretsSchema.pipe(
+    z.record(z.string(), z.unknown()).nullable(),
+  );
 
 const outputSchemaJsonSchema = boundedJsonSchema(
   {
@@ -197,7 +192,7 @@ const outputSchemaJsonSchema = boundedJsonSchema(
     maximumKeyLength: 200,
     maximumStringLength: 4_096,
   },
-  new Set(["rawmetadata"]),
+  new Set(["industrialsecrets", "rawmetadata"]),
 );
 
 const canonicalWorkerOutputSchema = z.toJSONSchema(
@@ -576,57 +571,98 @@ const momentumScoreComponentsSchema = z.object({
   qualificationGatesPassed: z.boolean().nullable(),
 });
 
-const scoreEvidenceComponentSchema = z.enum([
-  "demandExplicitness",
-  "evidenceConfidence",
-  "freshness",
-  "actionability",
-  "indiaFit",
-  "commercialPotential",
-  "repeatability",
-  "responseAccessibility",
-  "strategicLearning",
-  "complianceComplexity",
-  "proximityToExternalDemand",
-  "fundingDeploymentMomentum",
-  "likelyDataHardwareIntensity",
-  "estimatedTimeHorizon",
-  "strategicRelevance",
+const rawMomentumScoreEvidenceComponentSchema = z.enum([
   "independentEntityCount",
   "primarySourceCount",
   "sourceFamilyCount",
   "volume7Days",
   "volume30Days",
   "volume90Days",
+]);
+
+const normalizedServerDerivedScoreEvidenceComponentSchema = z.enum([
+  "demandExplicitness",
+  "evidenceConfidence",
+  "freshness",
+  "indiaFit",
+  "responseAccessibility",
+  "estimatedTimeHorizon",
   "independentEntityBreadth",
   "primarySourceDepth",
   "sourceDiversity",
   "weightedVolume",
   "growthVsPreviousPeriod",
+]);
+
+const normalizedAssessedScoreEvidenceComponentSchema = z.enum([
+  "commercialPotential",
+  "repeatability",
+  "strategicLearning",
+  "complianceComplexity",
+  "proximityToExternalDemand",
+  "fundingDeploymentMomentum",
+  "likelyDataHardwareIntensity",
+  "strategicRelevance",
   "taxonomyConsistency",
   "evidenceQuality",
 ]);
 
-const scoreComponentEvidenceAssociationSchema = z.object({
-  component: scoreEvidenceComponentSchema,
-  value: scoreSchema,
-  basis: z.enum(["worker_evidence", "server_derived"]),
+const scoreAssessmentBasisSchema = z.enum([
+  "worker_evidence",
+  "administrator_assessed",
+]);
+const scoreEvidenceCitationsSchema = z
+  .array(
+    z.object({
+      id: uuidSchema,
+      sourceUrl: boundedText(2_048),
+      sourceName: boundedText(200),
+      matchedFieldPaths: stringArray(
+        MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS,
+        200,
+      ),
+    }),
+  )
+  .min(1)
+  .max(MAX_SCORE_COMPONENT_EVIDENCE_CITATIONS);
+const commonScoreEvidenceAssociationShape = {
   rationale: boundedText(500),
-  evidence: z
-    .array(
-      z.object({
-        id: uuidSchema,
-        sourceUrl: boundedText(2_048),
-        sourceName: boundedText(200),
-        matchedFieldPaths: stringArray(
-          MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS,
-          200,
-        ),
-      }),
-    )
-    .min(1)
-    .max(MAX_SCORE_COMPONENT_EVIDENCE_CITATIONS),
-});
+  evidence: scoreEvidenceCitationsSchema,
+} as const;
+const scoreComponentEvidenceAssociationSchema = z.union([
+  z.object({
+    component: rawMomentumScoreEvidenceComponentSchema,
+    value: nonNegativeIntegerSchema,
+    basis: z.literal("server_derived"),
+    assessmentBasis: z.null().optional(),
+    inputValue: z.null().optional(),
+    ...commonScoreEvidenceAssociationShape,
+  }),
+  z.object({
+    component: z.literal("actionability"),
+    value: scoreSchema,
+    basis: z.literal("server_adjusted"),
+    assessmentBasis: scoreAssessmentBasisSchema,
+    inputValue: scoreSchema,
+    ...commonScoreEvidenceAssociationShape,
+  }),
+  z.object({
+    component: normalizedServerDerivedScoreEvidenceComponentSchema,
+    value: scoreSchema,
+    basis: z.literal("server_derived"),
+    assessmentBasis: z.null().optional(),
+    inputValue: z.null().optional(),
+    ...commonScoreEvidenceAssociationShape,
+  }),
+  z.object({
+    component: normalizedAssessedScoreEvidenceComponentSchema,
+    value: scoreSchema,
+    basis: scoreAssessmentBasisSchema,
+    assessmentBasis: z.null().optional(),
+    inputValue: z.null().optional(),
+    ...commonScoreEvidenceAssociationShape,
+  }),
+]);
 
 const scoreEvidenceResponseShape = {
   evidenceVersion: z.literal(GLOBAL_RADAR_SCORE_EVIDENCE_VERSION),
@@ -743,7 +779,7 @@ const signalDetailSectionsSchema = z.tuple([
       constraints: stringArray(50, 500),
       unknowns: stringArray(50, 500),
       confidence: scoreSchema,
-      regulatoryFacts: publicJsonObjectSchema,
+      regulatoryFacts: publicJsonObjectWithIndustrialSecretsSchema,
       logisticsFacts: publicJsonObjectSchema,
     }),
   ),

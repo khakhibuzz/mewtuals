@@ -17,7 +17,10 @@ import {
   createGlobalRadarApplication,
   createGlobalRadarApplicationDependencies,
 } from "../../app/server/global-radar";
-import type { GlobalRadarConfig } from "../../app/server/global-radar/config";
+import {
+  createGlobalRadarConfig,
+  type GlobalRadarConfig,
+} from "../../app/server/global-radar/config";
 import { hashToken } from "../../app/server/tokens";
 import type {
   GlobalRadarAllowedAction,
@@ -104,7 +107,7 @@ let primaryEntityName = "";
 let initialDetail: GlobalRadarSignalDetail;
 let initialRun: GlobalRadarRunItem;
 
-const radarConfig: GlobalRadarConfig = {
+const radarConfig: GlobalRadarConfig = createGlobalRadarConfig({
   workerSecret: RADAR_WORKER_SECRET,
   countries: [fixtureCountry, "United States", "Japan"],
   languages: ["en", "zh-CN"],
@@ -116,7 +119,7 @@ const radarConfig: GlobalRadarConfig = {
     demand_precursor: 65,
     ecosystem_momentum: 70,
   },
-};
+}, [process.env.DISCOVERY_WORKER_SECRET]);
 
 test.use({ viewport: PRIMARY_VIEWPORT });
 

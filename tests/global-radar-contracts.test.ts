@@ -593,6 +593,197 @@ describe("Global Radar contracts", () => {
     });
   });
 
+  it("rejects recursive sensitive metadata keys and values without echoing them", () => {
+    const secretLiteral = "private-radar-worker-secret-value";
+    const rejected = [
+      { workerSecret: secretLiteral },
+      { nested: { "LEASE-TOKEN": secretLiteral } },
+      { nested: { claim_path: "/private/tmp/radar/claim.json" } },
+      { provider: { Authorization: `Bearer ${secretLiteral}` } },
+      { provider: { note: `Authorization: Bearer ${secretLiteral}` } },
+      { provider: { note: `postgresql://radar:${secretLiteral}@db.example/radar` } },
+      { provider: { note: "https://private-user@db.example/radar" } },
+      { provider: { note: "-----BEGIN PRIVATE KEY-----" } },
+      { provider: { rejectedPayload: "private response" } },
+      { provider: { privateFailure: "upstream failed" } },
+      { provider: { private_error: "upstream failed" } },
+      { provider: { privateDiagnostics: "upstream detail" } },
+      { provider: { privatePath: "/safe-looking-alias" } },
+      { provider: { privateContent: "upstream detail" } },
+      { provider: { privateData: "upstream detail" } },
+      { provider: { internalDiagnostics: "upstream detail" } },
+      { provider: { internalErrorPayload: "upstream detail" } },
+    ].map((value) => boundedRecordSchema.safeParse(value));
+
+    expect({
+      acceptedPublicMetadata: boundedRecordSchema.safeParse({
+        source: "official company page",
+        confidence: 90,
+        publicUrl: "https://example.com/request",
+      }).success,
+      rejected: rejected.map((result) => result.success),
+      rejectedOutputContainsSecret: rejected.some(
+        (result) =>
+          !result.success && JSON.stringify(result.error).includes(secretLiteral),
+      ),
+    }).toEqual({
+      acceptedPublicMetadata: true,
+      rejected: rejected.map(() => false),
+      rejectedOutputContainsSecret: false,
+    });
+  });
+
+  it("finds exact configured credentials in recursive keys and values", () => {
+    const knownSecret = "opaque-radar-capability-value-1234567890";
+
+    expect({
+      key: globalRadarDomain.containsKnownGlobalRadarSecret(
+        { nested: { [knownSecret]: "value" } },
+        [knownSecret],
+      ),
+      value: globalRadarDomain.containsKnownGlobalRadarSecret(
+        { nested: { publicSummary: `Observed ${knownSecret}.` } },
+        [knownSecret],
+      ),
+      safe: globalRadarDomain.containsKnownGlobalRadarSecret(
+        { nested: { publicSummary: "Observed public evidence." } },
+        [knownSecret],
+      ),
+    }).toEqual({ key: true, value: true, safe: false });
+  });
+
+  it("rejects suffixed payload and private-diagnostic aliases across JSON", () => {
+    const unsafe = [
+      { requestPayloadCopy: "private request" },
+      { responseBodyText: "private response" },
+      { rawContentSnapshot: "private source" },
+      { rejectedPayloadData: "private rejection" },
+      { batchPayloadDigest: "private batch" },
+      { internalDiagnosticsCopy: "private diagnostics" },
+      { internalErrorDetails: "private error" },
+      { internalFailureContext: "private failure" },
+      { privateDataCopy: "private data" },
+      { privateDiagnosticsSummary: "private diagnostics" },
+      { summary: "internalDiagnostics: private upstream detail" },
+    ];
+    const allowedKeys = new Set(["rawmetadata", "industrialsecrets"]);
+
+    expect(
+      unsafe.map((value) =>
+        globalRadarDomain.globalRadarJsonContainsSensitiveContent(
+          value,
+          allowedKeys,
+        ),
+      ),
+    ).toEqual(unsafe.map(() => true));
+    expect(
+      globalRadarDomain.globalRadarJsonContainsSensitiveContent(
+        {
+          rawMetadata: { sourceName: "Official public source" },
+          industrialSecrets: "possible",
+        },
+        allowedKeys,
+      ),
+    ).toBe(false);
+    expect(
+      globalRadarDomain.globalRadarJsonContainsSensitiveContent(
+        {
+          rawMetadata: {
+            publicSummary: "Authorization: Bearer private-worker-value",
+          },
+        },
+        allowedKeys,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects generic credential labels and concatenated industrial-secret aliases", () => {
+    const genericLabels = [
+      "token: private-value",
+      "secret=private-value",
+      "credentials: private-value",
+    ];
+
+    expect(
+      genericLabels.map((value) =>
+        globalRadarDomain.globalRadarTextContainsSensitiveContent(value),
+      ),
+    ).toEqual(genericLabels.map(() => true));
+    expect(
+      genericLabels.map(
+        (value) => boundedRecordSchema.safeParse({ publicNote: value }).success,
+      ),
+    ).toEqual(genericLabels.map(() => false));
+    expect(
+      boundedRecordSchema.safeParse({
+        industrialSecrets: "possible",
+      }).success,
+    ).toBe(true);
+    expect(
+      boundedRecordSchema.safeParse({
+        industrialSecretsPayload: "private payload",
+      }).success,
+    ).toBe(false);
+    expect(
+      boundedRecordSchema.safeParse({
+        industrialSecrets: { publicNote: "token: private-value" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("applies payload-free operational diagnostics to queries and source errors", () => {
+    const safeMessage = "The public source timed out before returning results.";
+    const unsafeMessages = [
+      "Authorization: Bearer private-radar-worker-secret-value",
+      "Bearer private-token-value",
+      "Rejected payload: private upstream response",
+      "rawPayload: private upstream response",
+      "request_body=private upstream response",
+      "rejected-content: private upstream response",
+      "https://private-user@db.example/radar",
+      "/Users/operator/private/radar/claim.json",
+      "select secret from worker_tokens where active = true",
+      "at runWorker (/srv/node_modules/radar/worker.ts:10:2)",
+    ];
+
+    expect({
+      publicBasicRoboticsText:
+        globalRadarDomain.globalRadarAuthoredAuditTextSchema.safeParse(
+          "The basic robotics requirements remain publicly documented.",
+        ).success,
+      publicTechnologySource: sourceErrorSchema.safeParse(
+        sourceError({ sourceName: "PostgreSQL official documentation" }),
+      ).success,
+      sensitiveSourceName: sourceErrorSchema.safeParse(
+        sourceError({
+          sourceName: "Authorization: Bearer private-radar-worker-value",
+        }),
+      ).success,
+      safeQuery: executedQuerySchema.safeParse(
+        executedQuery({ error: safeMessage }),
+      ).success,
+      safeSource: sourceErrorSchema.safeParse(
+        sourceError({ message: safeMessage }),
+      ).success,
+      unsafeQueries: unsafeMessages.map(
+        (message) =>
+          executedQuerySchema.safeParse(executedQuery({ error: message })).success,
+      ),
+      unsafeSources: unsafeMessages.map(
+        (message) =>
+          sourceErrorSchema.safeParse(sourceError({ message })).success,
+      ),
+    }).toEqual({
+      publicBasicRoboticsText: true,
+      publicTechnologySource: true,
+      sensitiveSourceName: false,
+      safeQuery: true,
+      safeSource: true,
+      unsafeQueries: unsafeMessages.map(() => false),
+      unsafeSources: unsafeMessages.map(() => false),
+    });
+  });
+
   it("rejects hidden full-page metadata keys and document markup", () => {
     const forbiddenMetadata = boundedRecordSchema.safeParse({
       html: "<main>page</main>",

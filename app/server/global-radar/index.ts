@@ -16,6 +16,7 @@ import {
   type GlobalRadarAdminRepositoryPort,
 } from "./admin-service";
 import {
+  globalRadarConfigContainsKnownSecret,
   readGlobalRadarConfig,
   type GlobalRadarConfig,
 } from "./config";
@@ -52,6 +53,8 @@ export function createGlobalRadarApplication(
   const promotion = createGlobalRadarPromotionService({
     repository: dependencies.promotionRepository,
     adminEmails: dependencies.adminEmails,
+    containsKnownSecret: (value) =>
+      globalRadarConfigContainsKnownSecret(dependencies.config, value),
     thresholds: dependencies.config.thresholds,
     scoreVersion: GLOBAL_RADAR_SCORE_VERSION,
     now: dependencies.now,
@@ -68,6 +71,8 @@ export function createGlobalRadarApplication(
   const admin = createGlobalRadarAdminService({
     repository: dependencies.adminRepository,
     adminEmails: dependencies.adminEmails,
+    containsKnownSecret: (value) =>
+      globalRadarConfigContainsKnownSecret(dependencies.config, value),
     queueManualRun: ({ actor, input }) => run.queueManual(actor, input),
     promote: ({ actor, input }) => promotion.promote(actor, input),
     reversePromotion: ({ actor, input }) =>

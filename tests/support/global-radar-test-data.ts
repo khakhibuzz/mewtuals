@@ -29,17 +29,19 @@ const sensitiveDataCategories = [
 
 type SensitiveDataState = "not_observed" | "possible" | "severe" | null;
 
-function globalRadarTestSensitiveDataFlags(state: SensitiveDataState) {
+function globalRadarTestSensitiveDataFlags(
+  state: SensitiveDataState,
+): SensitiveDataAndCompliance["sensitiveDataFlags"] {
   return Object.fromEntries(
     sensitiveDataCategories.map((category) => [category, state]),
-  );
+  ) as SensitiveDataAndCompliance["sensitiveDataFlags"];
 }
 
 export function globalRadarTestResolvedCompliance(
   overrides: Partial<
     Record<(typeof sensitiveDataCategories)[number], SensitiveDataState>
   > = {},
-) {
+): SensitiveDataAndCompliance {
   return {
     sensitiveDataFlags: {
       ...globalRadarTestSensitiveDataFlags("not_observed"),
@@ -55,7 +57,7 @@ export function globalRadarTestResolvedCompliance(
   };
 }
 
-export function globalRadarTestUnresolvedCompliance() {
+export function globalRadarTestUnresolvedCompliance(): SensitiveDataAndCompliance {
   return {
     sensitiveDataFlags: globalRadarTestSensitiveDataFlags(null),
     complianceFacts: {
@@ -328,3 +330,4 @@ export function globalRadarTestEnvelope(input: {
     sourceErrors: [],
   };
 }
+import type { SensitiveDataAndCompliance } from "../../app/domain/global-radar";

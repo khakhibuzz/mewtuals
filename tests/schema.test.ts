@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { getTableConfig, PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
@@ -805,6 +807,7 @@ describe("Mewtuals PostgreSQL schema", () => {
       "momentum_score",
       "score_coverage",
       "score_policy_version",
+      "score_evidence_snapshot",
       "momentum_policy_version",
       "momentum_qualification_gates_passed",
       "announced_at",
@@ -864,6 +867,7 @@ describe("Mewtuals PostgreSQL schema", () => {
       "updated_at",
     ]);
     expect(globalRadarSignals.dedupeVersion.notNull).toBe(true);
+    expect(globalRadarSignals.scoreEvidenceSnapshot.notNull).toBe(true);
     expect(globalRadarSignals.revision.default).toBe(0);
     expect(globalRadarSignals.evergreen.notNull).toBe(false);
     expect(indexNames(globalRadarSignals)).toEqual(
@@ -907,6 +911,7 @@ describe("Mewtuals PostgreSQL schema", () => {
         "global_radar_signals_activity_check",
         "global_radar_signals_response_path_check",
         "global_radar_signals_systems_context_check",
+        "global_radar_signals_score_evidence_snapshot_check",
         "global_radar_signals_revision_check",
         "global_radar_signals_seen_order_check",
         "global_radar_signals_no_self_merge_check",
@@ -933,6 +938,58 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(
       checkSql(globalRadarSignals, "global_radar_signals_scores_check"),
     ).toContain("score_coverage");
+    const scoreEvidenceSnapshotCheck = checkSql(
+      globalRadarSignals,
+      "global_radar_signals_score_evidence_snapshot_check",
+    );
+    expect(scoreEvidenceSnapshotCheck).toContain("score_evidence_snapshot");
+    expect(scoreEvidenceSnapshotCheck).toContain(
+      "global-radar-active-score-snapshot-v2",
+    );
+    expect(scoreEvidenceSnapshotCheck).toContain("scoreAsOf");
+    expect(scoreEvidenceSnapshotCheck).toContain("evidenceBoundaryOrdinal");
+    expect(scoreEvidenceSnapshotCheck).toContain("evidenceSetCount");
+    expect(scoreEvidenceSnapshotCheck).toContain("evidenceSetDigest");
+    expect(scoreEvidenceSnapshotCheck).toContain("scoreInputDigest");
+    expect(scoreEvidenceSnapshotCheck).toContain("componentEvidence");
+    expect(scoreEvidenceSnapshotCheck).toContain("momentumPolicyVersion");
+    expect(scoreEvidenceSnapshotCheck).toContain("momentum_policy_version");
+    expect(scoreEvidenceSnapshotCheck).toContain("signal_type");
+    expect(scoreEvidenceSnapshotCheck).toContain("india_relevance_type");
+    expect(scoreEvidenceSnapshotCheck).toContain("assessmentAuthority");
+    expect(scoreEvidenceSnapshotCheck).toContain("administrator");
+    expect(scoreEvidenceSnapshotCheck).toContain("524288");
+    expect(scoreEvidenceSnapshotCheck.trim()).toMatch(/\) IS TRUE$/);
+    const radarMigration = readFileSync(
+      "drizzle/0008_global_demand_radar.sql",
+      "utf8",
+    );
+    expect(radarMigration).toMatch(
+      /global_radar_signals_score_evidence_snapshot_check" CHECK \(\([\s\S]*?524288\) IS TRUE\)/,
+    );
+    expect(radarMigration).toMatch(
+      /score_evidence_snapshot"->>'signalType' = "global_radar_signals"\."signal_type"/,
+    );
+    expect(radarMigration).toMatch(
+      /score_evidence_snapshot"->>'indiaRelevanceType' = "global_radar_signals"\."india_relevance_type"::text/,
+    );
+    const radarMigrationSnapshot = JSON.parse(
+      readFileSync("drizzle/meta/0008_snapshot.json", "utf8"),
+    ) as {
+      tables: Record<
+        string,
+        { checkConstraints: Record<string, { value: string }> }
+      >;
+    };
+    const migrationSnapshotScoreEvidenceCheck =
+      radarMigrationSnapshot.tables["public.global_radar_signals"]
+        ?.checkConstraints
+        .global_radar_signals_score_evidence_snapshot_check?.value.trim() ?? "";
+    expect(migrationSnapshotScoreEvidenceCheck).toMatch(/\) IS TRUE$/);
+    expect(migrationSnapshotScoreEvidenceCheck).toContain("signal_type");
+    expect(migrationSnapshotScoreEvidenceCheck).toContain(
+      "india_relevance_type",
+    );
     expect(
       checkSql(globalRadarSignals, "global_radar_signals_systems_context_check"),
     ).toContain("systems_context_stack_type");
@@ -1072,6 +1129,7 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(columnNames(globalSignalEvidence)).toEqual([
       "id",
       "signal_id",
+      "ingest_ordinal",
       "run_id",
       "global_entity_id",
       "source_url",
@@ -1099,11 +1157,21 @@ describe("Mewtuals PostgreSQL schema", () => {
     ]);
     expect(globalSignalEvidence.globalEntityId.notNull).toBe(false);
     expect(globalSignalEvidence.runId.notNull).toBe(false);
+    expect(globalSignalEvidence.ingestOrdinal.notNull).toBe(true);
     expect(globalSignalEvidence.sourceFamily.notNull).toBe(true);
     expect(globalSignalEvidence.isSyndicated.notNull).toBe(true);
     expect(uniqueConstraintNames(globalSignalEvidence)).toContain(
       "global_signal_evidence_signal_fingerprint_unique",
     );
+    expect(uniqueConstraintNames(globalSignalEvidence)).toContain(
+      "global_signal_evidence_signal_ordinal_unique",
+    );
+    expect(
+      checkSql(
+        globalSignalEvidence,
+        "global_signal_evidence_ingest_ordinal_check",
+      ),
+    ).toContain("ingest_ordinal");
     expect(indexNames(globalSignalEvidence)).toEqual(
       expect.arrayContaining([
         "global_signal_evidence_signal_idx",

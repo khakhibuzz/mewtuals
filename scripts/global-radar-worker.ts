@@ -12,8 +12,11 @@ import {
   GLOBAL_RADAR_SCORE_VERSION,
   GLOBAL_RADAR_TAXONOMY_VERSION,
   MAX_GLOBAL_RADAR_BATCH_BYTES,
+  containsKnownGlobalRadarSecret,
   generateGlobalRadarQueries,
   globalRadarBatchProposalSchema,
+  globalRadarJsonContainsSensitiveContent,
+  globalRadarOperationalDiagnosticSchema,
   globalRadarThemes,
   isoTimestampSchema,
   parseGlobalRadarPlanSnapshot,
@@ -31,7 +34,6 @@ export const MAX_GLOBAL_RADAR_WORKER_FILE_BYTES =
 
 const MAX_API_ERROR_BYTES = 16 * 1_024;
 const MAX_API_SUCCESS_BYTES = MAX_GLOBAL_RADAR_WORKER_FILE_BYTES;
-const MAX_SAFE_MESSAGE_CHARACTERS = 1_000;
 
 type FetchFunction = (
   input: string | URL | Request,
@@ -127,7 +129,7 @@ function parseArguments(arguments_: readonly string[]): ParsedArguments {
     }
     if (options.has(option)) {
       throw new GlobalRadarCliError(
-        `Global Radar worker option ${option} was provided twice.`,
+        "Global Radar worker command options are invalid.",
       );
     }
     options.set(option, value);
@@ -146,7 +148,7 @@ function assertAllowedOptions(
   );
   if (unsupported) {
     throw new GlobalRadarCliError(
-      `Global Radar worker option ${unsupported} is not supported.`,
+      "Global Radar worker command contains an unsupported option.",
     );
   }
 }
@@ -285,7 +287,10 @@ function schemaIssues(error: {
   }));
 }
 
-async function validatedBatchDocument(file: string): Promise<
+async function validatedBatchDocument(
+  file: string,
+  knownSecrets: readonly (string | null | undefined)[] = [],
+): Promise<
   JsonDocument & {
     batch: ReturnType<typeof globalRadarBatchProposalSchema.parse>;
   }
@@ -298,13 +303,22 @@ async function validatedBatchDocument(file: string): Promise<
       { issues: schemaIssues(parsed.error) },
     );
   }
+  if (containsKnownGlobalRadarSecret(document.value, knownSecrets)) {
+    throw new GlobalRadarCliError(
+      "The Global Radar batch must not contain worker credentials.",
+    );
+  }
   return { ...document, batch: parsed.data };
 }
 
-async function validate(options: ReadonlyMap<string, string>) {
+async function validate(
+  options: ReadonlyMap<string, string>,
+  runtime: GlobalRadarWorkerRuntime,
+) {
   assertAllowedOptions(options, ["--file"]);
   const document = await validatedBatchDocument(
     requiredOption(options, "--file"),
+    runtimeWorkerSecrets(runtime),
   );
   const evidenceCount = document.batch.signals.reduce(
     (total, signal) => total + signal.evidence.length,
@@ -373,6 +387,15 @@ function networkEnvironment(
     );
   }
   return { baseUrl, workerSecret };
+}
+
+function runtimeWorkerSecrets(
+  runtime: GlobalRadarWorkerRuntime,
+): readonly (string | undefined)[] {
+  return [
+    runtime.environment.GLOBAL_RADAR_WORKER_SECRET,
+    runtime.environment.DISCOVERY_WORKER_SECRET,
+  ];
 }
 
 async function readBoundedJson(
@@ -778,17 +801,20 @@ const safeRunCountKeys = [
   "sourceErrors",
 ] as const;
 
-const safeNoticeCodes = new Set([
-  "lease_expired",
-  "run_failed",
-  "source_errors",
-]);
+const safeNoticeMessages = {
+  lease_expired: "The worker lease expired before completion.",
+  run_failed: "The run ended without a completed batch.",
+  source_errors: "One or more public sources could not be processed.",
+} as const;
 
 function parseSafeRun(
   value: unknown,
   requestedRunId: string,
+  knownSecrets: readonly (string | null | undefined)[],
 ): Record<string, unknown> | null {
   if (
+    globalRadarJsonContainsSensitiveContent(value) ||
+    containsKnownGlobalRadarSecret(value, knownSecrets) ||
     !isPlainObject(value) ||
     !hasExactKeys(value, [
       "id",
@@ -854,10 +880,12 @@ function parseSafeRun(
         hasCount ? ["code", "message", "count"] : ["code", "message"],
       ) ||
       typeof noticeValue.code !== "string" ||
-      !safeNoticeCodes.has(noticeValue.code) ||
+      !Object.hasOwn(safeNoticeMessages, noticeValue.code) ||
       typeof noticeValue.message !== "string" ||
-      noticeValue.message.trim().length === 0 ||
-      noticeValue.message.length > 500 ||
+      noticeValue.message !==
+        safeNoticeMessages[
+          noticeValue.code as keyof typeof safeNoticeMessages
+        ] ||
       (hasCount && !safeInteger(noticeValue.count))
     ) {
       return null;
@@ -870,6 +898,7 @@ function safeMutationResult(
   command: "submit" | "fail" | "abandon",
   response: Record<string, unknown>,
   requestedRunId: string,
+  knownSecrets: readonly (string | null | undefined)[],
 ) {
   if (
     response.ok !== true ||
@@ -881,7 +910,7 @@ function safeMutationResult(
       invalidResponseDetails(command),
     );
   }
-  const run = parseSafeRun(response.run, requestedRunId);
+  const run = parseSafeRun(response.run, requestedRunId, knownSecrets);
   if (!run) {
     throw new GlobalRadarCliError(
       `The Global Radar API returned an invalid response for ${command}.`,
@@ -951,7 +980,13 @@ async function claim(
       !hasRun ||
       (isPlainObject(response.run) &&
         typeof response.run.id === "string" &&
-        Boolean(parseSafeRun(response.run, response.run.id)));
+        Boolean(
+          parseSafeRun(
+            response.run,
+            response.run.id,
+            runtimeWorkerSecrets(runtime),
+          ),
+        ));
     if (
       !hasExactKeys(
         response,
@@ -1030,6 +1065,7 @@ async function submit(
   );
   const document = await validatedBatchDocument(
     requiredOption(options, "--file"),
+    [claim.leaseToken, ...runtimeWorkerSecrets(runtime)],
   );
   if (document.batch.runId !== claim.runId) {
     throw new GlobalRadarCliError(
@@ -1051,17 +1087,25 @@ async function submit(
       claim.leaseToken,
     ),
     claim.runId,
+    [claim.leaseToken, ...runtimeWorkerSecrets(runtime)],
   );
 }
 
-function safeMessage(options: ReadonlyMap<string, string>): string {
+function safeMessage(
+  options: ReadonlyMap<string, string>,
+  knownSecrets: readonly (string | null | undefined)[],
+): string {
   const message = requiredOption(options, "--message");
-  if (message.length > MAX_SAFE_MESSAGE_CHARACTERS) {
+  const parsed = globalRadarOperationalDiagnosticSchema.safeParse(message);
+  if (
+    !parsed.success ||
+    containsKnownGlobalRadarSecret(message, knownSecrets)
+  ) {
     throw new GlobalRadarCliError(
-      `Global Radar worker option --message must be at most ${MAX_SAFE_MESSAGE_CHARACTERS} characters.`,
+      "Global Radar worker --message must be concise and payload-free.",
     );
   }
-  return message;
+  return parsed.data;
 }
 
 async function fail(
@@ -1072,7 +1116,10 @@ async function fail(
   const claim = await readPrivateClaimFile(
     requiredOption(options, "--claim-file"),
   );
-  const reason = safeMessage(options);
+  const reason = safeMessage(options, [
+    claim.leaseToken,
+    ...runtimeWorkerSecrets(runtime),
+  ]);
   return safeMutationResult(
     "fail",
     await postWorkerJson(
@@ -1083,6 +1130,7 @@ async function fail(
       claim.leaseToken,
     ),
     claim.runId,
+    [claim.leaseToken, ...runtimeWorkerSecrets(runtime)],
   );
 }
 
@@ -1106,7 +1154,7 @@ async function abandon(
 ) {
   assertAllowedOptions(options, ["--run-id", "--message"]);
   const runId = requiredRunId(options);
-  const reason = safeMessage(options);
+  const reason = safeMessage(options, runtimeWorkerSecrets(runtime));
   return safeMutationResult(
     "abandon",
     await postWorkerJson(
@@ -1116,6 +1164,7 @@ async function abandon(
       runtime,
     ),
     runId,
+    runtimeWorkerSecrets(runtime),
   );
 }
 
@@ -1161,7 +1210,7 @@ async function executeGlobalRadarWorkerCommand(
 ) {
   const { command, options } = parseArguments(arguments_);
   assertCommandArguments(command, options);
-  if (command === "validate") return validate(options);
+  if (command === "validate") return validate(options, runtime);
   if (command === "claim") return claim(options, runtime);
   if (command === "submit") return submit(options, runtime);
   if (command === "fail") return fail(options, runtime);

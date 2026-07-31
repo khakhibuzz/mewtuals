@@ -3,10 +3,22 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { drizzle } from "drizzle-orm/postgres-js";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
+import {
+  GLOBAL_RADAR_MOMENTUM_POLICY_VERSION,
+  GLOBAL_RADAR_SCORE_VERSION,
+  createActiveScoreEvidenceSnapshot,
+  createGlobalRadarMomentumPolicy,
+  deriveEcosystemMomentum,
+  deriveGlobalRadarReclassification,
+  type ActiveScoreEvidenceSnapshot,
+  type CandidateEvidence,
+  type IndiaRelevanceType,
+  type ScoreEvidenceSource,
+} from "../app/domain/global-radar";
 import { createGlobalRadarAdminService } from "../app/server/global-radar/admin-service";
 import { closeDb, getDb } from "../db/client";
 import * as radarSchema from "../db/global-radar-schema";
@@ -25,6 +37,12 @@ import {
 import { createDiscoveryRepository } from "../db/repositories/discovery-repository";
 import { createGlobalRadarAdminRepository } from "../db/repositories/global-radar-admin-repository";
 import { createGlobalRadarPromotionRepository } from "../db/repositories/global-radar-promotion-repository";
+import {
+  createActiveScoreEvaluationMetadata,
+  createStoredGlobalRadarScoreInputDigest,
+  type ActiveScoreEvaluationMetadata,
+} from "../db/repositories/global-radar-score-evidence";
+import { validateStoredGlobalRadarScoreProvenanceSelection } from "../db/repositories/global-radar-stored-score-provenance";
 import * as coreSchema from "../db/schema";
 import {
   candidateResearchVersions,
@@ -123,9 +141,206 @@ type SeedOptions = Readonly<{
     | "no_current_India_fit";
   primaryEvidenceSupportsIndia?: boolean;
   primaryEvidenceSupportedFieldPaths?: readonly string[];
+  primaryEvidenceClaim?: string;
   primarySourceUrls?: readonly string[];
+  primarySyndicatedSourceIndexes?: readonly number[];
+  primaryTargetEntitySourceIndexes?: readonly number[];
   repeatedSignalCount?: number;
+  nonIndiaCompatibleSignalIndexes?: readonly number[];
 }>;
+
+const promotionDirectScoringInput = {
+  explicitness: 90,
+  evidenceConfidence: 90,
+  freshness: 90,
+  actionability: 90,
+  indiaFit: 90,
+  commercialPotential: 90,
+  repeatability: 80,
+  responseAccessibility: 80,
+  strategicLearning: 80,
+  complianceComplexity: 20,
+} as const;
+
+const promotionPrecursorScoringInput = {
+  evidenceConfidence: 90,
+  proximityToExternalDemand: 80,
+  fundingDeploymentMomentum: 80,
+  likelyDataHardwareIntensity: 80,
+  indiaFit: 90,
+  estimatedTimeHorizon: 80,
+  strategicRelevance: 80,
+} as const;
+
+const promotionMomentumScoringInput = {
+  independentEntityBreadth: 80,
+  primarySourceDepth: 80,
+  sourceDiversity: 80,
+  weightedVolume: 80,
+  growthVsPreceding: 80,
+  taxonomyConsistency: 85,
+  evidenceQuality: 90,
+} as const;
+
+const promotionSensitiveDataAndCompliance = {
+  sensitiveDataFlags: {
+    faces: null,
+    voices: null,
+    biometrics: null,
+    gaze: null,
+    health: null,
+    children: null,
+    home_interiors: null,
+    workplace_monitoring: null,
+    precise_location: null,
+    road_users: null,
+    employee_data: null,
+    industrial_secrets: null,
+    defence_or_dual_use: null,
+    copyrighted_material: null,
+    export_controls: null,
+  },
+  complianceFacts: {
+    consent: null,
+    deIdentification: null,
+    legalReview: null,
+    knownResidencyRequirements: null,
+    participantRightsComplexity: null,
+  },
+} as const;
+
+function promotionScoreEvidenceSnapshot(
+  signalClass: "direct_demand" | "demand_precursor" | "ecosystem_momentum",
+  signalType: string,
+  indiaRelevanceType: IndiaRelevanceType,
+  components: Readonly<Record<string, number | null>>,
+  actionabilityInput: number | null,
+  evidence: readonly ScoreEvidenceSource[],
+  evaluationMetadata: ActiveScoreEvaluationMetadata,
+  scoreInputDigest: string,
+): ActiveScoreEvidenceSnapshot {
+  return createActiveScoreEvidenceSnapshot({
+    ...evaluationMetadata,
+    scoreInputDigest,
+    signalClass,
+    signalType,
+    indiaRelevanceType,
+    scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
+    momentumPolicyVersion:
+      signalClass === "ecosystem_momentum"
+        ? GLOBAL_RADAR_MOMENTUM_POLICY_VERSION
+        : null,
+    assessmentAuthority: "worker",
+    actionabilityInput,
+    momentumContributorEntityIds:
+      signalClass === "ecosystem_momentum"
+        ? evidence.flatMap(({ contributorEntityId }) =>
+            contributorEntityId === null ? [] : [contributorEntityId],
+          )
+        : undefined,
+    freshnessEvidencePath:
+      signalClass === "direct_demand" ? "signal.announcedAt" : undefined,
+    components,
+    evidence,
+  });
+}
+
+function defaultIndiaEvidencePath(
+  signalClass: "direct_demand" | "demand_precursor" | "ecosystem_momentum",
+  indiaRelevanceType: IndiaRelevanceType,
+): string {
+  if (
+    indiaRelevanceType === "globally_open" ||
+    indiaRelevanceType === "inferred_India_compatible"
+  ) {
+    return `indiaRelevance.${indiaRelevanceType}.requirement_access`;
+  }
+  if (indiaRelevanceType === "no_current_India_fit") {
+    return "indiaRelevance.no_current_India_fit.requirement_access";
+  }
+  const fact = signalClass === "direct_demand" ? "collection" : "manufacturing";
+  return `indiaRelevance.${indiaRelevanceType}.${fact}`;
+}
+
+function promotionEvidenceSupportedFieldPaths(input: Readonly<{
+  signalClass: "direct_demand" | "demand_precursor" | "ecosystem_momentum";
+  signalType: string;
+  indiaRelevanceType: IndiaRelevanceType;
+  additionalPaths?: readonly string[];
+}>): string[] {
+  const classPaths =
+    input.signalClass === "direct_demand"
+      ? [
+          `directDemandAsk.${input.signalType}`,
+          "signal.announcedAt",
+          "responsePath",
+          "scoreComponents.actionability",
+          "scoreComponents.commercialPotential",
+          "scoreComponents.repeatability",
+          "scoreComponents.strategicLearning",
+          "scoreComponents.complianceComplexity",
+        ]
+      : input.signalClass === "demand_precursor"
+        ? [
+            `precursorDevelopment.${input.signalType}`,
+            "signal.effectiveFrom",
+            "scoreComponents.proximityToExternalDemand",
+            "scoreComponents.fundingDeploymentMomentum",
+            "scoreComponents.likelyDataHardwareIntensity",
+            "scoreComponents.strategicRelevance",
+          ]
+        : [
+            "momentumMetrics.taxonomyConsistency",
+            "momentumMetrics.evidenceQuality",
+          ];
+  return [
+    ...new Set([
+      ...classPaths,
+      defaultIndiaEvidencePath(
+        input.signalClass,
+        input.indiaRelevanceType,
+      ),
+      ...(input.additionalPaths ?? []),
+    ]),
+  ].sort();
+}
+
+function promotionEvidenceClaim(
+  supportedFieldPaths: readonly string[],
+): string {
+  const facts = [
+    "The organisation published a qualified robotics requirement",
+  ];
+  if (
+    supportedFieldPaths.some((path) =>
+      path.includes("existing_India_presence.manufacturing"),
+    )
+  ) facts.push("it operates manufacturing facilities in India");
+  if (
+    supportedFieldPaths.some((path) =>
+      path.includes("India_expansion.manufacturing"),
+    )
+  ) facts.push("it is expanding manufacturing operations into India");
+  if (
+    supportedFieldPaths.some((path) => path.includes("explicit_India.suppliers"))
+  ) facts.push("it is seeking suppliers in India");
+  if (
+    supportedFieldPaths.some((path) => path.includes("explicit_India.collection"))
+  ) facts.push("it will collect robotics data in India");
+  if (
+    supportedFieldPaths.some((path) =>
+      path.includes("explicit_India.manufacturing"),
+    )
+  ) facts.push("it operates manufacturing programs in India");
+  if (
+    supportedFieldPaths.some(
+      (path) =>
+        path.includes("globally_open.requirement_access") ||
+        path.includes("inferred_India_compatible.requirement_access"),
+    )
+  ) facts.push("applications are open to qualified organisations worldwide");
+  return `${facts.join("; ")}.`;
+}
 
 async function seedPromotionFixture(options: SeedOptions = {}) {
   sequence += 1;
@@ -187,11 +402,368 @@ async function seedPromotionFixture(options: SeedOptions = {}) {
   if (!entity) throw new Error("Promotion entity was not created.");
 
   const primaryClass = options.primaryClass ?? "direct_demand";
+  let secondMomentumContributor: typeof entity | null = null;
+  if (primaryClass === "ecosystem_momentum") {
+    const { id: _entityId, ...secondContributorValues } = entity;
+    void _entityId;
+    [secondMomentumContributor] = await db
+      .insert(globalEntities)
+      .values({
+        ...secondContributorValues,
+        canonicalName: `Promotion Contributor ${sequence}`,
+        normalizedName: `promotion contributor ${sequence}`,
+        canonicalDomain: `promotion-contributor-${sequence}.example`,
+        websiteUrl: `https://promotion-contributor-${sequence}.example`,
+        linkedinUrl: null,
+        stablePublicIdentifiers: [`fixture-contributor:${suffix}`],
+        publicIdentityAnchor: hash(`entity-contributor:${suffix}`),
+      })
+      .returning();
+    if (!secondMomentumContributor) {
+      throw new Error("Second momentum contributor was not created.");
+    }
+  }
   const signalCount = Math.max(1, options.repeatedSignalCount ?? 1);
-  const signals = [];
+  const signals: Array<typeof globalRadarSignals.$inferSelect> = [];
+  const snapshotInputBySignalId = new Map<
+    string,
+    Readonly<{
+      signalClass: "direct_demand" | "demand_precursor" | "ecosystem_momentum";
+      signalType: string;
+      indiaRelevanceType: IndiaRelevanceType;
+      components: Readonly<Record<string, number | null>>;
+      actionabilityInput: number | null;
+      evidence: readonly ScoreEvidenceSource[];
+      evaluationMetadata: ActiveScoreEvaluationMetadata;
+      scoreAsOf: Date;
+    }>
+  >();
   for (let index = 0; index < signalCount; index += 1) {
     const signalClass = index === 0 ? primaryClass : "demand_precursor";
+    const signalType =
+      signalClass === "direct_demand"
+        ? "data_collection_request"
+        : signalClass === "demand_precursor"
+          ? "funding"
+          : "ecosystem_acceleration";
+    const indiaRelevanceType =
+      options.nonIndiaCompatibleSignalIndexes?.includes(index)
+        ? "no_current_India_fit"
+        : index === 0
+        ? (options.primaryIndiaRelevance ?? "explicit_India")
+        : "inferred_India_compatible";
     const observedAt = new Date(now.getTime() - index * 24 * 60 * 60 * 1_000);
+    const sourceUrls =
+      index === 0 && options.primarySourceUrls
+        ? options.primarySourceUrls
+        : signalClass === "ecosystem_momentum"
+          ? [
+              `https://source-${sequence}-${index}.example/public-requirement`,
+              `https://source-${sequence}-${index}-peer.example/public-research`,
+              `https://source-${sequence}-${index}-peer.example/public-jobs`,
+            ]
+          : [`https://source-${sequence}-${index}.example/public-requirement`];
+    const supportedFieldPaths = promotionEvidenceSupportedFieldPaths({
+      signalClass,
+      signalType,
+      indiaRelevanceType,
+      additionalPaths:
+        index === 0
+          ? options.primaryEvidenceSupportedFieldPaths
+          : undefined,
+    });
+    const evidenceClaim =
+      index === 0 && options.primaryEvidenceClaim !== undefined
+        ? options.primaryEvidenceClaim
+        : promotionEvidenceClaim(supportedFieldPaths);
+    const evidenceSources = sourceUrls.map((sourceUrl, sourceIndex) => {
+      const contributorEntityId =
+        signalClass === "ecosystem_momentum" &&
+        sourceIndex > 0 &&
+        !options.primaryTargetEntitySourceIndexes?.includes(sourceIndex)
+          ? secondMomentumContributor?.id
+          : entity.id;
+      if (!contributorEntityId) {
+        throw new Error("Momentum evidence contributor is missing.");
+      }
+      return {
+        id:
+          index === 0
+            ? hash(`evidence:${suffix}:${sourceIndex}`)
+            : hash(`evidence:${suffix}:signal-${index}:${sourceIndex}`),
+        sourceUrl,
+        sourceName: `Official source ${sourceIndex + 1}`,
+        evidenceClaim,
+        contributorEntityId,
+        evidenceConfidence: 90,
+        publishedAt: new Date(
+          observedAt.getTime() - 24 * 60 * 60 * 1_000,
+        ).toISOString(),
+        observedAt: observedAt.toISOString(),
+        isPrimarySource: true,
+        isSyndicated:
+          index === 0 &&
+          options.primarySyndicatedSourceIndexes?.includes(sourceIndex) === true,
+        sourceFamily:
+          signalClass !== "ecosystem_momentum" || sourceIndex === 0
+            ? "official_company_material"
+            : sourceIndex === 1
+              ? "official_research"
+              : "official_jobs",
+        supportedFieldPaths,
+      };
+    }) satisfies readonly ScoreEvidenceSource[];
+    const evaluationEvidence = evidenceSources.map((source, sourceIndex) => ({
+      ingestOrdinal: sourceIndex + 1,
+      evidenceFingerprint: source.id,
+      globalEntityId: source.contributorEntityId,
+      sourceUrl: source.sourceUrl,
+      canonicalSourceUrl: source.sourceUrl,
+      sourceName: source.sourceName,
+      sourceType: "official_request",
+      sourceLanguage: "en",
+      sourceCountry: "United States",
+      sourceFamily: source.sourceFamily,
+      evidenceClaim: source.evidenceClaim,
+      sourceExcerpt: "Seeking qualified robotics execution partners.",
+      englishSummary:
+        "The source documents a current robotics requirement and public response path.",
+      publishedAt:
+        source.publishedAt === null ? null : new Date(source.publishedAt),
+      observedAt: new Date(source.observedAt),
+      evidenceConfidence: source.evidenceConfidence,
+      translationConfidence: null,
+      isPrimarySource: source.isPrimarySource,
+      isSyndicated: source.isSyndicated,
+      supportsDirectDemand: signalClass === "direct_demand",
+      supportsIndiaRelevance:
+        index === 0
+          ? (options.primaryEvidenceSupportsIndia ?? true)
+          : true,
+      supportedFieldPaths: [...source.supportedFieldPaths],
+    }));
+    const evaluationMetadata = createActiveScoreEvaluationMetadata({
+      scoreAsOf: observedAt,
+      evidence: evaluationEvidence,
+    });
+    const announcedAt = signalClass === "direct_demand" ? observedAt : null;
+    const effectiveFrom =
+      signalClass === "direct_demand"
+        ? observedAt
+        : signalClass === "demand_precursor"
+          ? new Date(now.getTime() + 60 * 24 * 60 * 60 * 1_000)
+          : null;
+    const expiresAt =
+      signalClass === "direct_demand"
+        ? new Date("2026-12-31T00:00:00.000Z")
+        : null;
+    const candidateEvidence = evaluationEvidence.map(
+      (source): CandidateEvidence => ({
+        sourceUrl: source.sourceUrl,
+        canonicalSourceUrl: source.canonicalSourceUrl,
+        sourceKind: "original",
+        sourceLanguage: source.sourceLanguage,
+        originalText: source.evidenceClaim,
+        englishSummary: source.englishSummary,
+        publishedAt: source.publishedAt?.toISOString() ?? null,
+        observedAt: source.observedAt.toISOString(),
+        evidenceConfidence: source.evidenceConfidence,
+        translationConfidence: source.translationConfidence,
+        isPrimarySource: source.isPrimarySource,
+        isOfficialProcurementSource: false,
+        supportsDirectDemand: source.supportsDirectDemand,
+        isSyndicated: source.isSyndicated,
+        organizationId:
+          source.globalEntityId ?? source.evidenceFingerprint,
+        corporateGroupId:
+          source.globalEntityId === null
+            ? source.evidenceFingerprint
+            : `group:${source.globalEntityId}`,
+        supportedFieldPaths: source.supportedFieldPaths,
+      }),
+    );
+    let scoreColumnValues: Pick<
+      typeof globalRadarSignals.$inferInsert,
+      "scoreCoverage"
+    > &
+      Partial<typeof globalRadarSignals.$inferInsert>;
+    let snapshotComponents: Readonly<Record<string, number | null>>;
+    let snapshotActionabilityInput: number | null = null;
+    if (signalClass === "direct_demand") {
+      const derived = deriveGlobalRadarReclassification({
+        signalClass,
+        signalType,
+        currentStatus: "qualified",
+        indiaRelevanceType,
+        announcedAt: announcedAt?.toISOString() ?? null,
+        effectiveFrom: effectiveFrom?.toISOString() ?? null,
+        observedAt: observedAt.toISOString(),
+        expiresAt: expiresAt?.toISOString() ?? null,
+        responsePath: null,
+        sensitiveDataAndCompliance: promotionSensitiveDataAndCompliance,
+        assessments: {
+          actionability: promotionDirectScoringInput.actionability,
+          commercialPotential:
+            promotionDirectScoringInput.commercialPotential,
+          repeatability: promotionDirectScoringInput.repeatability,
+          strategicLearning: promotionDirectScoringInput.strategicLearning,
+          complianceComplexity:
+            promotionDirectScoringInput.complianceComplexity,
+        },
+        evidence: candidateEvidence,
+        now: observedAt,
+      });
+      if (!derived.valid) {
+        throw new Error(
+          `Direct promotion fixture did not derive: ${derived.reason}.`,
+        );
+      }
+      if (derived.signalClass !== "direct_demand") {
+        throw new Error("Direct promotion fixture derived the wrong class.");
+      }
+      const components = derived.score.components;
+      scoreColumnValues = {
+        demandExplicitness: components.explicitness,
+        evidenceConfidence: components.evidenceConfidence,
+        freshness: components.freshness,
+        actionability: components.actionability,
+        indiaFit: components.indiaFit,
+        commercialPotential: components.commercialPotential,
+        repeatability: components.repeatability,
+        responseAccessibility: components.responseAccessibility,
+        strategicLearning: components.strategicLearning,
+        complianceComplexity: components.complianceComplexity,
+        directDemandScore: derived.score.score,
+        scoreCoverage: derived.score.scoreCoverage,
+      };
+      snapshotComponents = {
+        demandExplicitness: components.explicitness,
+        evidenceConfidence: components.evidenceConfidence,
+        freshness: components.freshness,
+        actionability: components.actionability,
+        indiaFit: components.indiaFit,
+        commercialPotential: components.commercialPotential,
+        repeatability: components.repeatability,
+        responseAccessibility: components.responseAccessibility,
+        strategicLearning: components.strategicLearning,
+        complianceComplexity: components.complianceComplexity,
+      };
+      snapshotActionabilityInput = derived.actionabilityInput;
+    } else if (signalClass === "demand_precursor") {
+      const derived = deriveGlobalRadarReclassification({
+        signalClass,
+        signalType,
+        currentStatus: "qualified",
+        indiaRelevanceType,
+        announcedAt: null,
+        effectiveFrom: effectiveFrom?.toISOString() ?? null,
+        observedAt: observedAt.toISOString(),
+        responsePath: null,
+        sensitiveDataAndCompliance: promotionSensitiveDataAndCompliance,
+        assessments: {
+          proximityToExternalDemand:
+            promotionPrecursorScoringInput.proximityToExternalDemand,
+          fundingDeploymentMomentum:
+            promotionPrecursorScoringInput.fundingDeploymentMomentum,
+          likelyDataHardwareIntensity:
+            promotionPrecursorScoringInput.likelyDataHardwareIntensity,
+          strategicRelevance:
+            promotionPrecursorScoringInput.strategicRelevance,
+        },
+        evidence: candidateEvidence,
+        now: observedAt,
+      });
+      if (!derived.valid) {
+        throw new Error(
+          `Precursor promotion fixture did not derive: ${derived.reason}.`,
+        );
+      }
+      if (derived.signalClass !== "demand_precursor") {
+        throw new Error("Precursor promotion fixture derived the wrong class.");
+      }
+      const components = derived.score.components;
+      scoreColumnValues = {
+        evidenceConfidence: components.evidenceConfidence,
+        indiaFit: components.indiaFit,
+        proximityToExternalDemand: components.proximityToExternalDemand,
+        fundingDeploymentMomentum: components.fundingDeploymentMomentum,
+        likelyDataHardwareIntensity: components.likelyDataHardwareIntensity,
+        estimatedTimeHorizon: components.estimatedTimeHorizon,
+        strategicRelevance: components.strategicRelevance,
+        precursorScore: derived.score.score,
+        scoreCoverage: derived.score.scoreCoverage,
+      };
+      snapshotComponents = { ...components };
+    } else {
+      const derived = deriveEcosystemMomentum(
+        {
+          taxonomy: "robot_learning_and_manipulation",
+          taxonomyConsistency:
+            promotionMomentumScoringInput.taxonomyConsistency,
+          evidenceQuality: promotionMomentumScoringInput.evidenceQuality,
+          observations: evaluationEvidence
+            .filter(({ isSyndicated }) => !isSyndicated)
+            .map((source) => ({
+              evidenceId: source.evidenceFingerprint,
+              entityId:
+                source.globalEntityId ?? source.evidenceFingerprint,
+              corporateGroupId:
+                source.globalEntityId === null
+                  ? source.evidenceFingerprint
+                  : `group:${source.globalEntityId}`,
+              sourceId: source.evidenceFingerprint,
+              sourceFamily: source.sourceFamily,
+              isPrimarySource: source.isPrimarySource,
+              observedAt: source.observedAt.toISOString(),
+            })),
+        },
+        createGlobalRadarMomentumPolicy(
+          "robot_learning_and_manipulation",
+        ),
+        { now: () => new Date(observedAt.getTime()) },
+      );
+      if (!derived.valid) {
+        throw new Error("Momentum promotion fixture did not derive.");
+      }
+      scoreColumnValues = {
+        momentumIndependentEntityCount: derived.counts.independentEntities,
+        momentumPrimarySourceCount: derived.counts.primarySources,
+        momentumSourceFamilyCount: derived.counts.sourceFamilies,
+        momentumVolume7Days: derived.windows.days7.recent,
+        momentumVolume30Days: derived.windows.days30.recent,
+        momentumVolume90Days: derived.windows.days90.recent,
+        momentumIndependentEntityBreadth:
+          derived.components.independentEntityBreadth,
+        momentumPrimarySourceDepth: derived.components.primarySourceDepth,
+        momentumSourceDiversity: derived.components.sourceDiversity,
+        momentumWeightedVolume: derived.components.weightedVolume,
+        momentumGrowthVsPreviousPeriod:
+          derived.components.growthVsPreceding,
+        momentumTaxonomyConsistency:
+          derived.components.taxonomyConsistency,
+        momentumEvidenceQuality: derived.components.evidenceQuality,
+        momentumScore: derived.score,
+        scoreCoverage: derived.scoreCoverage,
+        momentumQualificationGatesPassed:
+          derived.qualificationGatesPassed,
+      };
+      snapshotComponents = {
+        independentEntityCount: derived.counts.independentEntities,
+        primarySourceCount: derived.counts.primarySources,
+        sourceFamilyCount: derived.counts.sourceFamilies,
+        volume7Days: derived.windows.days7.recent,
+        volume30Days: derived.windows.days30.recent,
+        volume90Days: derived.windows.days90.recent,
+        independentEntityBreadth:
+          derived.components.independentEntityBreadth,
+        primarySourceDepth: derived.components.primarySourceDepth,
+        sourceDiversity: derived.components.sourceDiversity,
+        weightedVolume: derived.components.weightedVolume,
+        growthVsPreviousPeriod: derived.components.growthVsPreceding,
+        taxonomyConsistency: derived.components.taxonomyConsistency,
+        evidenceQuality: derived.components.evidenceQuality,
+      };
+    }
     const [signal] = await db
       .insert(globalRadarSignals)
       .values({
@@ -199,12 +771,7 @@ async function seedPromotionFixture(options: SeedOptions = {}) {
           signalClass === "ecosystem_momentum" ? null : entity.id,
         signalClass,
         demandDomain: "robot_learning_and_manipulation",
-        signalType:
-          signalClass === "direct_demand"
-            ? "data_collection_request"
-            : signalClass === "demand_precursor"
-              ? "research_or_hiring_pattern"
-              : "ecosystem_acceleration",
+        signalType,
         title: `Qualified promotion signal ${index + 1}`,
         factualSummary:
           "The organisation published evidence of a current robotics requirement.",
@@ -217,79 +784,32 @@ async function seedPromotionFixture(options: SeedOptions = {}) {
         industry: "robotics",
         targetCapabilityTags: ["teleoperated_trajectories"],
         requiredCounterpartyArchetypes: ["robotics_data_company"],
-        indiaRelevanceType:
-          index === 0
-            ? (options.primaryIndiaRelevance ?? "explicit_India")
-            : "inferred_India_compatible",
+        indiaRelevanceType,
         indiaRelevanceRationale:
           "Public evidence supports India-compatible execution.",
         indiaFitReasons: ["India is compatible with the published scope."],
         indiaFitConstraints: [],
         indiaFitUnknowns: [],
         indiaFitConfidence: 90,
-        demandExplicitness: signalClass === "direct_demand" ? 90 : null,
-        evidenceConfidence:
-          signalClass === "ecosystem_momentum" ? null : 90,
-        freshness: signalClass === "direct_demand" ? 90 : null,
-        actionability: signalClass === "direct_demand" ? 90 : null,
-        indiaFit: signalClass === "direct_demand" ? 90 : null,
-        commercialPotential: signalClass === "direct_demand" ? 90 : null,
-        repeatability: signalClass === "direct_demand" ? 80 : null,
-        responseAccessibility: signalClass === "direct_demand" ? 80 : null,
-        strategicLearning: signalClass === "direct_demand" ? 80 : null,
-        complianceComplexity: signalClass === "direct_demand" ? 20 : null,
-        proximityToExternalDemand:
-          signalClass === "demand_precursor" ? 80 : null,
-        fundingDeploymentMomentum:
-          signalClass === "demand_precursor" ? 80 : null,
-        likelyDataHardwareIntensity:
-          signalClass === "demand_precursor" ? 80 : null,
-        estimatedTimeHorizon:
-          signalClass === "demand_precursor" ? 80 : null,
-        strategicRelevance: signalClass === "demand_precursor" ? 80 : null,
-        momentumIndependentEntityCount:
-          signalClass === "ecosystem_momentum" ? 2 : null,
-        momentumPrimarySourceCount:
-          signalClass === "ecosystem_momentum" ? 2 : null,
-        momentumSourceFamilyCount:
-          signalClass === "ecosystem_momentum" ? 2 : null,
-        momentumVolume7Days:
-          signalClass === "ecosystem_momentum" ? 2 : null,
-        momentumVolume30Days:
-          signalClass === "ecosystem_momentum" ? 4 : null,
-        momentumVolume90Days:
-          signalClass === "ecosystem_momentum" ? 8 : null,
-        momentumIndependentEntityBreadth:
-          signalClass === "ecosystem_momentum" ? 80 : null,
-        momentumPrimarySourceDepth:
-          signalClass === "ecosystem_momentum" ? 80 : null,
-        momentumSourceDiversity:
-          signalClass === "ecosystem_momentum" ? 80 : null,
-        momentumWeightedVolume:
-          signalClass === "ecosystem_momentum" ? 80 : null,
-        momentumGrowthVsPreviousPeriod:
-          signalClass === "ecosystem_momentum" ? 80 : null,
-        momentumTaxonomyConsistency:
-          signalClass === "ecosystem_momentum" ? 85 : null,
-        momentumEvidenceQuality:
-          signalClass === "ecosystem_momentum" ? 90 : null,
-        directDemandScore: signalClass === "direct_demand" ? 88 : null,
-        precursorScore: signalClass === "demand_precursor" ? 82 : null,
-        momentumScore: signalClass === "ecosystem_momentum" ? 84 : null,
-        scoreCoverage: 100,
+        ...scoreColumnValues,
         scorePolicyVersion: configuration.scoreVersion,
+        scoreEvidenceSnapshot: promotionScoreEvidenceSnapshot(
+          signalClass,
+          signalType,
+          indiaRelevanceType,
+          snapshotComponents,
+          snapshotActionabilityInput,
+          evidenceSources,
+          evaluationMetadata,
+          hash(`provisional-score-input:${suffix}:${index}`),
+        ),
         momentumPolicyVersion:
           signalClass === "ecosystem_momentum"
             ? "global-radar-momentum-v1"
             : null,
-        momentumQualificationGatesPassed:
-          signalClass === "ecosystem_momentum" ? true : null,
-        announcedAt: signalClass === "direct_demand" ? observedAt : null,
-        effectiveFrom: signalClass === "direct_demand" ? observedAt : null,
-        expiresAt:
-          signalClass === "direct_demand"
-            ? new Date("2026-12-31T00:00:00.000Z")
-            : null,
+        announcedAt,
+        effectiveFrom,
+        expiresAt,
         evergreen: signalClass === "direct_demand" ? false : null,
         reobserveBy: null,
         observedAt,
@@ -311,53 +831,123 @@ async function seedPromotionFixture(options: SeedOptions = {}) {
       .returning();
     if (!signal) throw new Error("Promotion signal was not created.");
     signals.push(signal);
+    snapshotInputBySignalId.set(signal.id, {
+      signalClass,
+      signalType,
+      indiaRelevanceType,
+      components: snapshotComponents,
+      actionabilityInput: snapshotActionabilityInput,
+      evidence: evidenceSources,
+      evaluationMetadata,
+      scoreAsOf: observedAt,
+    });
+    await db.insert(globalSignalEvidence).values(
+      evaluationEvidence.map((source) => ({
+        signalId: signal.id,
+        ingestOrdinal: source.ingestOrdinal,
+        runId: radarRun.id,
+        globalEntityId: source.globalEntityId,
+        sourceUrl: source.sourceUrl,
+        canonicalSourceUrl: source.canonicalSourceUrl,
+        sourceName: source.sourceName,
+        sourceType: source.sourceType,
+        sourceLanguage: source.sourceLanguage,
+        sourceCountry: source.sourceCountry,
+        sourceFamily: source.sourceFamily,
+        evidenceClaim: source.evidenceClaim,
+        sourceExcerpt: source.sourceExcerpt,
+        englishSummary: source.englishSummary,
+        publishedAt: source.publishedAt,
+        observedAt: source.observedAt,
+        evidenceConfidence: source.evidenceConfidence,
+        translationConfidence: source.translationConfidence,
+        isPrimarySource: source.isPrimarySource,
+        isSyndicated: source.isSyndicated,
+        supportsDirectDemand: source.supportsDirectDemand,
+        supportsIndiaRelevance: source.supportsIndiaRelevance,
+        rawMetadata: {},
+        evidenceFingerprint: source.evidenceFingerprint,
+        supportedFieldPaths: [...source.supportedFieldPaths],
+        createdAt: observedAt,
+      })),
+    );
   }
 
   if (primaryClass === "ecosystem_momentum") {
-    await db.insert(globalRadarSignalEntities).values({
-      signalId: signals[0]!.id,
-      globalEntityId: entity.id,
-      role: "contributor",
-      confidence: 95,
-      createdAt: now,
-    });
+    if (!secondMomentumContributor) {
+      throw new Error("Second momentum contributor is missing.");
+    }
+    await db.insert(globalRadarSignalEntities).values(
+      [entity.id, secondMomentumContributor.id].map((globalEntityId) => ({
+        signalId: signals[0]!.id,
+        globalEntityId,
+        role: "contributor" as const,
+        confidence: 95,
+        createdAt: now,
+      })),
+    );
   }
 
-  const sourceUrls =
-    options.primarySourceUrls ??
-    ([`https://source-${sequence}.example/public-requirement`] as const);
-  for (const [index, sourceUrl] of sourceUrls.entries()) {
-    await db.insert(globalSignalEvidence).values({
-      signalId: signals[0]!.id,
-      runId: radarRun.id,
-      globalEntityId: entity.id,
-      sourceUrl,
-      canonicalSourceUrl: sourceUrl,
-      sourceName: `Official source ${index + 1}`,
-      sourceType: "official_request",
-      sourceLanguage: "en",
-      sourceCountry: "United States",
-      sourceFamily: "official_company_material",
-      evidenceClaim: "The organisation published a qualified robotics requirement.",
-      sourceExcerpt: "Seeking qualified robotics execution partners.",
-      englishSummary:
-        "The source documents a current robotics requirement and public response path.",
-      publishedAt: new Date("2026-07-30T00:00:00.000Z"),
-      observedAt: now,
-      evidenceConfidence: 90,
-      translationConfidence: null,
-      isPrimarySource: true,
-      isSyndicated: false,
-      supportsDirectDemand: true,
-      supportsIndiaRelevance:
-        options.primaryEvidenceSupportsIndia ?? true,
-      rawMetadata: {},
-      evidenceFingerprint: hash(`evidence:${suffix}:${index}`),
-      supportedFieldPaths:
-        [...(options.primaryEvidenceSupportedFieldPaths ??
-          ["signal.factualSummary"])],
-      createdAt: now,
+  const scoreInputEntities = [entity, secondMomentumContributor].flatMap(
+    (item) =>
+      item === null
+        ? []
+        : [
+            {
+              id: item.id,
+              canonicalCorporateGroupId: item.canonicalCorporateGroupId,
+            },
+          ],
+  );
+  for (const [index, signal] of signals.entries()) {
+    const snapshotInput = snapshotInputBySignalId.get(signal.id);
+    if (!snapshotInput) {
+      throw new Error("Promotion score snapshot input is missing.");
+    }
+    const associations =
+      signal.signalClass === "ecosystem_momentum"
+        ? scoreInputEntities.map(({ id }) => ({
+            globalEntityId: id,
+            role: "contributor",
+          }))
+        : [];
+    const scoreInputDigest = createStoredGlobalRadarScoreInputDigest({
+      scoreAsOf: snapshotInput.scoreAsOf,
+      signal,
+      actionabilityInput: snapshotInput.actionabilityInput,
+      associations,
+      entities: scoreInputEntities,
     });
+    const [updatedSignal] = await db
+      .update(globalRadarSignals)
+      .set({
+        scoreEvidenceSnapshot: promotionScoreEvidenceSnapshot(
+          snapshotInput.signalClass,
+          snapshotInput.signalType,
+          snapshotInput.indiaRelevanceType,
+          snapshotInput.components,
+          snapshotInput.actionabilityInput,
+          snapshotInput.evidence,
+          snapshotInput.evaluationMetadata,
+          scoreInputDigest,
+        ),
+      })
+      .where(eq(globalRadarSignals.id, signal.id))
+      .returning();
+    if (!updatedSignal) {
+      throw new Error("Promotion score snapshot was not finalized.");
+    }
+    signals[index] = updatedSignal;
+  }
+
+  const provenance = await validateStoredGlobalRadarScoreProvenanceSelection(
+    db,
+    signals,
+  );
+  if (!provenance.valid) {
+    throw new Error(
+      `Invalid promotion fixture provenance for ${primaryClass}: ${provenance.reason}.`,
+    );
   }
 
   return { now, radarRun, entity, signals };
@@ -390,6 +980,57 @@ function promotionInput(
   } as const;
 }
 
+async function insertPromotionEvidence(
+  fixture: Awaited<ReturnType<typeof seedPromotionFixture>>,
+  input: Readonly<{
+    sourceName: string;
+    sourceUrl: string;
+    evidenceClaim: string;
+    supportedFieldPaths: readonly string[];
+    globalEntityId?: string | null;
+    isPrimarySource?: boolean;
+    isSyndicated?: boolean;
+    supportsIndiaRelevance?: boolean;
+  }>,
+) {
+  const signal = fixture.signals[0]!;
+  const existingEvidence = await db
+    .select()
+    .from(globalSignalEvidence)
+    .where(eq(globalSignalEvidence.signalId, signal.id));
+  const [template] = existingEvidence;
+  if (!template) throw new Error("Promotion evidence template is missing.");
+  const { id: _id, ...values } = template;
+  void _id;
+  const [inserted] = await db
+    .insert(globalSignalEvidence)
+    .values({
+      ...values,
+      ingestOrdinal:
+        Math.max(...existingEvidence.map(({ ingestOrdinal }) => ingestOrdinal)) +
+        1,
+      globalEntityId:
+        input.globalEntityId === undefined
+          ? fixture.entity.id
+          : input.globalEntityId,
+      sourceName: input.sourceName,
+      sourceUrl: input.sourceUrl,
+      canonicalSourceUrl: input.sourceUrl,
+      evidenceClaim: input.evidenceClaim,
+      englishSummary: input.evidenceClaim,
+      supportedFieldPaths: [...input.supportedFieldPaths],
+      isPrimarySource: input.isPrimarySource ?? true,
+      isSyndicated: input.isSyndicated ?? false,
+      supportsIndiaRelevance: input.supportsIndiaRelevance ?? true,
+      evidenceFingerprint: hash(
+        `promotion-evidence:${signal.id}:${input.sourceUrl}`,
+      ),
+    })
+    .returning();
+  if (!inserted) throw new Error("Promotion evidence was not inserted.");
+  return inserted;
+}
+
 describe("Global Demand Radar promotion bridge selection", () => {
   it("keeps the PostgreSQL bridge out of unit and acceptance suites", async () => {
     const packageJson = JSON.parse(
@@ -408,6 +1049,298 @@ describe("Global Demand Radar promotion bridge selection", () => {
 });
 
 describe("Global Demand Radar controlled promotion bridge", () => {
+  it.each([
+    "qualified_india_direct_demand",
+    "documented_indian_relationship",
+    "exceptional_strategic_relevance",
+  ] as const)(
+    "rejects extra selected signals without writes for %s",
+    async (eligibilityPath) => {
+      const fixture = await seedPromotionFixture({ repeatedSignalCount: 3 });
+
+      await expect(
+        createGlobalRadarPromotionRepository(db, configuration).promote(
+          promotionInput(fixture, eligibilityPath),
+        ),
+      ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+      expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+      expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
+      expect(await db.select().from(discoveryRuns)).toEqual([]);
+      expect(await db.select().from(discoveryCandidates)).toEqual([]);
+    },
+  );
+
+  it("rejects a repeated path with fewer than three exactly selected signals without writes", async () => {
+    const fixture = await seedPromotionFixture();
+
+    await expect(
+      createGlobalRadarPromotionRepository(db, configuration).promote(
+        promotionInput(fixture, "repeated_india_compatible_signals"),
+      ),
+    ).resolves.toEqual({ outcome: "conflict", reason: "invalid_input" });
+    expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+    expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
+    expect(await db.select().from(discoveryRuns)).toEqual([]);
+    expect(await db.select().from(discoveryCandidates)).toEqual([]);
+  });
+
+  it("rejects a repeated selection containing one non-India-compatible signal without writes", async () => {
+    const fixture = await seedPromotionFixture({
+      repeatedSignalCount: 4,
+      nonIndiaCompatibleSignalIndexes: [3],
+    });
+
+    await expect(
+      createGlobalRadarPromotionRepository(db, configuration).promote(
+        promotionInput(fixture, "repeated_india_compatible_signals"),
+      ),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "eligibility_not_met",
+    });
+    expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+    expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
+    expect(await db.select().from(discoveryRuns)).toEqual([]);
+    expect(await db.select().from(discoveryCandidates)).toEqual([]);
+    expect(await db.select().from(globalEntities)).toMatchObject([
+      { id: fixture.entity.id, entityStatus: "qualified", revision: 0 },
+    ]);
+    expect(await db.select().from(globalRadarSignals)).toEqual(
+      expect.arrayContaining(
+        fixture.signals.map(({ id }) =>
+          expect.objectContaining({ id, status: "qualified", revision: 0 }),
+        ),
+      ),
+    );
+  });
+
+  it("rejects documented relationship evidence owned by another entity without exporting it", async () => {
+    const fixture = await seedPromotionFixture({
+      primaryClass: "demand_precursor",
+      primaryIndiaRelevance: "explicit_India",
+    });
+    const unrelated = await seedPromotionFixture();
+    await insertPromotionEvidence(fixture, {
+      sourceName: "Wrong-owner relationship source",
+      sourceUrl: "https://wrong-owner.example/india-operations",
+      evidenceClaim:
+        "The unrelated organisation operates manufacturing facilities in India.",
+      supportedFieldPaths: [
+        "indiaRelevance.existing_India_presence.manufacturing",
+      ],
+      globalEntityId: unrelated.entity.id,
+    });
+
+    await expect(
+      createGlobalRadarPromotionRepository(db, configuration).promote(
+        promotionInput(fixture, "documented_indian_relationship"),
+      ),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "eligibility_not_met",
+    });
+    expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+    expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
+    expect(await db.select().from(discoveryRuns)).toEqual([]);
+    expect(await db.select().from(discoveryCandidates)).toEqual([]);
+  });
+
+  it("copies only a validated exact score citation with path eligibility into Discovery", async () => {
+    const relationshipSourceUrl =
+      "https://relationship.example/india-operations";
+    const fixture = await seedPromotionFixture({
+      primaryClass: "demand_precursor",
+      primaryIndiaRelevance: "existing_India_presence",
+      primarySourceUrls: [relationshipSourceUrl],
+      primaryEvidenceClaim:
+        "The organisation operates manufacturing facilities in India.",
+      primaryEvidenceSupportedFieldPaths: [
+        "indiaRelevance.existing_India_presence.manufacturing",
+      ],
+    });
+    const unrelated = await insertPromotionEvidence(fixture, {
+      sourceName: "Unrelated press coverage",
+      sourceUrl: "https://press.example/unrelated-profile",
+      evidenceClaim:
+        "A profile describes the organisation without substantiating this promotion path.",
+      supportedFieldPaths: ["signal.title"],
+      isPrimarySource: false,
+      supportsIndiaRelevance: false,
+    });
+
+    const result = await createGlobalRadarPromotionRepository(
+      db,
+      configuration,
+    ).promote(promotionInput(fixture, "documented_indian_relationship"));
+    expect(result).toMatchObject({ outcome: "promoted" });
+
+    const [run] = await db.select().from(discoveryRuns);
+    const sources = await db
+      .select()
+      .from(discoveryCandidateSources)
+      .orderBy(asc(discoveryCandidateSources.sourceName));
+    expect(run?.sourcesUsed).toEqual(["Official source 1"]);
+    expect(
+      sources.map(({ sourceName, sourceUrl }) => ({ sourceName, sourceUrl })),
+    ).toEqual([
+      {
+        sourceName: "Official source 1",
+        sourceUrl: relationshipSourceUrl,
+      },
+    ]);
+    expect(JSON.stringify(sources)).toContain(
+      "documented_indian_relationship",
+    );
+    expect(JSON.stringify(sources)).toContain("active_score_citation");
+    expect(JSON.stringify([run, sources])).not.toContain(unrelated.sourceUrl);
+    expect(JSON.stringify([run, sources])).not.toContain(
+      unrelated.evidenceClaim,
+    );
+  });
+
+  it("does not export an unrelated extra primary source for the exceptional path", async () => {
+    const fixture = await seedPromotionFixture({
+      primaryClass: "demand_precursor",
+      primarySourceUrls: [
+        "https://exceptional-a.example/public-case",
+        "https://exceptional-b.example/public-case",
+      ],
+    });
+    const unrelated = await insertPromotionEvidence(fixture, {
+      sourceName: "Unrelated extra primary source",
+      sourceUrl: "https://unrelated-primary.example/profile",
+      evidenceClaim:
+        "An unrelated profile is not cited by the active score snapshot.",
+      supportedFieldPaths: ["signal.title"],
+      isPrimarySource: true,
+      supportsIndiaRelevance: false,
+    });
+
+    await expect(
+      createGlobalRadarPromotionRepository(db, configuration).promote(
+        promotionInput(fixture, "exceptional_strategic_relevance"),
+      ),
+    ).resolves.toMatchObject({ outcome: "promoted" });
+
+    const [run] = await db.select().from(discoveryRuns);
+    const sources = await db
+      .select()
+      .from(discoveryCandidateSources)
+      .orderBy(asc(discoveryCandidateSources.sourceName));
+    expect(run?.sourcesUsed).toEqual([
+      "Official source 1",
+      "Official source 2",
+    ]);
+    expect(sources).toHaveLength(2);
+    expect(JSON.stringify([run, sources])).not.toContain(unrelated.sourceUrl);
+    expect(JSON.stringify([run, sources])).not.toContain(
+      unrelated.evidenceClaim,
+    );
+  });
+
+  it("exports only exact component citations from an eleven-row evaluation prefix", async () => {
+    const sourceUrls = Array.from(
+      { length: 11 },
+      (_, index) => `https://evaluation-${index + 1}.example/public-case`,
+    );
+    const fixture = await seedPromotionFixture({
+      primaryClass: "demand_precursor",
+      primarySourceUrls: sourceUrls,
+    });
+    const evidence = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, fixture.signals[0]!.id))
+      .orderBy(asc(globalSignalEvidence.ingestOrdinal));
+    if (evidence.length !== 11) {
+      throw new Error("Exceptional citation fixture evidence is incomplete.");
+    }
+    const citedFingerprints = new Set(
+      fixture.signals[0]!.scoreEvidenceSnapshot.componentEvidence.flatMap(
+        ({ evidence: citations }) =>
+          citations.map(({ evidenceFingerprint }) => evidenceFingerprint),
+      ),
+    );
+    const uncitedEvidence = evidence.filter(
+      ({ evidenceFingerprint }) =>
+        !citedFingerprints.has(evidenceFingerprint),
+    );
+    expect(citedFingerprints.size).toBe(10);
+    expect(uncitedEvidence).toHaveLength(1);
+
+    const result = await createGlobalRadarPromotionRepository(
+      db,
+      configuration,
+    ).promote(
+      promotionInput(fixture, "exceptional_strategic_relevance"),
+    );
+    expect(result).toMatchObject({ outcome: "promoted" });
+
+    const [run] = await db.select().from(discoveryRuns);
+    const sources = await db.select().from(discoveryCandidateSources);
+    expect(run?.sourcesUsed).toHaveLength(10);
+    expect(sources).toHaveLength(10);
+    expect(JSON.stringify([run, sources])).not.toContain(
+      uncitedEvidence[0]!.sourceUrl,
+    );
+  });
+
+  it("keeps a momentum evaluation prefix for replay but exports only target-owned exact citations", async () => {
+    const sourceUrls = [
+      "https://target-cited.example/india-operations",
+      "https://contributor-one.example/public-research",
+      "https://contributor-two.example/public-jobs",
+      "https://target-uncited-b.example/syndicated-profile",
+      "https://target-uncited-c.example/syndicated-profile",
+    ];
+    const fixture = await seedPromotionFixture({
+      primaryClass: "ecosystem_momentum",
+      primarySourceUrls: sourceUrls,
+      primarySyndicatedSourceIndexes: [3, 4],
+      primaryTargetEntitySourceIndexes: [3, 4],
+      primaryEvidenceSupportsIndia: true,
+      primaryEvidenceSupportedFieldPaths: [
+        "indiaRelevance.existing_India_presence.manufacturing",
+      ],
+    });
+    const provenance = await validateStoredGlobalRadarScoreProvenanceSelection(
+      db,
+      [fixture.signals[0]!],
+    );
+    if (!provenance.valid) {
+      throw new Error(`Momentum provenance was invalid: ${provenance.reason}.`);
+    }
+    const stored = provenance.items[0]?.provenance;
+    if (!stored) throw new Error("Momentum provenance item is missing.");
+    const targetEvaluationEvidence = stored.evaluationEvidence.filter(
+      ({ globalEntityId }) => globalEntityId === fixture.entity.id,
+    );
+    const targetCitedEvidence = stored.citedEvidence.filter(
+      ({ globalEntityId }) => globalEntityId === fixture.entity.id,
+    );
+    expect(targetEvaluationEvidence.map(({ sourceUrl }) => sourceUrl)).toEqual([
+      sourceUrls[0],
+      sourceUrls[3],
+      sourceUrls[4],
+    ]);
+    expect(targetCitedEvidence.map(({ sourceUrl }) => sourceUrl)).toEqual([
+      sourceUrls[0],
+    ]);
+
+    await expect(
+      createGlobalRadarPromotionRepository(db, configuration).promote(
+        promotionInput(fixture, "documented_indian_relationship"),
+      ),
+    ).resolves.toMatchObject({ outcome: "promoted" });
+    const [run] = await db.select().from(discoveryRuns);
+    const sources = await db.select().from(discoveryCandidateSources);
+    expect(run?.sourcesUsed).toEqual(["Official source 1"]);
+    expect(sources).toHaveLength(1);
+    expect(JSON.stringify([run, sources])).toContain(sourceUrls[0]);
+    expect(JSON.stringify([run, sources])).not.toContain(sourceUrls[3]);
+    expect(JSON.stringify([run, sources])).not.toContain(sourceUrls[4]);
+  });
+
   it("promotes qualified momentum for a selected contributor and rejects an unrelated entity", async () => {
     const momentum = await seedPromotionFixture({
       primaryClass: "ecosystem_momentum",
@@ -431,18 +1364,30 @@ describe("Global Demand Radar controlled promotion bridge", () => {
       outcome: "found",
       detail: {
         organisation: null,
-        associatedOrganisations: {
-          items: [
-            {
-              role: "contributor",
-              organisation: { id: momentum.entity.id, revision: 0 },
-            },
-          ],
-        },
         allowedActions: expect.arrayContaining(["promote"]),
       },
     });
+    if (detail.outcome === "found") {
+      expect(detail.detail.associatedOrganisations.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "contributor",
+            organisation: expect.objectContaining({
+              id: momentum.entity.id,
+              revision: 0,
+            }),
+          }),
+        ]),
+      );
+    }
 
+    const originalEvidenceOwners = await db
+      .select({
+        id: globalSignalEvidence.id,
+        globalEntityId: globalSignalEvidence.globalEntityId,
+      })
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, momentum.signals[0]!.id));
     await db
       .update(globalSignalEvidence)
       .set({ globalEntityId: unrelated.entity.id })
@@ -452,14 +1397,31 @@ describe("Global Demand Radar controlled promotion bridge", () => {
         ...request,
         idempotencyKey: nextIdempotencyKey(),
       }),
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
       outcome: "conflict",
-      reason: "signal_entity_mismatch",
+      reason: "eligibility_not_met",
     });
-    await db
-      .update(globalSignalEvidence)
-      .set({ globalEntityId: momentum.entity.id })
-      .where(eq(globalSignalEvidence.signalId, momentum.signals[0]!.id));
+    expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+    expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
+    for (const evidence of originalEvidenceOwners) {
+      await db
+        .update(globalSignalEvidence)
+        .set({ globalEntityId: evidence.globalEntityId })
+        .where(eq(globalSignalEvidence.id, evidence.id));
+    }
+    await expect(
+      validateStoredGlobalRadarScoreProvenanceSelection(db, [
+        momentum.signals[0]!,
+      ]),
+    ).resolves.toMatchObject({ valid: true });
+    await expect(
+      repository.loadContext({
+        globalEntityId: momentum.entity.id,
+        primarySignalId: momentum.signals[0]!.id,
+        supportingSignalIds: [],
+        eligibilityPath: "documented_indian_relationship",
+      }),
+    ).resolves.toMatchObject({ outcome: "found" });
 
     await expect(
       repository.promote({
@@ -470,11 +1432,15 @@ describe("Global Demand Radar controlled promotion bridge", () => {
       }),
     ).resolves.toMatchObject({
       outcome: "conflict",
-      reason: "signal_entity_mismatch",
+      reason: "eligibility_not_met",
     });
+    expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+    expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
     const promoted = await repository.promote(request);
     if (promoted.outcome !== "promoted") {
-      throw new Error("Momentum promotion did not complete.");
+      throw new Error(
+        `Momentum promotion did not complete: ${promoted.outcome}:${"reason" in promoted ? promoted.reason : "unknown"}.`,
+      );
     }
     expect(promoted).toMatchObject({
       outcome: "promoted",
@@ -486,7 +1452,7 @@ describe("Global Demand Radar controlled promotion bridge", () => {
       },
       candidate: {
         name: momentum.entity.canonicalName,
-        discoveryScore: 84,
+        discoveryScore: momentum.signals[0]!.momentumScore,
       },
     });
     expect(await db.select().from(discoveryCandidates)).toHaveLength(1);
@@ -500,6 +1466,7 @@ describe("Global Demand Radar controlled promotion bridge", () => {
       globalEntityId: fixture.entity.id,
       primarySignalId: fixture.signals[0]!.id,
       supportingSignalIds: fixture.signals.slice(1).map(({ id }) => id),
+      eligibilityPath: "repeated_india_compatible_signals",
     });
 
     expect(result).toMatchObject({
@@ -772,15 +1739,149 @@ describe("Global Demand Radar controlled promotion bridge", () => {
         promotionInput(fixture, "documented_indian_relationship"),
       );
 
-      expect(result).toMatchObject({
+      expect(result).toEqual({
         outcome: "conflict",
         reason: "eligibility_not_met",
-        promotion: { status: "conflicted" },
       });
+      expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+      expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
       expect(await db.select().from(discoveryCandidates)).toHaveLength(0);
       expect(await db.select().from(discoveryRuns)).toHaveLength(0);
     },
   );
+
+  it("fails closed without writes when documented-relationship evidence negates the claimed India fact", async () => {
+    const fixture = await seedPromotionFixture({
+      primaryClass: "demand_precursor",
+      primaryIndiaRelevance: "globally_open",
+      primaryEvidenceSupportsIndia: true,
+      primaryEvidenceSupportedFieldPaths: [
+        "indiaRelevance.existing_India_presence.manufacturing",
+      ],
+      primaryEvidenceClaim:
+        "Applications are open to qualified organisations worldwide, but the organisation does not operate manufacturing facilities in India.",
+    });
+
+    await expect(
+      createGlobalRadarPromotionRepository(db, configuration).promote(
+        promotionInput(fixture, "documented_indian_relationship"),
+      ),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "eligibility_not_met",
+    });
+    expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+    expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
+    expect(await db.select().from(discoveryRuns)).toEqual([]);
+    expect(await db.select().from(discoveryCandidates)).toEqual([]);
+    expect(await db.select().from(globalEntities)).toMatchObject([
+      { id: fixture.entity.id, entityStatus: "qualified", revision: 0 },
+    ]);
+    expect(await db.select().from(globalRadarSignals)).toMatchObject([
+      { id: fixture.signals[0]!.id, status: "qualified", revision: 0 },
+    ]);
+  });
+
+  it.each([
+    [
+      "aggregate score",
+      async (fixture: Awaited<ReturnType<typeof seedPromotionFixture>>) => {
+        await db
+          .update(globalRadarSignals)
+          .set({ directDemandScore: 99 })
+          .where(eq(globalRadarSignals.id, fixture.signals[0]!.id));
+      },
+    ],
+    [
+      "active score snapshot",
+      async (fixture: Awaited<ReturnType<typeof seedPromotionFixture>>) => {
+        const snapshot = fixture.signals[0]!.scoreEvidenceSnapshot;
+        await db
+          .update(globalRadarSignals)
+          .set({
+            scoreEvidenceSnapshot: {
+              ...snapshot,
+              componentEvidence: snapshot.componentEvidence.map(
+                (association, index) =>
+                  index === 0
+                    ? { ...association, value: association.value - 1 }
+                    : association,
+              ),
+            },
+          })
+          .where(eq(globalRadarSignals.id, fixture.signals[0]!.id));
+      },
+    ],
+    [
+      "exact cited evidence fingerprint",
+      async (fixture: Awaited<ReturnType<typeof seedPromotionFixture>>) => {
+        await db
+          .update(globalSignalEvidence)
+          .set({ evidenceFingerprint: hash("replacement-evidence") })
+          .where(eq(globalSignalEvidence.signalId, fixture.signals[0]!.id));
+      },
+    ],
+  ])(
+    "fails closed without writes when promotion provenance has a tampered %s",
+    async (_case, tamper) => {
+      const fixture = await seedPromotionFixture();
+      await tamper(fixture);
+
+      await expect(
+        createGlobalRadarPromotionRepository(db, configuration).promote(
+          promotionInput(fixture, "qualified_india_direct_demand"),
+        ),
+      ).resolves.toEqual({
+        outcome: "conflict",
+        reason: "eligibility_not_met",
+      });
+      expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+      expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
+      expect(await db.select().from(discoveryRuns)).toEqual([]);
+      expect(await db.select().from(discoveryCandidates)).toEqual([]);
+      expect(await db.select().from(globalEntities)).toMatchObject([
+        { id: fixture.entity.id, entityStatus: "qualified", revision: 0 },
+      ]);
+      expect(await db.select().from(globalRadarSignals)).toMatchObject([
+        { id: fixture.signals[0]!.id, status: "qualified", revision: 0 },
+      ]);
+    },
+  );
+
+  it("validates every repeated-path supporting score before any promotion write", async () => {
+    const fixture = await seedPromotionFixture({ repeatedSignalCount: 3 });
+    const nonPrimarySupportingSignal = fixture.signals[1]!;
+    await db
+      .update(globalRadarSignals)
+      .set({ precursorScore: 99 })
+      .where(eq(globalRadarSignals.id, nonPrimarySupportingSignal.id));
+
+    await expect(
+      createGlobalRadarPromotionRepository(db, configuration).promote(
+        promotionInput(fixture, "repeated_india_compatible_signals"),
+      ),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "eligibility_not_met",
+    });
+    expect(await db.select().from(globalRadarPromotions)).toEqual([]);
+    expect(await db.select().from(globalRadarAdminEvents)).toEqual([]);
+    expect(await db.select().from(discoveryRuns)).toEqual([]);
+    expect(await db.select().from(discoveryCandidates)).toEqual([]);
+    expect(await db.select().from(globalEntities)).toMatchObject([
+      { id: fixture.entity.id, entityStatus: "qualified", revision: 0 },
+    ]);
+    expect(await db.select().from(globalRadarSignals)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: nonPrimarySupportingSignal.id,
+          status: "qualified",
+          revision: 0,
+          precursorScore: 99,
+        }),
+      ]),
+    );
+  });
 
   it("serializes promotion against ordinary Discovery ingestion for the same identity", async () => {
     const fixture = await seedPromotionFixture();
@@ -851,7 +1952,7 @@ describe("Global Demand Radar controlled promotion bridge", () => {
     expect(candidates[0]).toMatchObject({
       id: promotion.candidate.id,
       status: "discovered",
-      discoveryScore: 88,
+      discoveryScore: fixture.signals[0]!.directDemandScore,
     });
     expect(
       await db.select().from(discoveryCandidateIdentifiers),
@@ -898,6 +1999,11 @@ describe("Global Demand Radar controlled promotion bridge", () => {
     if (promoted.outcome !== "promoted") {
       throw new Error("Promotion fixture did not promote.");
     }
+    await expect(
+      validateStoredGlobalRadarScoreProvenanceSelection(db, [
+        promoted.primarySignal,
+      ]),
+    ).resolves.toMatchObject({ valid: true });
     const reversalIdempotencyKey = nextIdempotencyKey();
     const reversal = {
       globalEntityId: fixture.entity.id,
@@ -924,6 +2030,14 @@ describe("Global Demand Radar controlled promotion bridge", () => {
       entity: { entityStatus: fixture.entity.entityStatus, revision: 2 },
       primarySignal: { status: "qualified", revision: 2 },
     });
+    if (first.outcome !== "reversed") {
+      throw new Error("Promotion fixture did not reverse.");
+    }
+    await expect(
+      validateStoredGlobalRadarScoreProvenanceSelection(db, [
+        first.primarySignal,
+      ]),
+    ).resolves.toMatchObject({ valid: true });
     expect(replay).toMatchObject({ outcome: "replayed" });
     expect(replayedPromotion).toMatchObject({
       outcome: "conflict",
@@ -933,6 +2047,50 @@ describe("Global Demand Radar controlled promotion bridge", () => {
     expect(await db.select().from(discoveryCandidates)).toHaveLength(1);
     expect(await db.select().from(discoveryCandidateSources)).not.toHaveLength(0);
     expect(await db.select().from(discoveryRuns)).toHaveLength(1);
+  });
+
+  it("fails a reversal closed without writes when the promoted score provenance was tampered", async () => {
+    const fixture = await seedPromotionFixture();
+    const repository = createGlobalRadarPromotionRepository(db, configuration);
+    const promoted = await repository.promote(
+      promotionInput(fixture, "qualified_india_direct_demand"),
+    );
+    if (promoted.outcome !== "promoted") {
+      throw new Error("Promotion fixture did not promote.");
+    }
+    const eventsBeforeReversal = await db.select().from(globalRadarAdminEvents);
+    await db
+      .update(globalRadarSignals)
+      .set({ directDemandScore: 99 })
+      .where(eq(globalRadarSignals.id, promoted.primarySignal.id));
+
+    await expect(
+      repository.reverse({
+        globalEntityId: fixture.entity.id,
+        expectedEntityRevision: promoted.entity.revision,
+        expectedPrimarySignalRevision: promoted.primarySignal.revision,
+        actor: { userId: actorUserId, email: actorEmail },
+        idempotencyKey: nextIdempotencyKey(),
+        reason: "A corrupted score cannot be restored to qualified state.",
+        now: new Date(fixture.now.getTime() + 1_000),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "restoration_not_safe",
+      promotion: { status: "active" },
+    });
+    expect(await db.select().from(globalRadarAdminEvents)).toHaveLength(
+      eventsBeforeReversal.length,
+    );
+    expect(await db.select().from(globalRadarPromotions)).toMatchObject([
+      { status: "active" },
+    ]);
+    expect(await db.select().from(globalEntities)).toMatchObject([
+      { entityStatus: "promoted_to_candidate", revision: 1 },
+    ]);
+    expect(await db.select().from(globalRadarSignals)).toMatchObject([
+      { status: "promoted", revision: 1, directDemandScore: 99 },
+    ]);
   });
 
   it("replays an inspectable reversal conflict and rejects a changed same-key request", async () => {

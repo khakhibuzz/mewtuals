@@ -11,6 +11,7 @@ export {
   candidateEvidenceSourceKinds,
   complianceFactsSchema,
   confidenceSchema,
+  containsKnownGlobalRadarSecret,
   classificationResultSchema,
   directDemandAskSchema,
   directDemandAskTypeLookup,
@@ -20,6 +21,11 @@ export {
   executedQuerySchema,
   fingerprintSchema,
   globalRadarBatchSchema,
+  globalRadarAuthoredAuditTextSchema,
+  globalRadarJsonEntryContainsSensitiveContent,
+  globalRadarJsonContainsSensitiveContent,
+  globalRadarOperationalDiagnosticSchema,
+  globalRadarTextContainsSensitiveContent,
   indiaRelevanceTypeLookup,
   indiaRelevanceTypes,
   isoTimestampSchema,
@@ -96,10 +102,14 @@ export type {
   SourceError,
 } from "./contracts";
 
-export { classifySignal } from "./classification";
+export {
+  classifySignal,
+  isProfessionalResponsePathEvidenceField,
+} from "./classification";
 
 export {
   assessIndiaRelevance,
+  evidenceClaimSupportsPositiveIndiaPath,
   indiaEvidenceFactKinds,
   indiaRelevanceAssessmentFailureReasons,
   indiaRelevanceAssessmentSchema,
@@ -339,33 +349,52 @@ export type {
 } from "./evidence";
 
 export {
+  GLOBAL_RADAR_ACTIVE_SCORE_SNAPSHOT_VERSION,
+  GLOBAL_RADAR_MOMENTUM_EVIDENCE_MAXIMUM_AGE_DAYS,
   GLOBAL_RADAR_SCORE_EVIDENCE_VERSION,
+  GLOBAL_RADAR_SCORE_INPUT_VERSION,
+  EMPTY_MOMENTUM_EVIDENCE_WINDOW_RATIONALE,
+  MAX_ACTIVE_SCORE_EVIDENCE_SNAPSHOT_BYTES,
   MAX_SCORE_COMPONENT_EVIDENCE_CITATIONS,
   MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS,
+  activeScoreEvidenceSnapshotSchema,
+  createActiveScoreEvidenceSnapshot,
+  createActiveScoreEvidenceSnapshotFromAssociations,
+  createGlobalRadarScoreInputDigest,
   deriveScoreComponentEvidenceAssociations,
+  directDemandFreshnessEvidencePathFromSnapshot,
   directDemandFreshnessEvidencePaths,
   directDemandScoreEvidenceComponents,
   directDemandWorkerScoredComponents,
   hasCompleteScoreComponentEvidenceAssociations,
+  hasValidActiveScoreEvidenceCitations,
   isMomentumWorkerScoredMetricEvidencePath,
   isWorkerScoredComponentEvidencePath,
   missingMomentumWorkerScoredMetricEvidencePaths,
   missingWorkerScoredComponentEvidencePaths,
   momentumWorkerScoredMetrics,
   momentumScoreEvidenceComponents,
+  parseActiveScoreEvidenceSnapshot,
   precursorScoreEvidenceComponents,
   precursorWorkerScoredComponents,
   selectDirectDemandFreshnessEvidencePath,
 } from "./score-evidence";
 
 export type {
+  ActiveScoreComponentEvidenceAssociation,
+  ActiveScoreEvidenceCitation,
+  ActiveScoreEvidenceSnapshot,
   DirectDemandWorkerScoredComponent,
   DirectDemandFreshnessEvidencePath,
+  EmptyMomentumEvidenceWindow,
+  GlobalRadarScoreInputDigestInput,
   MomentumWorkerScoredMetric,
   MomentumWorkerScoredMetricEvidencePath,
   PrecursorWorkerScoredComponent,
   ScoreComponentEvidenceAssociation,
   ScoreComponentEvidenceCitation,
+  ScoreAssessmentAuthority,
+  ScoreAssessmentBasis,
   ScoreEvidenceBasis,
   ScoreEvidenceComponent,
   ScoreEvidenceSource,
@@ -380,6 +409,17 @@ export {
   radarSignalProposalSchema,
   validateGlobalRadarBatch,
 } from "./validation-pipeline";
+
+export {
+  deriveGlobalRadarReclassification,
+} from "./reclassification";
+
+export { globalRadarIndiaFitScore } from "./india-fit-score";
+
+export type {
+  GlobalRadarReclassificationInput,
+  GlobalRadarReclassificationResult,
+} from "./reclassification";
 
 export type {
   GlobalRadarBatchProposal,
