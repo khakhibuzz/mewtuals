@@ -921,6 +921,9 @@ describe("Mewtuals PostgreSQL schema", () => {
     expect(classMatrix).toContain("ecosystem_momentum");
     expect(classMatrix).toContain("momentum_policy_version");
     expect(classMatrix).toContain("global_entity_id");
+    expect(classMatrix).toMatch(
+      /signal_class" = 'ecosystem_momentum'\s+AND "global_radar_signals"\."global_entity_id" IS NULL/,
+    );
     expect(
       checkSql(globalRadarSignals, "global_radar_signals_activity_check"),
     ).toContain("reobserve_by");

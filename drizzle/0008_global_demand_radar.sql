@@ -590,6 +590,7 @@ CREATE TABLE "global_radar_signals" (
         AND "global_radar_signals"."momentum_qualification_gates_passed" IS NULL
       ) OR (
         "global_radar_signals"."signal_class" = 'ecosystem_momentum'
+        AND "global_radar_signals"."global_entity_id" IS NULL
         AND "global_radar_signals"."direct_demand_score" IS NULL
         AND "global_radar_signals"."precursor_score" IS NULL
         AND "global_radar_signals"."demand_explicitness" IS NULL

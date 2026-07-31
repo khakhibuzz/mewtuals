@@ -321,4 +321,98 @@ describe("Global Radar PostgreSQL constraints", () => {
       });
     });
   });
+
+  it("rejects an ecosystem momentum record with a single owning entity", async () => {
+    await withinRollback(async () => {
+      const runId = await insertQueuedRun();
+      const entityId = await insertGlobalEntity();
+
+      await expect(sql`
+        insert into global_radar_signals (
+          global_entity_id,
+          signal_class,
+          demand_domain,
+          signal_type,
+          title,
+          factual_summary,
+          interpretation_summary,
+          theme,
+          source_country,
+          industry,
+          india_relevance_type,
+          india_relevance_rationale,
+          india_fit_confidence,
+          momentum_independent_entity_count,
+          momentum_primary_source_count,
+          momentum_source_family_count,
+          momentum_volume_7_days,
+          momentum_volume_30_days,
+          momentum_volume_90_days,
+          momentum_independent_entity_breadth,
+          momentum_primary_source_depth,
+          momentum_source_diversity,
+          momentum_weighted_volume,
+          momentum_growth_vs_previous_period,
+          momentum_taxonomy_consistency,
+          momentum_evidence_quality,
+          momentum_score,
+          score_coverage,
+          score_policy_version,
+          momentum_policy_version,
+          momentum_qualification_gates_passed,
+          observed_at,
+          source_language,
+          extraction_method,
+          taxonomy_version,
+          dedupe_key,
+          dedupe_version,
+          first_run_id,
+          most_recent_run_id
+        ) values (
+          ${entityId},
+          'ecosystem_momentum',
+          'robotics_hardware',
+          'ecosystem_activity',
+          'Robotics ecosystem activity',
+          'Several independent robotics groups published related activity.',
+          'The activity is an ecosystem-level signal without one owning entity.',
+          'physical_ai',
+          'United States',
+          'robotics',
+          'inferred_India_compatible',
+          'Indian execution capabilities may fit the observed direction.',
+          60,
+          3,
+          2,
+          2,
+          3,
+          5,
+          7,
+          80,
+          80,
+          80,
+          75,
+          60,
+          80,
+          80,
+          78,
+          100,
+          'global-radar-score-v1',
+          'global-radar-momentum-v1',
+          true,
+          '2026-07-29T10:00:00Z',
+          'en',
+          'codex_public_web',
+          'global-radar-v1',
+          ${hash},
+          'global-radar-dedupe-v1',
+          ${runId},
+          ${runId}
+        )
+      `).rejects.toMatchObject({
+        code: "23514",
+        constraint_name: "global_radar_signals_class_matrix_check",
+      });
+    });
+  });
 });

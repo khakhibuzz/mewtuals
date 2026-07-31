@@ -851,6 +851,7 @@ export const globalRadarSignals = pgTable(
         AND ${table.momentumQualificationGatesPassed} IS NULL
       ) OR (
         ${table.signalClass} = 'ecosystem_momentum'
+        AND ${table.globalEntityId} IS NULL
         AND ${table.directDemandScore} IS NULL
         AND ${table.precursorScore} IS NULL
         AND ${table.demandExplicitness} IS NULL
