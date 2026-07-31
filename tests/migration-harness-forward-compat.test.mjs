@@ -23,7 +23,7 @@ function countOccurrences(value, expected) {
 }
 
 test(
-  "a later journal entry preserves the populated 0007 to 0008 Radar migration path",
+  "a later journal entry preserves the populated 0007 through Ecosystem 0008 to Radar 0009 path",
   { timeout: 120_000 },
   async () => {
     const temporaryRoot = await mkdtemp(
@@ -88,7 +88,7 @@ test(
       assert.equal(
         countOccurrences(
           stdout,
-          "Populated 0007 to 0008 Radar path passed with unchanged product, Opportunity Brief, and Discovery V2 fixtures.",
+          "Populated 0007 through Ecosystem 0008 to Radar 0009 passed with unchanged product, Opportunity Brief, Discovery V2, and Ecosystem fixtures.",
         ),
         1,
       );

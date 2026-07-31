@@ -5511,6 +5511,7 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
     );
     const rediscovered = secondBatch.signals[0]!;
     rediscovered.evergreen = true;
+    rediscovered.demandDomain = "spatial_ai_and_3d_data";
     rediscovered.expiresAt = "2026-08-01T00:00:00.000Z";
     rediscovered.reobserveBy = "2026-08-07T00:00:00.000Z";
     rediscovered.factualSummary =
@@ -5536,6 +5537,7 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
       .where(eq(globalRadarSignals.id, created.id));
     expect(updated).toMatchObject({
       status: "qualified",
+      demandDomain: "robot_learning_and_manipulation",
       expiresAt: humanExpiry,
       reobserveBy: new Date("2026-08-07T00:00:00.000Z"),
       revision: 11,

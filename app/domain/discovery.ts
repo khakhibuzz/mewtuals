@@ -415,7 +415,7 @@ export function normalizeDiscoveryUrl(value: string): string {
   return normalized;
 }
 
-function normalizePublicDiscoveryUrl(value: string): string {
+export function normalizePublicDiscoveryUrl(value: string): string {
   return normalizePublicHttpUrl(value, "Discovery URL");
 }
 

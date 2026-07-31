@@ -617,6 +617,22 @@ describe("service worker cache behavior", () => {
     expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
   });
 
+  it("never intercepts or caches Ecosystem Intelligence API responses", async () => {
+    const worker = createWorkerHarness({ fetchResponse: publicShellResponder });
+    await worker.dispatchLifecycle("install");
+    const cachedBefore = [...worker.cache().entries.keys()].sort();
+
+    const result = await worker.dispatchFetch({
+      method: "GET",
+      mode: "cors",
+      url: "https://mewtuals.test/api/admin/ecosystem-intelligence?page=2",
+    });
+
+    expect(result.intercepted).toBe(false);
+    expect(worker.fetchCalls).not.toContain("/api/admin/ecosystem-intelligence?page=2");
+    expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
+  });
+
   it("uses the public root cache offline and the offline document for member routes", async () => {
     let offline = false;
     const worker = createWorkerHarness({
@@ -654,6 +670,28 @@ describe("service worker cache behavior", () => {
     const radar = await worker.dispatchFetch(documentRequest(radarPath));
 
     await expect(radar.response?.text()).resolves.toBe("offline page");
+    expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
+  });
+
+  it("keeps the Ecosystem Intelligence admin page network-only and falls back offline", async () => {
+    let offline = false;
+    const worker = createWorkerHarness({
+      fetchResponse: (pathname) => {
+        if (offline && pathname === "/admin/ecosystem-intelligence") {
+          throw new Error("offline");
+        }
+        return publicShellResponder(pathname);
+      },
+    });
+    await worker.dispatchLifecycle("install");
+    const cachedBefore = [...worker.cache().entries.keys()].sort();
+    offline = true;
+
+    const admin = await worker.dispatchFetch(
+      documentRequest("/admin/ecosystem-intelligence"),
+    );
+
+    await expect(admin.response?.text()).resolves.toBe("offline page");
     expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
   });
 

@@ -61,8 +61,15 @@
     {
       "idx": 8,
       "version": "7",
-      "when": 1785435082094,
-      "tag": "0008_global_demand_radar",
+      "when": 1785340057910,
+      "tag": "0008_ecosystem_intelligence_v1",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785486179122,
+      "tag": "0009_global_demand_radar",
       "breakpoints": true
     }
   ]

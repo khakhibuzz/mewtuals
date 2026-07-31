@@ -9,9 +9,21 @@ const runtimeDir = join(projectRoot, ".local-postgres");
 const dataDir = join(runtimeDir, "data");
 const logFile = join(runtimeDir, "postgres.log");
 const host = "127.0.0.1";
-const port = "55432";
+const port = localDatabasePort(process.env.MEWTUALS_LOCAL_DATABASE_PORT);
 const databaseNames = ["mewtuals", "mewtuals_test"];
 const primaryDatabaseName = databaseNames[0];
+
+function localDatabasePort(value) {
+  const candidate = value ?? "55432";
+  if (!/^\d{1,5}$/.test(candidate)) {
+    throw new Error("MEWTUALS_LOCAL_DATABASE_PORT must be a valid TCP port.");
+  }
+  const parsed = Number(candidate);
+  if (parsed < 1024 || parsed > 65535) {
+    throw new Error("MEWTUALS_LOCAL_DATABASE_PORT must be between 1024 and 65535.");
+  }
+  return candidate;
+}
 
 function run(command, args, { capture = false, allowFailure = false } = {}) {
   const result = spawnSync(command, args, {

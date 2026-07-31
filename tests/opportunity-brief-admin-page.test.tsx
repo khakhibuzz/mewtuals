@@ -260,6 +260,10 @@ describe("administrator navigation", () => {
       ["app/admin/verifications/page.tsx", 'current="verification-queue"'],
       ["app/admin/opportunity-briefs/page.tsx", 'current="opportunity-briefs"'],
       ["app/admin/discovery/page.tsx", 'current="india-discovery"'],
+      [
+        "app/admin/ecosystem-intelligence/page.tsx",
+        'current="ecosystem-intelligence"',
+      ],
     ] as const;
 
     for (const [path, current] of expectations) {

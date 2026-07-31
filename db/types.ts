@@ -1,4 +1,8 @@
 import type {
+  candidateEcosystemClassifications,
+  candidateHeadquarters,
+  candidatePublicSignals,
+  candidateRelationships,
   candidateResearchVersions,
   discoveryCandidateIdentifiers,
   discoveryCandidates,
@@ -107,3 +111,13 @@ export type CandidateResearchVersion =
   typeof candidateResearchVersions.$inferSelect;
 export type NewCandidateResearchVersion =
   typeof candidateResearchVersions.$inferInsert;
+export type CandidateEcosystemClassification =
+  typeof candidateEcosystemClassifications.$inferSelect;
+export type NewCandidateEcosystemClassification =
+  typeof candidateEcosystemClassifications.$inferInsert;
+export type CandidateHeadquarters = typeof candidateHeadquarters.$inferSelect;
+export type NewCandidateHeadquarters = typeof candidateHeadquarters.$inferInsert;
+export type CandidatePublicSignal = typeof candidatePublicSignals.$inferSelect;
+export type NewCandidatePublicSignal = typeof candidatePublicSignals.$inferInsert;
+export type CandidateRelationship = typeof candidateRelationships.$inferSelect;
+export type NewCandidateRelationship = typeof candidateRelationships.$inferInsert;

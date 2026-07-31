@@ -11,6 +11,7 @@ const expectedDestinations = [
   ["Verification Queue", "/admin/verifications"],
   ["Opportunity Briefs", "/admin/opportunity-briefs"],
   ["India Discovery", "/admin/discovery"],
+  ["Ecosystem Intelligence", "/admin/ecosystem-intelligence"],
   ["Global Demand Radar", "/admin/global-demand-radar/direct-demand"],
 ] as const;
 
@@ -22,6 +23,7 @@ describe("AdminShell", () => {
           "verification-queue",
           "opportunity-briefs",
           "india-discovery",
+          "ecosystem-intelligence",
           "global-demand-radar",
         ][index],
         label,
@@ -57,6 +59,7 @@ describe("AdminShell", () => {
     "verification-queue",
     "opportunity-briefs",
     "india-discovery",
+    "ecosystem-intelligence",
     "global-demand-radar",
   ] satisfies AdminDestination[])("marks exactly one current destination for %s", (current) => {
     render(

@@ -430,8 +430,9 @@ git commit -m "feat: configure global radar securely"
 - Modify: `tests/schema.test.ts`
 - Rename: `scripts/test-discovery-migrations.mjs` to `scripts/test-migrations.mjs`
 - Modify: `package.json`
-- Create: generated `drizzle/0008_global_demand_radar.sql`
-- Create: generated `drizzle/meta/0008_snapshot.json`
+- Create: generated `drizzle/0009_global_demand_radar.sql` after the deployed
+  Ecosystem Intelligence `0008` baseline
+- Create: generated `drizzle/meta/0009_snapshot.json`
 - Modify: `drizzle/meta/_journal.json`
 
 Keep the existing 554-line core schema readable: add only `radar_promotion` to `discoveryRunTriggerEnum` in `db/schema.ts`, define Radar-owned objects in `db/global-radar-schema.ts`, make `drizzle.config.ts` load both files, and compose both schema objects in `db/client.ts`. `db/index.ts` re-exports both modules. This preserves core-table ownership while avoiding an eleven-table monolith.
@@ -511,11 +512,24 @@ Run:
 npm run db:generate -- --name global_demand_radar
 ```
 
-Expected: exactly one ordered `0008_global_demand_radar.sql` plus matching journal/snapshot. Inspect, rather than hand-writing metadata, for `ALTER TYPE discovery_run_trigger ADD VALUE 'radar_promotion'`, every enum/table/check/FK/index, and no dropped or repurposed existing object.
+Expected: exactly one ordered `0009_global_demand_radar.sql` after
+`0008_ecosystem_intelligence_v1.sql`, plus matching journal/snapshot. Inspect,
+rather than hand-writing metadata, for `ALTER TYPE discovery_run_trigger ADD
+VALUE 'radar_promotion'`, every enum/table/check/FK/index, and no dropped or
+repurposed existing object.
 
 - [ ] **Step 5: Generalize the migration harness**
 
-Rename the harness and preserve its allowlisted-database/ownership-marker safety. Test three isolated paths: fresh through `0008`; the existing populated `0003 -> 0004` Discovery path; and populated `0007 -> 0008` with users, sessions, profiles, verification reviews, Opportunity Brief requests, Discovery runs, candidates, identifiers, sources, campaign keys, and candidate research versions. Read ordered journal entries rather than hard-coding the total. Assert all previous fixture values and Discovery constraints survive, `0008` applies once, eleven Radar tables exist, and the Discovery trigger adds only `radar_promotion`. Run twice to prove cleanup/idempotency.
+Rename the harness and preserve its allowlisted-database/ownership-marker
+safety. Test three isolated paths: fresh through `0009`; the existing populated
+`0003 -> 0004` Discovery path; and populated `0007 -> Ecosystem 0008 -> Radar
+0009` with users, sessions, profiles, verification reviews, Opportunity Brief
+requests, Discovery runs, candidates, identifiers, sources, campaign keys,
+candidate research versions, and Ecosystem Intelligence rows. Read ordered
+journal entries rather than hard-coding the total. Assert all previous fixture
+values and Discovery/Ecosystem constraints survive, `0008` and `0009` each
+apply once, eleven Radar tables exist, and the Discovery trigger adds only
+`radar_promotion`. Run twice to prove cleanup/idempotency.
 
 ```bash
 npm run test:migrations

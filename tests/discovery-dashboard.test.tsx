@@ -6,6 +6,7 @@ import {
   DiscoveryDashboard,
   type DiscoveryDashboardSnapshot,
 } from "../app/components/product/DiscoveryDashboard";
+import { CandidateReviewActions } from "../app/components/product/CandidateReviewActions";
 
 const snapshot: DiscoveryDashboardSnapshot = {
   summary: {
@@ -126,6 +127,55 @@ function populatedSnapshot(
 }
 
 describe("discovery dashboard", () => {
+  it("exposes shared review actions with the existing labels and disabled contract", () => {
+    render(
+      <CandidateReviewActions
+        candidateId={candidate.id}
+        candidateName={candidate.name}
+        status="shortlisted"
+        updatedAt={candidate.updatedAt}
+        disabled
+        onUpdated={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Shortlist Aster Labs" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reject Aster Labs" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Queue Aster Labs for profile" }),
+    ).toBeDisabled();
+  });
+
+  it("keeps every review status label human-readable", () => {
+    const statuses = [
+      ["discovered", "Discovered"],
+      ["shortlisted", "Shortlisted"],
+      ["rejected", "Rejected"],
+      ["queued_for_profile", "Queued For Profile"],
+    ] as const;
+    render(
+      <DiscoveryDashboard
+        snapshot={populatedSnapshot({
+          items: statuses.map(([status], index) => ({
+            ...candidate,
+            id: `17ca68ae-8840-4fa2-a5e0-951963f028d${index}`,
+            name: `Candidate ${index + 1}`,
+            status,
+          })),
+          total: statuses.length,
+        })}
+        filters={{}}
+      />,
+    );
+
+    const table = screen.getByRole("table", { name: "Discovered candidates" });
+    for (const [status, statusLabel] of statuses) {
+      expect(table.querySelector(`[data-status="${status}"]`)).toHaveTextContent(
+        statusLabel,
+      );
+    }
+  });
+
   it("exposes the candidate UUID in the detail drawer for manual linking", async () => {
     const user = userEvent.setup();
     render(<DiscoveryDashboard snapshot={populatedSnapshot()} filters={{}} />);

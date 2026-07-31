@@ -158,6 +158,8 @@ export function createPersistableGlobalRadarScoreInputDigest(
       effectiveFrom: signal.effectiveFrom,
       observedAt: signal.observedAt,
       expiresAt: signal.expiresAt,
+      evergreen: signal.evergreen,
+      reobserveBy: signal.reobserveBy,
     },
     responsePath:
       signal.responsePath === null
@@ -259,6 +261,8 @@ export function createStoredGlobalRadarScoreInputDigest(input: Readonly<{
       effectiveFrom: signal.effectiveFrom?.toISOString() ?? null,
       observedAt: signal.observedAt.toISOString(),
       expiresAt: signal.expiresAt?.toISOString() ?? null,
+      evergreen: signal.evergreen,
+      reobserveBy: signal.reobserveBy?.toISOString() ?? null,
     },
     responsePath:
       signal.responsePathType === null &&

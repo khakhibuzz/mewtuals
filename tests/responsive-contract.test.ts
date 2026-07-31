@@ -14,6 +14,13 @@ const globalRadarCss = readFileSync(
   ),
   "utf8",
 );
+const ecosystemCss = readFileSync(
+  resolve(
+    process.cwd(),
+    "app/components/product/ecosystem-intelligence/ecosystem-intelligence.module.css",
+  ),
+  "utf8",
+);
 
 function mobileBlock(source: string, query = "@media (max-width: 767px)") {
   const start = source.indexOf(query);
@@ -210,5 +217,29 @@ describe("Global Demand Radar responsive contract", () => {
       "min-width: 44px",
       "min-height: 44px",
     ]);
+  });
+});
+
+describe("Ecosystem Intelligence responsive contract", () => {
+  it("uses contained rails, touch-sized controls, mobile records, and a viewport-bound drawer", () => {
+    const mobile = mobileBlock(ecosystemCss);
+    expect(mobile).not.toBe("");
+    expect(ecosystemCss).toContain(".workspace button,");
+    expect(ecosystemCss).toContain("min-height: 2.75rem;");
+    expect(ecosystemCss).toContain(".matrixRail {");
+    expect(ecosystemCss).toContain("overflow-x: auto;");
+    expect(ecosystemCss).toContain(".ledgerTableWrap {");
+    expect(ecosystemCss).toContain(".candidateDrawer {");
+    expect(ecosystemCss).toContain("height: 100dvh;");
+    expect(ecosystemCss).toContain("overflow-wrap: anywhere;");
+    expect(mobile).toContain(".mapPanel {");
+    expect(mobile).toContain("display: none;");
+    expect(mobile).toContain(".ledgerTableWrap {");
+    expect(mobile).toContain(".ledgerRecords {");
+    expect(mobile).toContain("display: grid;");
+    expectRule(mobile, ".ledgerRecords a", ["min-width: 2.75rem", "min-height: 2.75rem"]);
+    expect(mobile).toContain(".candidateDrawer {");
+    expect(mobile).toContain("width: 100vw;");
+    expectRule(mobile, ".breadcrumb a", ["min-width: 2.75rem", "min-height: 2.75rem"]);
   });
 });

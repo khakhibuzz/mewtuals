@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DiscoveryResearchContext } from "../app/components/product/DiscoveryResearchContext";
+import { CandidateResearchHistory } from "../app/components/product/CandidateResearchHistory";
 
 const latest = {
   id: "00000000-0000-4000-8000-000000000101",
@@ -22,6 +23,16 @@ const older = {
   summary: "Earlier systems-context summary.",
   findings: "Earlier findings remain available as an immutable version.",
   createdAt: "2026-07-21T06:00:00.000Z",
+};
+
+const oldest = {
+  ...older,
+  id: "00000000-0000-4000-8000-000000000105",
+  discoveryRunId: "00000000-0000-4000-8000-000000000106",
+  summary: "Oldest systems-context summary.",
+  findings: "Oldest immutable findings.",
+  sourceUrls: ["https://archive.example.org/aster"],
+  createdAt: "2026-07-14T06:00:00.000Z",
 };
 
 function response(body: unknown, init?: ResponseInit): Response {
@@ -45,6 +56,26 @@ afterEach(() => {
 });
 
 describe("discovery research context", () => {
+  it("labels received research as evidence-backed and missing research as unknown", () => {
+    const { rerender } = render(
+      <CandidateResearchHistory
+        candidateName="Aster Labs"
+        research={{ latest, history: [older] }}
+      />,
+    );
+
+    expect(screen.getByText("Evidence-backed")).toBeVisible();
+    expect(screen.getByText(latest.summary)).toBeVisible();
+
+    rerender(
+      <CandidateResearchHistory
+        candidateName="Aster Labs"
+        research={{ latest: null, history: [] }}
+      />,
+    );
+    expect(screen.getByText("Unknown")).toBeVisible();
+  });
+
   it("loads lazily and keeps findings and past versions collapsed", async () => {
     const fetchMock = vi.fn(async () =>
       response({
@@ -94,6 +125,47 @@ describe("discovery research context", () => {
         element?.tagName === "PRE" && element.textContent === older.findings,
       ),
     ).toBeVisible();
+  });
+
+  it("keeps newest-first history labels and public source links unchanged", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        response({
+          ok: true,
+          research: {
+            candidateId: "candidate-1",
+            latest,
+            history: [older, oldest],
+          },
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+
+    render(
+      <DiscoveryResearchContext candidateId="candidate-1" candidateName="Aster Labs" />,
+    );
+    await screen.findByText(latest.summary);
+    await user.click(screen.getByRole("button", { name: "History (2)" }));
+
+    expect(
+      screen.getAllByRole("button", { name: /View research from/ }).map((button) =>
+        button.textContent,
+      ),
+    ).toEqual([
+      "Latest28 Jul 2026, 06:00 UTC",
+      "Version 221 Jul 2026, 06:00 UTC",
+      "Version 114 Jul 2026, 06:00 UTC",
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Show findings" }));
+    expect(
+      screen.getByRole("link", { name: "Research source 1 for Aster Labs" }),
+    ).toHaveAttribute("href", latest.sourceUrls[0]);
+    expect(
+      screen.getByRole("link", { name: "Research source 2 for Aster Labs" }),
+    ).toHaveAttribute("href", latest.sourceUrls[1]);
   });
 
   it("renders no research section when the candidate has no research versions", async () => {

@@ -200,6 +200,8 @@ export type GlobalRadarScoreInputDigestInput = Readonly<{
     effectiveFrom: string | null;
     observedAt: string;
     expiresAt: string | null;
+    evergreen: boolean | null;
+    reobserveBy: string | null;
   }>;
   responsePath: Readonly<{
     type: string;

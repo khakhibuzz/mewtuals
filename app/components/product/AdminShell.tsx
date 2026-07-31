@@ -19,6 +19,11 @@ export const ADMIN_DESTINATIONS = [
     label: "India Discovery",
   },
   {
+    id: "ecosystem-intelligence",
+    href: "/admin/ecosystem-intelligence",
+    label: "Ecosystem Intelligence",
+  },
+  {
     id: "global-demand-radar",
     href: "/admin/global-demand-radar/direct-demand",
     label: "Global Demand Radar",

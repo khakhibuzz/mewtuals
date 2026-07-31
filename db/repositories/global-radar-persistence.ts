@@ -1098,6 +1098,7 @@ async function createFullPrefixWorkerRefreshValues(
     entityIds: ReadonlyMap<string, string>;
     requiredIndiaFitEvidenceFingerprints: ReadonlySet<string>;
     scoreInputStatus: GlobalRadarSignal["status"];
+    reobserveBy: string | null;
   }>,
 ): Promise<typeof globalRadarSignals.$inferInsert> {
   const evidence = await transaction
@@ -1255,6 +1256,7 @@ async function createFullPrefixWorkerRefreshValues(
   const scoreInputSignal = {
     ...input.existing,
     ...proposed,
+    demandDomain: input.existing.demandDomain,
     status: input.scoreInputStatus,
     announcedAt: input.signal.announcedAt
       ? new Date(input.signal.announcedAt)
@@ -1264,6 +1266,9 @@ async function createFullPrefixWorkerRefreshValues(
       : null,
     observedAt: new Date(input.signal.observedAt),
     expiresAt: input.existing.expiresAt,
+    evergreen: input.existing.evergreen,
+    reobserveBy:
+      input.reobserveBy === null ? null : new Date(input.reobserveBy),
     scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
     momentumPolicyVersion:
       input.signal.signalClass === "ecosystem_momentum"
@@ -1299,6 +1304,7 @@ async function rebindPreservedAdministratorScoreEvidenceSnapshot(
   input: Readonly<{
     existing: GlobalRadarSignal;
     observedAt: Date;
+    reobserveBy: string | null;
   }>,
 ) {
   const currentComponents = storedScoreComponents(input.existing);
@@ -1411,7 +1417,12 @@ async function rebindPreservedAdministratorScoreEvidenceSnapshot(
   try {
     scoreInputDigest = createStoredGlobalRadarScoreInputDigest({
       scoreAsOf: new Date(snapshot.scoreAsOf),
-      signal: { ...input.existing, observedAt: input.observedAt },
+      signal: {
+        ...input.existing,
+        observedAt: input.observedAt,
+        reobserveBy:
+          input.reobserveBy === null ? null : new Date(input.reobserveBy),
+      },
       actionabilityInput,
       associations,
       entities,
@@ -1868,30 +1879,6 @@ async function persistSignals(
         const preserveAdministratorNoIndiaFit =
           hasAdministratorNoIndiaFit &&
           !supersedeAdministratorNoIndiaFit;
-        const refreshValues = isNewer
-          ? preserveAdministratorNoIndiaFit
-            ? {
-                ...proposed,
-                scoreEvidenceSnapshot:
-                  await rebindPreservedAdministratorScoreEvidenceSnapshot(
-                    transaction,
-                    { existing, observedAt: latestObservedAt },
-                  ),
-              }
-            : await createFullPrefixWorkerRefreshValues(transaction, {
-                existing,
-                signal,
-                proposed,
-                entityIds,
-                requiredIndiaFitEvidenceFingerprints:
-                  supersedingIndiaEvidenceFingerprints,
-                scoreInputStatus: supersedeAdministratorNoIndiaFit
-                  ? existing.status === "promoted"
-                    ? "promoted"
-                    : "needs_review"
-                  : existing.status,
-              })
-          : proposed;
         const reobservation =
           existing.signalClass === "direct_demand" &&
           signal.signalClass === "direct_demand" &&
@@ -1913,6 +1900,35 @@ async function persistSignals(
         if (!reobservation.valid) {
           throw new GlobalRadarPersistenceConflict("invalid_input");
         }
+        const refreshValues = isNewer
+          ? preserveAdministratorNoIndiaFit
+            ? {
+                ...proposed,
+                scoreEvidenceSnapshot:
+                  await rebindPreservedAdministratorScoreEvidenceSnapshot(
+                    transaction,
+                    {
+                      existing,
+                      observedAt: latestObservedAt,
+                      reobserveBy: reobservation.reobserveBy,
+                    },
+                  ),
+              }
+            : await createFullPrefixWorkerRefreshValues(transaction, {
+                existing,
+                signal,
+                proposed,
+                entityIds,
+                requiredIndiaFitEvidenceFingerprints:
+                  supersedingIndiaEvidenceFingerprints,
+                scoreInputStatus: supersedeAdministratorNoIndiaFit
+                  ? existing.status === "promoted"
+                    ? "promoted"
+                    : "needs_review"
+                  : existing.status,
+                reobserveBy: reobservation.reobserveBy,
+              })
+          : proposed;
         const [updated] = await transaction
           .update(globalRadarSignals)
           .set({

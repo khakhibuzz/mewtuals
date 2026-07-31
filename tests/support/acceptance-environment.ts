@@ -5,11 +5,39 @@ export const LOCAL_APP_DATABASE_URL =
 export const LOCAL_TEST_DATABASE_URL =
   "postgresql://127.0.0.1:55432/mewtuals_test";
 
+function requiredUnprivilegedPort(
+  environmentName: "MEWTUALS_LOCAL_APP_PORT" | "MEWTUALS_LOCAL_DATABASE_PORT",
+  defaultPort: string,
+) {
+  const configuredPort = process.env[environmentName]?.trim();
+  if (!configuredPort) {
+    return defaultPort;
+  }
+
+  const portNumber = Number(configuredPort);
+  if (
+    !/^\d+$/.test(configuredPort) ||
+    !Number.isSafeInteger(portNumber) ||
+    portNumber < 1024 ||
+    portNumber > 65_535
+  ) {
+    throw new Error(
+      `${environmentName} must be an unprivileged TCP port from 1024 to 65535.`,
+    );
+  }
+
+  return configuredPort;
+}
+
 function requireLocalDatabaseUrl(
   value: string | undefined,
   databaseName: string,
   label: string,
 ) {
+  const requiredPort = requiredUnprivilegedPort(
+    "MEWTUALS_LOCAL_DATABASE_PORT",
+    "55432",
+  );
   let url: URL | undefined;
   try {
     url = value ? new URL(value) : undefined;
@@ -21,13 +49,13 @@ function requireLocalDatabaseUrl(
     !url ||
     !["postgres:", "postgresql:"].includes(url.protocol) ||
     url.hostname !== "127.0.0.1" ||
-    url.port !== "55432" ||
+    url.port !== requiredPort ||
     url.pathname !== `/${databaseName}` ||
     url.search ||
     url.hash
   ) {
     throw new Error(
-      `This command requires the ${label} at 127.0.0.1:55432/${databaseName}. Refusing the configured DATABASE_URL.`,
+      `This command requires the ${label} at 127.0.0.1:${requiredPort}/${databaseName}. Refusing the configured DATABASE_URL.`,
     );
   }
   return value;
@@ -50,6 +78,10 @@ export function requireLocalTestDatabaseUrl(value: string | undefined) {
 }
 
 export function requireLoopbackBaseUrl(value: string | undefined) {
+  const requiredPort = requiredUnprivilegedPort(
+    "MEWTUALS_LOCAL_APP_PORT",
+    "4000",
+  );
   if (!value) {
     throw new Error("PLAYWRIGHT_BASE_URL must be an exact loopback URL.");
   }
@@ -66,7 +98,7 @@ export function requireLoopbackBaseUrl(value: string | undefined) {
   if (
     url.protocol !== "http:" ||
     !loopback ||
-    url.port !== "4000" ||
+    url.port !== requiredPort ||
     url.pathname !== "/" ||
     url.search ||
     url.hash ||
@@ -74,7 +106,7 @@ export function requireLoopbackBaseUrl(value: string | undefined) {
     url.password
   ) {
     throw new Error(
-      "PLAYWRIGHT_BASE_URL must be an exact loopback origin on port 4000.",
+      `PLAYWRIGHT_BASE_URL must be an exact loopback origin on port ${requiredPort}.`,
     );
   }
 

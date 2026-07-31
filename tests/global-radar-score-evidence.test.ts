@@ -9,6 +9,7 @@ import {
   createGlobalRadarScoreInputDigest,
   hasValidActiveScoreEvidenceCitations,
   parseActiveScoreEvidenceSnapshot,
+  type GlobalRadarScoreInputDigestInput,
   type ScoreEvidenceSource,
 } from "../app/domain/global-radar";
 import {
@@ -48,6 +49,8 @@ const scoreInputFacts = Object.freeze({
     effectiveFrom: "2026-07-30T00:00:00.000Z",
     observedAt: "2026-07-31T00:00:00.000Z",
     expiresAt: "2026-08-31T00:00:00.000Z",
+    evergreen: false,
+    reobserveBy: null,
   },
   responsePath: {
     type: "supplier_or_partner_registration",
@@ -82,7 +85,7 @@ const scoreInputFacts = Object.freeze({
   ],
   scorePolicyVersion: GLOBAL_RADAR_SCORE_VERSION,
   momentumPolicyVersion: null,
-});
+} satisfies GlobalRadarScoreInputDigestInput);
 
 function directEvidence() {
   return {
@@ -156,6 +159,20 @@ describe("Global Radar active score-evidence snapshots", () => {
         temporalAnchors: {
           ...scoreInputFacts.temporalAnchors,
           effectiveFrom: "2026-07-30T00:00:01.000Z",
+        },
+      },
+      {
+        ...scoreInputFacts,
+        temporalAnchors: {
+          ...scoreInputFacts.temporalAnchors,
+          evergreen: true,
+        },
+      },
+      {
+        ...scoreInputFacts,
+        temporalAnchors: {
+          ...scoreInputFacts.temporalAnchors,
+          reobserveBy: "2026-08-07T00:00:00.000Z",
         },
       },
       {
