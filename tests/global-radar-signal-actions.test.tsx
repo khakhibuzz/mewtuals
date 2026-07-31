@@ -815,6 +815,138 @@ describe("Global Radar signal actions", () => {
     );
   });
 
+  it("reverses a refreshed momentum promotion for its persisted non-first contributor", async () => {
+    const user = userEvent.setup();
+    const secondContributorId = "00000000-0000-4000-8000-000000000021";
+    const associatedOrganisations = [
+      {
+        id: RADAR_ASSOCIATED_ENTITY_ID,
+        canonicalName: "Fictional Partner Example",
+        revision: 8,
+      },
+      {
+        id: secondContributorId,
+        canonicalName: "Second Momentum Contributor",
+        revision: 11,
+      },
+    ];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "promoted",
+        promotion: { id: "00000000-0000-4000-8000-000000000010" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "found",
+        detail: globalRadarDetailFixture({
+          signalClass: "ecosystem_momentum",
+          status: "promoted",
+          revision: 5,
+          includePrimaryOrganisation: false,
+          includePromotion: true,
+          allowedActions: ["reverse_promotion"],
+          associatedOrganisations,
+          promotionEntityId: secondContributorId,
+          promotedEntityRevision: 12,
+        }),
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "reversed",
+        promotion: { id: "00000000-0000-4000-8000-000000000010" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "found",
+        detail: globalRadarDetailFixture({
+          signalClass: "ecosystem_momentum",
+          status: "qualified",
+          revision: 6,
+          includePrimaryOrganisation: false,
+          allowedActions: ["promote"],
+          associatedOrganisations,
+        }),
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderDetail({
+      signalClass: "ecosystem_momentum",
+      status: "qualified",
+      allowedActions: ["promote"],
+      includePrimaryOrganisation: false,
+      associatedOrganisations,
+    });
+
+    await user.selectOptions(
+      screen.getByLabelText("Promotion entity"),
+      secondContributorId,
+    );
+    await user.selectOptions(
+      screen.getByLabelText("Eligibility path"),
+      "documented_indian_relationship",
+    );
+    await user.type(
+      screen.getByLabelText("Promotion reason"),
+      "Promote the second reviewed momentum contributor.",
+    );
+    await user.type(
+      screen.getByLabelText("Promotion rationale"),
+      "Public relationship evidence supports the selected contributor.",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Promote to India Discovery" }),
+    );
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `/api/admin/global-demand-radar/entities/${secondContributorId}/promotions`,
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining(`"entityId":"${secondContributorId}"`),
+      }),
+    );
+    expect(await screen.findByRole("button", {
+      name: "Reverse promotion",
+    })).toBeVisible();
+    const reversalGroup = screen.getByRole("group", {
+      name: "Reverse Radar promotion",
+    });
+    const lockedIdentity = within(reversalGroup).queryByText(
+      /Promotion entity \(locked\): Second Momentum Contributor/,
+    )?.textContent;
+    await user.type(
+      screen.getByLabelText("Reversal reason"),
+      "The selected contributor promotion is no longer current.",
+    );
+    await user.click(
+      screen.getByLabelText("Confirm Discovery candidate preservation"),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Reverse promotion" }),
+    );
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `/api/admin/global-demand-radar/entities/${secondContributorId}/promotions/reverse`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          entityId: secondContributorId,
+          expectedEntityRevision: 12,
+          expectedPrimarySignalRevision: 4,
+          idempotencyKey: IDEMPOTENCY_KEY,
+          reason: "The selected contributor promotion is no longer current.",
+        }),
+      }),
+    );
+    expect(lockedIdentity).toContain(
+      `Promotion entity (locked): Second Momentum Contributor · ${secondContributorId}`,
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Promotion reversed. The Discovery candidate remains intact.",
+    );
+  });
+
   it("requires explicit reversal preservation confirmation and states that Discovery remains intact", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn()

@@ -126,6 +126,14 @@ type DetailOptions = {
   includePrimaryOrganisation?: boolean;
   entityStatus?: string;
   associatedEntityStatus?: string;
+  associatedOrganisations?: readonly Readonly<{
+    id: string;
+    canonicalName: string;
+    revision: number;
+    entityStatus?: string;
+  }>[];
+  promotionEntityId?: string;
+  promotedEntityRevision?: number;
   notes?: readonly Record<string, unknown>[];
 };
 
@@ -151,6 +159,27 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
       options.associatedEntityStatus ??
       options.entityStatus ??
       organisation.entityStatus,
+  };
+  const associatedOrganisations = options.associatedOrganisations?.map(
+    (entity) => ({
+      ...organisation,
+      ...entity,
+      entityStatus:
+        entity.entityStatus ??
+        options.associatedEntityStatus ??
+        options.entityStatus ??
+        organisation.entityStatus,
+    }),
+  ) ?? [associatedEntity];
+  const activePromotion = {
+    ...promotion,
+    globalEntityId: options.promotionEntityId ?? promotion.globalEntityId,
+    revisionContext: {
+      ...promotion.revisionContext,
+      promotedEntity:
+        options.promotedEntityRevision ??
+        promotion.revisionContext.promotedEntity,
+    },
   };
   const scoreComponents = signalClass === "direct_demand"
     ? {
@@ -193,15 +222,13 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
         primary:
           options.includePrimaryOrganisation === false ? null : primaryEntity,
         associated: {
-          total: 1,
+          total: associatedOrganisations.length,
           truncated: false,
-          items: [
-            {
-              role: "contributor",
-              confidence: 75,
-              organisation: associatedEntity,
-            },
-          ],
+          items: associatedOrganisations.map((associatedOrganisation) => ({
+            role: "contributor",
+            confidence: 75,
+            organisation: associatedOrganisation,
+          })),
         },
       },
     },
@@ -448,7 +475,7 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
       data: {
         notes: { total: adminNotes.length, truncated: false, items: adminNotes },
         watchlist: options.includeWatchlist ? watchlist : null,
-        promotion: options.includePromotion ? promotion : null,
+        promotion: options.includePromotion ? activePromotion : null,
         allowedActions,
       },
     },

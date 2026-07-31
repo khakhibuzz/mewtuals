@@ -90,14 +90,29 @@ export function GlobalRadarPromotionActions({
   const [selectedQualificationEntityId, setSelectedQualificationEntityId] =
     useState("");
   const [qualificationReason, setQualificationReason] = useState("");
-  const selectedEntity = promotionEntities.find(
+  const selectedPromotionEntity = promotionEntities.find(
     ({ id }) => id === selectedEntityId,
   ) ?? promotionEntities[0] ?? null;
-  const entityId =
-    selectedEntity && typeof selectedEntity.id === "string"
-      ? selectedEntity.id
+  const promotionEntityId =
+    selectedPromotionEntity &&
+    typeof selectedPromotionEntity.id === "string"
+      ? selectedPromotionEntity.id
       : null;
-  const entityRevision = numberValue(selectedEntity?.revision, -1);
+  const promotionEntityRevision = numberValue(
+    selectedPromotionEntity?.revision,
+    -1,
+  );
+  const persistedPromotionEntityId =
+    typeof promotion.globalEntityId === "string"
+      ? promotion.globalEntityId
+      : null;
+  const reversalEntity = promotionEntities.find(
+    ({ id }) => id === persistedPromotionEntityId,
+  ) ?? null;
+  const reversalEntityId =
+    reversalEntity && typeof reversalEntity.id === "string"
+      ? reversalEntity.id
+      : null;
   const selectedQualificationEntity = qualifiableEntities.find(
     ({ id }) => id === selectedQualificationEntityId,
   ) ?? qualifiableEntities[0] ?? null;
@@ -142,7 +157,7 @@ export function GlobalRadarPromotionActions({
 
   function promote() {
     const selected = supportingSignals(supporting);
-    if (!entityId || entityRevision < 0 || selected === null ||
+    if (!promotionEntityId || promotionEntityRevision < 0 || selected === null ||
         selected.some(({ signalId }) => signalId === detail.id) ||
         !promotionReason.trim() || !rationale.trim() ||
         `${promotionReason.trim()}\nRationale: ${rationale.trim()}`.length > 2_000) {
@@ -151,17 +166,17 @@ export function GlobalRadarPromotionActions({
     }
     run({
       key: "promote",
-      path: `/api/admin/global-demand-radar/entities/${entityId}/promotions`,
+      path: `/api/admin/global-demand-radar/entities/${promotionEntityId}/promotions`,
       method: "POST",
       responseMode: "refresh",
       successOutcomes: ["promoted", "replayed"],
       successMessage: "Promoted to India Discovery.",
       body: {
-        entityId,
+        entityId: promotionEntityId,
         primarySignalId: detail.id,
         supportingSignalIds: selected.map(({ signalId }) => signalId),
         eligibilityPath,
-        expectedEntityRevision: entityRevision,
+        expectedEntityRevision: promotionEntityRevision,
         expectedPrimarySignalRevision: detail.revision,
         expectedSupportingSignalRevisions: selected,
         idempotencyKey: globalThis.crypto.randomUUID(),
@@ -174,20 +189,20 @@ export function GlobalRadarPromotionActions({
   function reverse() {
     const promotedEntityRevision = numberValue(revisionContext.promotedEntity, -1);
     const promotedPrimaryRevision = numberValue(revisionContext.promotedPrimarySignal, -1);
-    if (!entityId || promotedEntityRevision < 0 || promotedPrimaryRevision < 0 ||
+    if (!reversalEntityId || promotedEntityRevision < 0 || promotedPrimaryRevision < 0 ||
         !reversalReason.trim() || !reversalConfirmed) {
       validationError("Confirm preservation and provide a reversal reason.");
       return;
     }
     run({
       key: "reverse-promotion",
-      path: `/api/admin/global-demand-radar/entities/${entityId}/promotions/reverse`,
+      path: `/api/admin/global-demand-radar/entities/${reversalEntityId}/promotions/reverse`,
       method: "POST",
       responseMode: "refresh",
       successOutcomes: ["reversed", "replayed"],
       successMessage: "Promotion reversed. The Discovery candidate remains intact.",
       body: {
-        entityId,
+        entityId: reversalEntityId,
         expectedEntityRevision: promotedEntityRevision,
         expectedPrimarySignalRevision: promotedPrimaryRevision,
         idempotencyKey: globalThis.crypto.randomUUID(),
@@ -249,8 +264,8 @@ export function GlobalRadarPromotionActions({
           <fieldset disabled={pending}>
             <legend>Controlled promotion</legend>
             <p>Primary signal: {detail.id} · revision {detail.revision}</p>
-            <label><span>Promotion entity</span><select onChange={(event) => setSelectedEntityId(event.target.value)} value={entityId ?? ""}>{promotionEntities.map((entity) => <option key={String(entity.id)} value={String(entity.id)}>{text(entity.canonicalName)}</option>)}</select></label>
-            <p>Entity revision: {entityRevision}</p>
+            <label><span>Promotion entity</span><select onChange={(event) => setSelectedEntityId(event.target.value)} value={promotionEntityId ?? ""}>{promotionEntities.map((entity) => <option key={String(entity.id)} value={String(entity.id)}>{text(entity.canonicalName)}</option>)}</select></label>
+            <p>Entity revision: {promotionEntityRevision}</p>
             <label><span>Supporting signals (UUID:revision, one per line)</span><textarea onChange={(event) => setSupporting(event.target.value)} value={supporting} /></label>
             <label><span>Eligibility path</span><select onChange={(event) => setEligibilityPath(event.target.value as (typeof promotionEligibilityPaths)[number])} value={eligibilityPath}>{promotionEligibilityPaths.map((path) => <option key={path} value={path}>{displayLabel(path)}</option>)}</select></label>
             <label><span>Promotion reason</span><textarea maxLength={2_000} onChange={(event) => setPromotionReason(event.target.value)} required value={promotionReason} /></label>
@@ -264,6 +279,11 @@ export function GlobalRadarPromotionActions({
           <fieldset disabled={pending}>
             <legend>Reverse Radar promotion</legend>
             <p>This reverses the Radar promotion linkage and status. The Discovery candidate remains intact.</p>
+            <p>
+              Promotion entity (locked): {reversalEntityId
+                ? `${text(reversalEntity?.canonicalName)} · ${reversalEntityId}`
+                : "Unavailable in the current safe detail"}
+            </p>
             <label><span>Reversal reason</span><textarea maxLength={2_000} onChange={(event) => setReversalReason(event.target.value)} required value={reversalReason} /></label>
             <label className={styles.confirmation}><input checked={reversalConfirmed} onChange={(event) => setReversalConfirmed(event.target.checked)} type="checkbox" /><span>Confirm Discovery candidate preservation</span></label>
             <button type="submit">Reverse promotion</button>
