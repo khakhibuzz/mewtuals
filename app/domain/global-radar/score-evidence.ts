@@ -179,8 +179,6 @@ type EvidenceSelector = Readonly<{
   expectedBasis: ScoreEvidenceBasis;
   rationale: string;
   match(path: string): boolean;
-  citeAllEvidence?: boolean;
-  fallbackToAllEvidence?: boolean;
 }>;
 
 const allEvidenceSelector = (
@@ -188,8 +186,7 @@ const allEvidenceSelector = (
 ): EvidenceSelector => ({
   expectedBasis: "server_derived",
   rationale,
-  match: () => false,
-  citeAllEvidence: true,
+  match: () => true,
 });
 
 function workerEvidenceSelector(component: WorkerScoredComponent): EvidenceSelector {
@@ -205,6 +202,7 @@ function workerEvidenceSelector(component: WorkerScoredComponent): EvidenceSelec
 function directEvidenceSelector(
   component: (typeof directDemandScoreEvidenceComponents)[number],
   signalType: string,
+  indiaRelevanceType: string,
 ): EvidenceSelector {
   if (directDemandWorkerScoredComponents.includes(
     component as DirectDemandWorkerScoredComponent,
@@ -218,12 +216,14 @@ function directEvidenceSelector(
         rationale:
           "Server-derived from public evidence for the classified direct-demand ask.",
         match: (path) => path === `directDemandAsk.${signalType}`,
-        fallbackToAllEvidence: true,
       };
     case "evidenceConfidence":
-      return allEvidenceSelector(
-        "Server-derived from the confidence of qualifying public evidence.",
-      );
+      return {
+        expectedBasis: "server_derived",
+        rationale:
+          "Server-derived from the confidence of public evidence for the classified direct-demand ask.",
+        match: (path) => path === `directDemandAsk.${signalType}`,
+      };
     case "freshness":
       return {
         expectedBasis: "server_derived",
@@ -231,15 +231,13 @@ function directEvidenceSelector(
           "Server-derived from cited signal dates or the earliest dated public evidence.",
         match: (path) =>
           path === "signal.announcedAt" || path === "signal.effectiveFrom",
-        fallbackToAllEvidence: true,
       };
     case "indiaFit":
       return {
         expectedBasis: "server_derived",
         rationale:
           "Server-derived from public evidence supporting the assessed India relevance.",
-        match: (path) => path.startsWith("indiaRelevance."),
-        fallbackToAllEvidence: true,
+        match: (path) => path.startsWith(`indiaRelevance.${indiaRelevanceType}.`),
       };
     case "responseAccessibility":
       return {
@@ -250,7 +248,6 @@ function directEvidenceSelector(
           ["responsePath", "professionalResponsePath", "publicResponsePath"].includes(
             path,
           ),
-        fallbackToAllEvidence: true,
       };
   }
   throw new Error(`Unsupported direct score component: ${component}`);
@@ -258,6 +255,8 @@ function directEvidenceSelector(
 
 function precursorEvidenceSelector(
   component: (typeof precursorScoreEvidenceComponents)[number],
+  signalType: string,
+  indiaRelevanceType: string,
 ): EvidenceSelector {
   if (precursorWorkerScoredComponents.includes(
     component as PrecursorWorkerScoredComponent,
@@ -266,16 +265,18 @@ function precursorEvidenceSelector(
   }
   switch (component) {
     case "evidenceConfidence":
-      return allEvidenceSelector(
-        "Server-derived from the confidence of qualifying public evidence.",
-      );
+      return {
+        expectedBasis: "server_derived",
+        rationale:
+          "Server-derived from the confidence of public evidence for the classified precursor development.",
+        match: (path) => path === `precursorDevelopment.${signalType}`,
+      };
     case "indiaFit":
       return {
         expectedBasis: "server_derived",
         rationale:
           "Server-derived from public evidence supporting the assessed India relevance.",
-        match: (path) => path.startsWith("indiaRelevance."),
-        fallbackToAllEvidence: true,
+        match: (path) => path.startsWith(`indiaRelevance.${indiaRelevanceType}.`),
       };
     case "estimatedTimeHorizon":
       return {
@@ -283,7 +284,6 @@ function precursorEvidenceSelector(
         rationale:
           "Server-derived from the cited effective date or the dated public evidence record.",
         match: (path) => path === "signal.effectiveFrom",
-        fallbackToAllEvidence: true,
       };
   }
   throw new Error(`Unsupported precursor score component: ${component}`);
@@ -325,16 +325,20 @@ function selectorForComponent(
   signalClass: ScoreEvidenceSignalClass,
   component: ScoreEvidenceComponent,
   signalType: string,
+  indiaRelevanceType: string,
 ): EvidenceSelector {
   if (signalClass === "direct_demand") {
     return directEvidenceSelector(
       component as (typeof directDemandScoreEvidenceComponents)[number],
       signalType,
+      indiaRelevanceType,
     );
   }
   if (signalClass === "demand_precursor") {
     return precursorEvidenceSelector(
       component as (typeof precursorScoreEvidenceComponents)[number],
+      signalType,
+      indiaRelevanceType,
     );
   }
   return momentumEvidenceSelector(
@@ -348,20 +352,14 @@ function selectedCitations(
 ): readonly ScoreComponentEvidenceCitation[] {
   const directlyMatched = evidence.flatMap((source) => {
     const matchedFieldPaths = source.supportedFieldPaths
-      .filter((path) => selector.citeAllEvidence || selector.match(path))
+      .filter((path) => selector.match(path))
       .slice(0, MAX_SCORE_COMPONENT_MATCHED_FIELD_PATHS);
-    return matchedFieldPaths.length > 0 || selector.citeAllEvidence
+    return matchedFieldPaths.length > 0
       ? [{ source, matchedFieldPaths }]
       : [];
   });
-  const selected =
-    directlyMatched.length > 0
-      ? directlyMatched
-      : selector.fallbackToAllEvidence
-        ? evidence.map((source) => ({ source, matchedFieldPaths: [] as string[] }))
-        : [];
   return Object.freeze(
-    selected
+    directlyMatched
       .slice(0, MAX_SCORE_COMPONENT_EVIDENCE_CITATIONS)
       .map(({ source, matchedFieldPaths }) =>
         Object.freeze({
@@ -377,6 +375,7 @@ function selectedCitations(
 export function deriveScoreComponentEvidenceAssociations(input: Readonly<{
   signalClass: ScoreEvidenceSignalClass;
   signalType: string;
+  indiaRelevanceType: string;
   components: Readonly<Record<string, unknown>>;
   evidence: readonly ScoreEvidenceSource[];
 }>): readonly ScoreComponentEvidenceAssociation[] {
@@ -388,6 +387,7 @@ export function deriveScoreComponentEvidenceAssociations(input: Readonly<{
         input.signalClass,
         component,
         input.signalType,
+        input.indiaRelevanceType,
       );
       const evidence = selectedCitations(selector, input.evidence);
       if (evidence.length === 0) {
@@ -406,4 +406,28 @@ export function deriveScoreComponentEvidenceAssociations(input: Readonly<{
       ];
     }),
   );
+}
+
+export function hasCompleteScoreComponentEvidenceAssociations(
+  input: Readonly<{
+    signalClass: ScoreEvidenceSignalClass;
+    signalType: string;
+    indiaRelevanceType: string;
+    components: Readonly<Record<string, unknown>>;
+    evidence: readonly ScoreEvidenceSource[];
+  }>,
+): boolean {
+  return componentNamesForClass(input.signalClass).every((component) => {
+    const value = input.components[component];
+    if (typeof value !== "number" || !Number.isFinite(value)) return true;
+    return selectedCitations(
+      selectorForComponent(
+        input.signalClass,
+        component,
+        input.signalType,
+        input.indiaRelevanceType,
+      ),
+      input.evidence,
+    ).length > 0;
+  });
 }

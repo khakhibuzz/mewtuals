@@ -648,6 +648,10 @@ export function serializeGlobalRadarSignalDetail(value: unknown) {
   const componentEvidence = deriveScoreComponentEvidenceAssociations({
     signalClass,
     signalType: readString(signal.signalType, "signal type"),
+    indiaRelevanceType: readString(
+      signal.indiaRelevanceType,
+      "India relevance type",
+    ),
     components: activeScore,
     evidence: evidence.items.map(scoreEvidenceSource),
   });

@@ -19,6 +19,7 @@ import {
   createGlobalRadarFingerprint,
   createGlobalRadarSignalDedupeKeyFromIdentityAnchors,
   globalRadarDemandFamilyLookup,
+  hasCompleteScoreComponentEvidenceAssociations,
   isoTimestampSchema,
   missingMomentumWorkerScoredMetricEvidencePaths,
   missingWorkerScoredComponentEvidencePaths,
@@ -1261,8 +1262,11 @@ export function createGlobalRadarAdminRepository(
               runId: globalSignalEvidence.runId,
               globalEntityId: globalSignalEvidence.globalEntityId,
               evidenceFingerprint: globalSignalEvidence.evidenceFingerprint,
+              sourceUrl: globalSignalEvidence.sourceUrl,
+              sourceName: globalSignalEvidence.sourceName,
               canonicalSourceUrl: globalSignalEvidence.canonicalSourceUrl,
               sourceFamily: globalSignalEvidence.sourceFamily,
+              publishedAt: globalSignalEvidence.publishedAt,
               observedAt: globalSignalEvidence.observedAt,
               isPrimarySource: globalSignalEvidence.isPrimarySource,
               isSyndicated: globalSignalEvidence.isSyndicated,
@@ -1297,6 +1301,25 @@ export function createGlobalRadarAdminRepository(
                 evidence,
               });
         if (missingScoreEvidencePaths.length > 0) {
+          return { outcome: "classification_requirements_not_met" as const };
+        }
+        if (
+          classification.signalClass !== "ecosystem_momentum" &&
+          !hasCompleteScoreComponentEvidenceAssociations({
+            signalClass: classification.signalClass,
+            signalType: classification.signalType,
+            indiaRelevanceType: signal.indiaRelevanceType,
+            components: classification.components,
+            evidence: evidence.map(
+              ({ id, sourceUrl, sourceName, supportedFieldPaths }) => ({
+                id,
+                sourceUrl,
+                sourceName,
+                supportedFieldPaths,
+              }),
+            ),
+          })
+        ) {
           return { outcome: "classification_requirements_not_met" as const };
         }
         const targetGraph = createGlobalRadarClassificationGraph({
@@ -1341,19 +1364,40 @@ export function createGlobalRadarAdminRepository(
           ({ isPrimarySource, isSyndicated }) =>
             isPrimarySource && !isSyndicated,
         );
+        const exactSubtypePath =
+          classification.signalClass === "direct_demand"
+            ? `directDemandAsk.${classification.signalType}`
+            : classification.signalClass === "demand_precursor"
+              ? `precursorDevelopment.${classification.signalType}`
+              : null;
         if (
           classification.signalClass === "direct_demand" &&
           (requirements.length === 0 ||
             !evidence.some(
-              ({ isPrimarySource, isSyndicated, supportsDirectDemand }) =>
-                isPrimarySource && !isSyndicated && supportsDirectDemand,
+              ({
+                isPrimarySource,
+                isSyndicated,
+                supportsDirectDemand,
+                supportedFieldPaths,
+              }) =>
+                isPrimarySource &&
+                !isSyndicated &&
+                supportsDirectDemand &&
+                supportedFieldPaths.includes(exactSubtypePath!),
             ))
         ) {
           return { outcome: "classification_requirements_not_met" as const };
         }
         if (
           classification.signalClass === "demand_precursor" &&
-          (requirements.length === 0 || !primaryPublicEvidence)
+          (requirements.length === 0 ||
+            !primaryPublicEvidence ||
+            !evidence.some(
+              ({ publishedAt, supportedFieldPaths }) =>
+                publishedAt !== null &&
+                publishedAt <= canonical.now &&
+                supportedFieldPaths.includes(exactSubtypePath!),
+            ))
         ) {
           return { outcome: "classification_requirements_not_met" as const };
         }

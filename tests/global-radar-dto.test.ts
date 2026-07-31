@@ -431,7 +431,10 @@ describe("Global Radar DTO serializers", () => {
     ).toBe(true);
     expect(
       scoreSection.componentEvidence.every(
-        ({ basis, evidence }) => basis !== "unlinked" && evidence.length > 0,
+        ({ basis, evidence }) =>
+          basis !== "unlinked" &&
+          evidence.length > 0 &&
+          evidence.every(({ matchedFieldPaths }) => matchedFieldPaths.length > 0),
       ),
     ).toBe(true);
     const serializedAssociations = JSON.stringify(
@@ -481,7 +484,7 @@ describe("Global Radar DTO serializers", () => {
       componentEvidence: Array<{
         component: string;
         basis: string;
-        evidence: unknown[];
+        evidence: Array<{ matchedFieldPaths: string[] }>;
       }>;
     };
 
@@ -514,7 +517,10 @@ describe("Global Radar DTO serializers", () => {
     );
     expect(
       scoreSection.componentEvidence.every(
-        ({ evidence }) => evidence.length > 0 && evidence.length <= 10,
+        ({ evidence }) =>
+          evidence.length > 0 &&
+          evidence.length <= 10 &&
+          evidence.every(({ matchedFieldPaths }) => matchedFieldPaths.length > 0),
       ),
     ).toBe(true);
     expect(
@@ -550,6 +556,7 @@ describe("Global Radar DTO serializers", () => {
       "signal.factualSummary",
       "signal.effectiveFrom",
       "precursorDevelopment.deployment",
+      "indiaRelevance.no_current_India_fit.requirement_access",
       "scoreComponents.proximityToExternalDemand",
       "scoreComponents.fundingDeploymentMomentum",
       "scoreComponents.likelyDataHardwareIntensity",
@@ -572,7 +579,8 @@ describe("Global Radar DTO serializers", () => {
       scoreSection.componentEvidence.every(
         ({ basis, evidence }) =>
           ["worker_evidence", "server_derived"].includes(basis) &&
-          evidence.length > 0,
+          evidence.length > 0 &&
+          evidence.every(({ matchedFieldPaths }) => matchedFieldPaths.length > 0),
       ),
     ).toBe(true);
     expect(scoreSection.componentEvidence).toEqual(
@@ -580,13 +588,28 @@ describe("Global Radar DTO serializers", () => {
         expect.objectContaining({
           component: "indiaFit",
           basis: "server_derived",
-          evidence: [expect.objectContaining({ matchedFieldPaths: [] })],
+          evidence: [
+            expect.objectContaining({
+              matchedFieldPaths: [
+                "indiaRelevance.no_current_India_fit.requirement_access",
+              ],
+            }),
+          ],
         }),
         expect.objectContaining({
           component: "strategicRelevance",
           basis: "worker_evidence",
         }),
       ]),
+    );
+  });
+
+  it("refuses unrelated fallback evidence for an active score component", () => {
+    const detail = detailReadModel();
+    detail.signal.signalType = "procurement";
+
+    expect(() => serializeGlobalRadarSignalDetail(detail)).toThrow(
+      "Missing public evidence association for active score component: demandExplicitness",
     );
   });
 

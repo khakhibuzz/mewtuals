@@ -5420,6 +5420,56 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     expect(await signalWriteSnapshot(signal.id)).toEqual(before);
   });
 
+  it("rejects direct reclassification without exact subtype evidence", async () => {
+    const signal = await persistedDirect("direct-subtype-provenance", (batch) => {
+      batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
+        ...directWorkerScorePaths,
+        "signal.announcedAt",
+        "signal.effectiveFrom",
+        "indiaRelevance.explicit_India.collection",
+        "responsePath",
+      );
+    });
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "monitoring" })
+      .where(eq(globalRadarSignals.id, signal.id));
+    const before = await signalWriteSnapshot(signal.id);
+
+    await expect(
+      adminService().editClassification(actor, signal.id, {
+        ...serviceEnvelope(0, "9011"),
+        classification: {
+          signalClass: "direct_demand",
+          signalType: "procurement",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            explicitness: 90,
+            evidenceConfidence: 85,
+            freshness: 80,
+            actionability: 80,
+            indiaFit: 75,
+            commercialPotential: 75,
+            repeatability: 70,
+            responseAccessibility: 70,
+            strategicLearning: 70,
+            complianceComplexity: 20,
+          },
+          activity: {
+            evergreen: false,
+            expiresAt: "2026-09-30T00:00:00.000Z",
+            reobserveBy: null,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "classification_requirements_not_met",
+      httpStatus: 409,
+    });
+    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
+  });
+
   it("rejects unsupported precursor scores without writes or qualification", async () => {
     const signal = await persistedDirect("precursor-score-provenance", (batch) => {
       const direct = batch.signals[0];
@@ -5472,6 +5522,49 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     ).resolves.toEqual({
       outcome: "conflict",
       reason: "qualification_requirements_not_met",
+      httpStatus: 409,
+    });
+    expect(await signalWriteSnapshot(signal.id)).toEqual(before);
+  });
+
+  it("rejects precursor reclassification without exact subtype evidence", async () => {
+    const signal = await persistedDirect(
+      "precursor-subtype-provenance",
+      (batch) => {
+        batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
+          ...precursorWorkerScorePaths,
+          "signal.effectiveFrom",
+          "indiaRelevance.explicit_India.collection",
+        );
+      },
+    );
+    await db
+      .update(globalRadarSignals)
+      .set({ status: "monitoring" })
+      .where(eq(globalRadarSignals.id, signal.id));
+    const before = await signalWriteSnapshot(signal.id);
+
+    await expect(
+      adminService().editClassification(actor, signal.id, {
+        ...serviceEnvelope(0, "9021"),
+        classification: {
+          signalClass: "demand_precursor",
+          signalType: "funding",
+          demandDomain: "robot_learning_and_manipulation",
+          components: {
+            evidenceConfidence: 80,
+            proximityToExternalDemand: 70,
+            fundingDeploymentMomentum: 80,
+            likelyDataHardwareIntensity: 70,
+            indiaFit: 80,
+            estimatedTimeHorizon: 80,
+            strategicRelevance: 75,
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      outcome: "conflict",
+      reason: "classification_requirements_not_met",
       httpStatus: 409,
     });
     expect(await signalWriteSnapshot(signal.id)).toEqual(before);
@@ -5773,6 +5866,12 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
       batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
         ...directWorkerScorePaths,
         ...precursorWorkerScorePaths,
+        "directDemandAsk.procurement",
+        "precursorDevelopment.funding",
+        "signal.announcedAt",
+        "signal.effectiveFrom",
+        "indiaRelevance.explicit_India.collection",
+        "responsePath",
       );
     });
     const expiry = await adminRepository.editDirectDemandExpiry({
@@ -6003,6 +6102,9 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
     batch.signals[0]!.evidence[0]!.supportedFieldPaths.push(
       ...precursorWorkerScorePaths,
       ...momentumWorkerScorePaths,
+      "precursorDevelopment.funding",
+      "signal.effectiveFrom",
+      "indiaRelevance.inferred_India_compatible.requirement_access",
     );
     batch = rehashPersistenceBatch(batch);
     const completed = await repository.completeRun({

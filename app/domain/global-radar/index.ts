@@ -345,6 +345,7 @@ export {
   deriveScoreComponentEvidenceAssociations,
   directDemandScoreEvidenceComponents,
   directDemandWorkerScoredComponents,
+  hasCompleteScoreComponentEvidenceAssociations,
   isMomentumWorkerScoredMetricEvidencePath,
   isWorkerScoredComponentEvidencePath,
   missingMomentumWorkerScoredMetricEvidencePaths,
