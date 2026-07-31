@@ -1205,6 +1205,8 @@ describe("Global Demand Radar release-suite selection", () => {
       "tests/discovery.acceptance.integration.test.ts",
       "tests/opportunity-brief-repository.integration.test.ts",
       "tests/opportunity-brief.acceptance.integration.test.ts",
+      "tests/ecosystem-intelligence-import.integration.test.ts",
+      "tests/ecosystem-intelligence-repository.integration.test.ts",
       "tests/migration-harness-forward-compat.test.mjs",
       "tests/e2e/**",
     ]) {
@@ -1219,6 +1221,8 @@ describe("Global Demand Radar release-suite selection", () => {
       "tests/global-radar-schema.integration.test.ts",
       "tests/global-radar-db.integration.test.ts",
       "tests/global-radar-promotion-db.integration.test.ts",
+      "tests/ecosystem-intelligence-import.integration.test.ts",
+      "tests/ecosystem-intelligence-repository.integration.test.ts",
     ]) {
       expect(scripts["test:db"], databaseTest).toContain(databaseTest);
     }
@@ -1231,13 +1235,15 @@ describe("Global Demand Radar release-suite selection", () => {
       "tests/opportunity-brief-repository.integration.test.ts",
       "tests/opportunity-brief.acceptance.integration.test.ts",
       "tests/global-radar.acceptance.integration.test.ts",
+      "tests/ecosystem-intelligence-import.integration.test.ts",
+      "tests/ecosystem-intelligence-repository.integration.test.ts",
     ]) {
       expect(scripts["test:acceptance"], acceptanceTest).toContain(
         acceptanceTest,
       );
     }
     expect(scripts["test:e2e"]).toBe(
-      "playwright test tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts tests/e2e/opportunity-brief.spec.ts tests/e2e/global-radar.spec.ts",
+      "playwright test tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts tests/e2e/opportunity-brief.spec.ts tests/e2e/ecosystem-intelligence.spec.ts tests/e2e/global-radar.spec.ts",
     );
     expect(scripts["test:migrations"]).toBe(
       "npm run db:start && npm run test:migrations:forward && node scripts/test-migrations.mjs",
