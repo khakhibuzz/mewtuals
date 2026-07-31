@@ -486,6 +486,14 @@ export function createGlobalRadarRunService(
     };
   }
 
+  function maintenanceConflict(run?: unknown) {
+    return {
+      outcome: "conflict" as const,
+      reason: "maintenance_failed" as const,
+      ...(run ? { run: serializeGlobalRadarRun(run) } : {}),
+    };
+  }
+
   async function complete(
     authorization: GlobalRadarWorkerAuthorization | null,
     value: unknown,
@@ -530,8 +538,16 @@ export function createGlobalRadarRunService(
       planFingerprint: planFingerprint.data,
       batchFingerprint,
     });
+    if (replay.outcome === "replayed") {
+      const replayedAt = now();
+      if (!validDate(replayedAt)) return { outcome: "invalid" as const };
+      return (await runMaintenance(replayedAt))
+        ? mutationResult(replay)
+        : maintenanceConflict(replay.run);
+    }
     if (replay.outcome !== "not_terminal") return mutationResult(replay);
     const completedAt = now();
+    if (!validDate(completedAt)) return { outcome: "invalid" as const };
     let batch: GlobalRadarValidatedBatchPort;
     try {
       batch = dependencies.validateBatch(input.batch, {
@@ -550,17 +566,22 @@ export function createGlobalRadarRunService(
     ) {
       return { outcome: "invalid" as const };
     }
-    return mutationResult(
-      await dependencies.repository.completeRun({
-        runId: runId.data,
-        leaseToken: leaseToken.data,
-        planFingerprint: batch.planFingerprint,
-        submissionHash: batch.canonicalSubmissionHash,
-        batchFingerprint,
-        now: completedAt,
-        batch,
-      }),
-    );
+    const completed = await dependencies.repository.completeRun({
+      runId: runId.data,
+      leaseToken: leaseToken.data,
+      planFingerprint: batch.planFingerprint,
+      submissionHash: batch.canonicalSubmissionHash,
+      batchFingerprint,
+      now: completedAt,
+      batch,
+    });
+    if (
+      (completed.outcome === "completed" || completed.outcome === "replayed") &&
+      !(await runMaintenance(completedAt))
+    ) {
+      return maintenanceConflict(completed.run);
+    }
+    return mutationResult(completed);
   }
 
   async function fail(

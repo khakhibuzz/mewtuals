@@ -555,6 +555,7 @@ export const globalRadarWorkerConflictReasons = [
   "completion_identity_mismatch",
   "entity_identity_conflict",
   "invalid_plan",
+  "maintenance_failed",
   "not_found",
 ] as const;
 

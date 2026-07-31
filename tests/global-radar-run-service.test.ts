@@ -142,12 +142,13 @@ function createService(
   repository: GlobalRadarRunRepositoryPort,
   validateBatch = vi.fn(),
   serviceConfig: GlobalRadarConfig = config,
+  clock: () => Date = () => NOW,
 ) {
   return createGlobalRadarRunService({
     repository,
     config: serviceConfig,
     adminEmails: ["admin@example.com"],
-    now: () => NOW,
+    now: clock,
     validateBatch,
     workerOutputSchema: {
       schemaId: "global-radar-rich-worker-proposal-v1",
@@ -551,6 +552,115 @@ describe("Global Radar run service", () => {
         submissionHash: validated.canonicalSubmissionHash,
       }),
     );
+  });
+
+  it("projects completed evidence through maintenance and recovers by exact replay", async () => {
+    const replayedAt = new Date("2026-07-31T04:05:00.000Z");
+    const repeatedAt = new Date("2026-07-31T04:10:00.000Z");
+    const validated: GlobalRadarValidatedBatchPort = {
+      runId: "00000000-0000-4000-8000-000000000010",
+      planFingerprint: "b".repeat(64),
+      canonicalSubmissionHash: "c".repeat(64),
+      executedQueries: [],
+      entities: [],
+      signals: [],
+      sourceErrors: [],
+      rejections: {},
+    };
+    const terminalRun = safeRun({
+      status: "succeeded",
+      completedAt: NOW,
+      planFingerprint: validated.planFingerprint,
+    });
+    const callOrder: string[] = [];
+    let replayLookups = 0;
+    let expiryAttempts = 0;
+    const repository = repositoryDouble({
+      lookupCompletionReplay: vi.fn(async () => {
+        replayLookups += 1;
+        return replayLookups === 1
+          ? {
+              outcome: "not_terminal" as const,
+              plannedThresholds: PLANNED_THRESHOLDS,
+            }
+          : { outcome: "replayed" as const, run: terminalRun };
+      }),
+      completeRun: vi.fn(async () => {
+        callOrder.push("complete");
+        return { outcome: "completed" as const, run: terminalRun };
+      }),
+      expireDirectDemand: vi.fn(async ({ now }) => {
+        callOrder.push(`expire:${now.toISOString()}`);
+        expiryAttempts += 1;
+        return expiryAttempts === 1
+          ? { outcome: "conflict" as const, reason: "invalid_input" as const }
+          : { outcome: "completed" as const, expired: 0 };
+      }),
+      recomputeMomentum: vi.fn(async ({ now, policy }) => {
+        callOrder.push(`momentum:${now.toISOString()}:${policy.taxonomy}`);
+        return {
+          outcome: "completed" as const,
+          recomputed: 0,
+          unchanged: 0,
+        };
+      }),
+    });
+    const validateBatch = vi.fn(() => validated);
+    const clock = vi
+      .fn<() => Date>()
+      .mockReturnValueOnce(NOW)
+      .mockReturnValueOnce(replayedAt)
+      .mockReturnValueOnce(repeatedAt);
+    const service = createService(repository, validateBatch, config, clock);
+    const authorization = service.authorizeWorker(
+      `Bearer ${config.workerSecret}`,
+    );
+    const request = {
+      runId: validated.runId,
+      leaseToken: "raw-lease-token",
+      batch: {
+        schemaVersion: "global-radar-batch-v1",
+        promptVersion: "codex-public-web-v1",
+        taxonomyVersion: "global-radar-v1",
+        runId: validated.runId,
+        planFingerprint: validated.planFingerprint,
+        executedQueries: [],
+        entities: [],
+        sourceErrors: [],
+        signals: [],
+      },
+    };
+
+    await expect(service.complete(authorization, request)).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "maintenance_failed",
+      run: { status: "succeeded" },
+    });
+    await expect(service.complete(authorization, request)).resolves.toMatchObject({
+      outcome: "replayed",
+      run: { status: "succeeded" },
+    });
+    await expect(service.complete(authorization, request)).resolves.toMatchObject({
+      outcome: "replayed",
+      run: { status: "succeeded" },
+    });
+    expect(repository.completeRun).toHaveBeenCalledTimes(1);
+    expect(validateBatch).toHaveBeenCalledTimes(1);
+    expect(repository.recomputeMomentum).toHaveBeenCalledTimes(
+      globalRadarDemandFamilies.length * 2,
+    );
+    expect(callOrder).toEqual([
+      "complete",
+      `expire:${NOW.toISOString()}`,
+      `expire:${replayedAt.toISOString()}`,
+      ...globalRadarDemandFamilies.map(
+        (taxonomy) => `momentum:${replayedAt.toISOString()}:${taxonomy}`,
+      ),
+      `expire:${repeatedAt.toISOString()}`,
+      ...globalRadarDemandFamilies.map(
+        (taxonomy) => `momentum:${repeatedAt.toISOString()}:${taxonomy}`,
+      ),
+    ]);
   });
 
   it("validates a fresh completion with immutable planned thresholds after runtime config drift", async () => {

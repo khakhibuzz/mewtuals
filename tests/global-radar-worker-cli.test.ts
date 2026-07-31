@@ -496,6 +496,7 @@ describe("Global Radar worker CLI response safety", () => {
       "completion_identity_mismatch",
       "entity_identity_conflict",
       "invalid_plan",
+      "maintenance_failed",
       "not_found",
     ]);
 
@@ -504,6 +505,7 @@ describe("Global Radar worker CLI response safety", () => {
       "completion_identity_mismatch",
       "entity_identity_conflict",
       "invalid_plan",
+      "maintenance_failed",
       "not_found",
     ]) {
       const result = await runCommand(
