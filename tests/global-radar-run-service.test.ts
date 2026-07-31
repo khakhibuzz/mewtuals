@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   GLOBAL_RADAR_SCORE_VERSION,
+  createGlobalRadarMomentumPolicy,
   generateGlobalRadarQueries,
+  globalRadarDemandFamilies,
   globalRadarLeafIdentifiers,
   globalRadarSourceFamilies,
   globalRadarThemes,
@@ -123,6 +125,15 @@ function repositoryDouble(
     completeRun: vi.fn(),
     failRun: vi.fn(),
     abandonRun: vi.fn(),
+    expireDirectDemand: vi.fn(async () => ({
+      outcome: "completed" as const,
+      expired: 0,
+    })),
+    recomputeMomentum: vi.fn(async () => ({
+      outcome: "completed" as const,
+      recomputed: 0,
+      unchanged: 0,
+    })),
     ...overrides,
   } as GlobalRadarRunRepositoryPort;
 }
@@ -150,6 +161,112 @@ function createService(
 }
 
 describe("Global Radar run service", () => {
+  it("runs all deterministic maintenance at one trusted time before claiming", async () => {
+    const callOrder: string[] = [];
+    const expireDirectDemand = vi.fn(async (input: { now: Date }) => {
+      expect(input.now).toEqual(NOW);
+      callOrder.push("expire");
+      return { outcome: "completed" as const, expired: 0 };
+    });
+    const recomputeMomentum = vi.fn(async (input: {
+      now: Date;
+      policy: ReturnType<typeof createGlobalRadarMomentumPolicy>;
+    }) => {
+      callOrder.push(`momentum:${input.policy.taxonomy}`);
+      return {
+        outcome: "completed" as const,
+        recomputed: 0,
+        unchanged: 0,
+      };
+    });
+    const claimRun = vi.fn(async () => {
+      callOrder.push("claim");
+      return { outcome: "no_work" as const, reason: "active_run" as const };
+    });
+    const repository = repositoryDouble({
+      expireDirectDemand,
+      recomputeMomentum,
+      claimRun,
+    });
+    const service = createService(repository);
+    const authorization = service.authorizeWorker(
+      `Bearer ${config.workerSecret}`,
+    );
+
+    await expect(service.claim(authorization, {})).resolves.toMatchObject({
+      outcome: "no_work",
+      reason: "active_run",
+    });
+    expect(expireDirectDemand).toHaveBeenCalledWith({ now: NOW });
+    expect(recomputeMomentum).toHaveBeenCalledTimes(
+      globalRadarDemandFamilies.length,
+    );
+    expect(recomputeMomentum.mock.calls.map(([input]) => input)).toEqual(
+      globalRadarDemandFamilies.map((taxonomy) => ({
+        now: NOW,
+        policy: createGlobalRadarMomentumPolicy(taxonomy),
+      })),
+    );
+    expect(callOrder).toEqual([
+      "expire",
+      ...globalRadarDemandFamilies.map((taxonomy) => `momentum:${taxonomy}`),
+      "claim",
+    ]);
+  });
+
+  it("does not mutate maintenance state for unauthorized or invalid claims", async () => {
+    const repository = repositoryDouble();
+    const service = createService(repository);
+    const authorization = service.authorizeWorker(
+      `Bearer ${config.workerSecret}`,
+    );
+
+    await expect(service.claim(null, {})).resolves.toEqual({
+      outcome: "unauthorized",
+    });
+    await expect(
+      service.claim(authorization, { scanMode: "manual" }),
+    ).resolves.toEqual({ outcome: "invalid" });
+    expect(repository.expireDirectDemand).not.toHaveBeenCalled();
+    expect(repository.recomputeMomentum).not.toHaveBeenCalled();
+    expect(repository.claimRun).not.toHaveBeenCalled();
+    expect(repository.queueRun).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before claiming when maintenance conflicts or throws", async () => {
+    const conflicted = repositoryDouble({
+      expireDirectDemand: vi.fn(async () => ({
+        outcome: "conflict" as const,
+        reason: "invalid_input" as const,
+      })),
+    });
+    const conflictedService = createService(conflicted);
+    const conflictedAuthorization = conflictedService.authorizeWorker(
+      `Bearer ${config.workerSecret}`,
+    );
+    await expect(
+      conflictedService.claim(conflictedAuthorization, {}),
+    ).resolves.toEqual({ outcome: "conflict", reason: "maintenance_failed" });
+    expect(conflicted.claimRun).not.toHaveBeenCalled();
+    expect(conflicted.queueRun).not.toHaveBeenCalled();
+
+    const failed = repositoryDouble({
+      recomputeMomentum: vi.fn(async () => {
+        throw new Error("database unavailable");
+      }),
+    });
+    const failedService = createService(failed);
+    const failedAuthorization = failedService.authorizeWorker(
+      `Bearer ${config.workerSecret}`,
+    );
+    await expect(failedService.claim(failedAuthorization, {})).resolves.toEqual({
+      outcome: "conflict",
+      reason: "maintenance_failed",
+    });
+    expect(failed.claimRun).not.toHaveBeenCalled();
+    expect(failed.queueRun).not.toHaveBeenCalled();
+  });
+
   it("authenticates the Radar worker and claims already-queued manual work first", async () => {
     const plan = planGlobalRadarRun({
       ...planningInput("manual"),

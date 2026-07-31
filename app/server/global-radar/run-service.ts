@@ -9,7 +9,9 @@ import {
   GLOBAL_RADAR_THRESHOLD_VERSION,
   GLOBAL_RADAR_TAXONOMY_VERSION,
   createGlobalRadarFingerprint,
+  createGlobalRadarMomentumPolicy,
   generateGlobalRadarQueries,
+  globalRadarDemandFamilies,
   globalRadarValidationProposalSchema,
   globalRadarSourceFamilies,
   globalRadarThemes,
@@ -17,6 +19,7 @@ import {
   planGlobalRadarRun,
   type GlobalRadarTheme,
   type GlobalRadarThresholds,
+  type MomentumPolicy,
   type RadarCoverageState,
   type RadarPlan,
   type PersistableGlobalRadarBatch,
@@ -164,6 +167,14 @@ export type GlobalRadarRunRepositoryPort = Readonly<{
     now: Date;
     reason: string;
   }): Promise<RunMutationResult>;
+  expireDirectDemand(input: { now: Date }): Promise<
+    | { outcome: "completed"; expired: number }
+    | { outcome: "conflict"; reason: "invalid_input" }
+  >;
+  recomputeMomentum(input: { now: Date; policy: MomentumPolicy }): Promise<
+    | { outcome: "completed"; recomputed: number; unchanged: number }
+    | { outcome: "conflict"; reason: "invalid_input" }
+  >;
 }>;
 
 export type GlobalRadarPlanningContext = Readonly<{
@@ -268,6 +279,25 @@ export function createGlobalRadarRunService(
       typeof authorization === "object" &&
       authorizations.has(authorization)
     );
+  }
+
+  async function runMaintenance(maintenanceAt: Date): Promise<boolean> {
+    try {
+      const expiry = await dependencies.repository.expireDirectDemand({
+        now: maintenanceAt,
+      });
+      if (expiry.outcome !== "completed") return false;
+      for (const taxonomy of globalRadarDemandFamilies) {
+        const momentum = await dependencies.repository.recomputeMomentum({
+          now: maintenanceAt,
+          policy: createGlobalRadarMomentumPolicy(taxonomy),
+        });
+        if (momentum.outcome !== "completed") return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function buildPlan(
@@ -403,7 +433,15 @@ export function createGlobalRadarRunService(
     if (!authorized(authorization)) return { outcome: "unauthorized" as const };
     const selector = claimSelectorSchema.safeParse(value ?? {});
     if (!selector.success) return { outcome: "invalid" as const };
-    const claimed = await dependencies.repository.claimRun({ now: now() });
+    const claimAt = now();
+    if (!validDate(claimAt)) return { outcome: "invalid" as const };
+    if (!(await runMaintenance(claimAt))) {
+      return {
+        outcome: "conflict" as const,
+        reason: "maintenance_failed" as const,
+      };
+    }
+    const claimed = await dependencies.repository.claimRun({ now: claimAt });
     if (claimed.outcome === "claimed") return claimedResult(claimed);
     if (
       claimed.outcome === "conflict" ||
