@@ -5,6 +5,7 @@ import { useState } from "react";
 import { promotionEligibilityPaths } from "../../domain/global-radar";
 import {
   adminSection,
+  collectionItems,
   displayLabel,
   numberValue,
   primaryOrganisation,
@@ -51,8 +52,25 @@ export function GlobalRadarPromotionActions({
 }) {
   const allowed = new Set(detail.allowedActions);
   const organisation = primaryOrganisation(detail);
-  const entityId = typeof organisation.id === "string" ? organisation.id : null;
-  const entityRevision = numberValue(organisation.revision, -1);
+  const associatedContributors = detail.signalClass === "ecosystem_momentum"
+    ? collectionItems(
+        record(
+          detail.sections.find(({ id }) => id === "organisation")?.data,
+        ).associated,
+      )
+        .filter((item) => item.role === "contributor")
+        .map((item) => record(item.organisation))
+    : [];
+  const promotionEntities = [
+    ...(typeof organisation.id === "string" ? [organisation] : []),
+    ...associatedContributors,
+  ].filter(
+    (entity, index, entities) =>
+      typeof entity.id === "string" &&
+      typeof entity.canonicalName === "string" &&
+      numberValue(entity.revision, -1) >= 0 &&
+      entities.findIndex((candidate) => candidate.id === entity.id) === index,
+  );
   const promotion = record(adminSection(detail).promotion);
   const revisionContext = record(promotion.revisionContext);
   const [supporting, setSupporting] = useState("");
@@ -63,6 +81,15 @@ export function GlobalRadarPromotionActions({
   const [rationale, setRationale] = useState("");
   const [reversalReason, setReversalReason] = useState("");
   const [reversalConfirmed, setReversalConfirmed] = useState(false);
+  const [selectedEntityId, setSelectedEntityId] = useState("");
+  const selectedEntity = promotionEntities.find(
+    ({ id }) => id === selectedEntityId,
+  ) ?? promotionEntities[0] ?? null;
+  const entityId =
+    selectedEntity && typeof selectedEntity.id === "string"
+      ? selectedEntity.id
+      : null;
+  const entityRevision = numberValue(selectedEntity?.revision, -1);
 
   function promote() {
     const selected = supportingSignals(supporting);
@@ -127,7 +154,8 @@ export function GlobalRadarPromotionActions({
           <fieldset disabled={pending}>
             <legend>Controlled promotion</legend>
             <p>Primary signal: {detail.id} · revision {detail.revision}</p>
-            <p>Entity: {text(organisation.canonicalName)} · revision {entityRevision}</p>
+            <label><span>Promotion entity</span><select onChange={(event) => setSelectedEntityId(event.target.value)} value={entityId ?? ""}>{promotionEntities.map((entity) => <option key={String(entity.id)} value={String(entity.id)}>{text(entity.canonicalName)}</option>)}</select></label>
+            <p>Entity revision: {entityRevision}</p>
             <label><span>Supporting signals (UUID:revision, one per line)</span><textarea onChange={(event) => setSupporting(event.target.value)} value={supporting} /></label>
             <label><span>Eligibility path</span><select onChange={(event) => setEligibilityPath(event.target.value as (typeof promotionEligibilityPaths)[number])} value={eligibilityPath}>{promotionEligibilityPaths.map((path) => <option key={path} value={path}>{displayLabel(path)}</option>)}</select></label>
             <label><span>Promotion reason</span><textarea maxLength={2_000} onChange={(event) => setPromotionReason(event.target.value)} required value={promotionReason} /></label>

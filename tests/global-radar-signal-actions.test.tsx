@@ -691,6 +691,71 @@ describe("Global Radar signal actions", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Promoted to India Discovery.");
   });
 
+  it("promotes qualified momentum for an explicitly selected contributor entity", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "promoted",
+        promotion: { id: "00000000-0000-4000-8000-000000000010" },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ok: true,
+        outcome: "found",
+        detail: globalRadarDetailFixture({
+          signalClass: "ecosystem_momentum",
+          status: "promoted",
+          revision: 5,
+          includePrimaryOrganisation: false,
+          includePromotion: true,
+          allowedActions: ["reverse_promotion"],
+        }),
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderDetail({
+      signalClass: "ecosystem_momentum",
+      status: "qualified",
+      allowedActions: ["promote"],
+      includePrimaryOrganisation: false,
+    });
+
+    expect(
+      screen.getByRole("option", { name: "Fictional Partner Example" }),
+    ).toBeVisible();
+    await user.selectOptions(
+      screen.getByLabelText("Promotion entity"),
+      RADAR_ASSOCIATED_ENTITY_ID,
+    );
+    await user.selectOptions(
+      screen.getByLabelText("Eligibility path"),
+      "documented_indian_relationship",
+    );
+    await user.type(
+      screen.getByLabelText("Promotion reason"),
+      "Promote the reviewed momentum contributor.",
+    );
+    await user.type(
+      screen.getByLabelText("Promotion rationale"),
+      "Qualified momentum and public relationship evidence support this contributor.",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Promote to India Discovery" }),
+    );
+
+    expect(JSON.parse(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+    )).toMatchObject({
+      entityId: RADAR_ASSOCIATED_ENTITY_ID,
+      primarySignalId: RADAR_SIGNAL_ID,
+      expectedEntityRevision: 8,
+      expectedPrimarySignalRevision: 4,
+      eligibilityPath: "documented_indian_relationship",
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Promoted to India Discovery.",
+    );
+  });
+
   it("requires explicit reversal preservation confirmation and states that Discovery remains intact", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn()

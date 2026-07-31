@@ -526,6 +526,11 @@ export function createGlobalRadarAdminDetailRepository(
             status: signal.status,
             mergedIntoSignalId: signal.mergedIntoSignalId,
             hasOrganisation: row.organisation !== null,
+            hasPromotionEntity:
+              row.organisation !== null ||
+              associatedOrganisations.some(
+                ({ role }) => role === "contributor",
+              ),
             hasActivePromotion: promotion?.status === "active",
           }),
         },

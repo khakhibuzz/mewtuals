@@ -12,6 +12,7 @@ import {
   globalEntities,
   globalRadarAdminEvents,
   globalRadarPromotions,
+  globalRadarSignalEntities,
   globalRadarSignals,
   globalSignalEvidence,
   globalSignalUpdates,
@@ -206,6 +207,22 @@ async function loadPromotionContext(
   };
 }
 
+function evidenceForPromotionEntity(
+  entityId: string,
+  signals: readonly GlobalRadarSignal[],
+  evidence: readonly GlobalSignalEvidence[],
+): GlobalSignalEvidence[] {
+  const momentumSignalIds = new Set(
+    signals
+      .filter(({ signalClass }) => signalClass === "ecosystem_momentum")
+      .map(({ id }) => id),
+  );
+  return evidence.filter(
+    ({ signalId, globalEntityId }) =>
+      !momentumSignalIds.has(signalId) || globalEntityId === entityId,
+  );
+}
+
 async function readPromotionContext(
   database: MewtualsDatabase,
   input: Readonly<{
@@ -263,7 +280,11 @@ async function readPromotionContext(
       entity,
       primarySignal,
       supportingSignals,
-      evidence,
+      evidence: evidenceForPromotionEntity(
+        entity.id,
+        supportingSignals,
+        evidence,
+      ),
       promotionSupportingSignalIds: input.promotionSupportingSignalIds,
       eligibilityFacts: {
         hasPublicIdentityEvidence: identityProbe !== null,
@@ -367,10 +388,45 @@ function revisionsMatch(
   );
 }
 
-function signalsBelongToEntity(context: PromotionContext): boolean {
+async function signalsBelongToEntity(
+  transaction: DiscoveryTransaction,
+  context: PromotionContext,
+): Promise<boolean> {
+  const associatedMomentumSignalIds = context.supportingSignals
+    .filter(
+      ({ globalEntityId, signalClass }) =>
+        globalEntityId === null && signalClass === "ecosystem_momentum",
+    )
+    .map(({ id }) => id);
+  const contributorMemberships = associatedMomentumSignalIds.length === 0
+    ? []
+    : await transaction
+        .select({ signalId: globalRadarSignalEntities.signalId })
+        .from(globalRadarSignalEntities)
+        .where(
+          and(
+            inArray(
+              globalRadarSignalEntities.signalId,
+              associatedMomentumSignalIds,
+            ),
+            eq(
+              globalRadarSignalEntities.globalEntityId,
+              context.entity.id,
+            ),
+            eq(globalRadarSignalEntities.role, "contributor"),
+          ),
+        );
+  const contributorSignalIds = new Set(
+    contributorMemberships.map(({ signalId }) => signalId),
+  );
   return context.supportingSignals.every(
-    ({ globalEntityId, mergedIntoSignalId }) =>
-      globalEntityId === context.entity.id && mergedIntoSignalId === null,
+    ({ id, globalEntityId, signalClass, mergedIntoSignalId }) =>
+      mergedIntoSignalId === null &&
+      (globalEntityId === context.entity.id ||
+        (globalEntityId === null &&
+          signalClass === "ecosystem_momentum" &&
+          contributorSignalIds.has(id) &&
+          context.evidence.some(({ signalId }) => signalId === id))),
   );
 }
 
@@ -865,7 +921,11 @@ export function createGlobalRadarPromotionRepository(
             entity,
             primarySignal,
             supportingSignals,
-            evidence,
+            evidence: evidenceForPromotionEntity(
+              entity.id,
+              supportingSignals,
+              evidence,
+            ),
           };
           if (activePromotion) {
             return conflictPromotion(
@@ -907,7 +967,7 @@ export function createGlobalRadarPromotionRepository(
               "primary_signal_not_qualified",
             );
           }
-          if (!signalsBelongToEntity(context)) {
+          if (!(await signalsBelongToEntity(transaction, context))) {
             return conflictPromotion(
               transaction,
               input,

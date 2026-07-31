@@ -22,6 +22,7 @@ import {
   globalSignalUpdates,
 } from "../db/global-radar-schema";
 import { createDiscoveryRepository } from "../db/repositories/discovery-repository";
+import { createGlobalRadarAdminRepository } from "../db/repositories/global-radar-admin-repository";
 import { createGlobalRadarPromotionRepository } from "../db/repositories/global-radar-promotion-repository";
 import * as coreSchema from "../db/schema";
 import {
@@ -110,7 +111,10 @@ type SeedOptions = Readonly<{
   entityStatus?: "observed" | "monitoring" | "qualified";
   websiteUrl?: string | null;
   linkedinUrl?: string | null;
-  primaryClass?: "direct_demand" | "demand_precursor";
+  primaryClass?:
+    | "direct_demand"
+    | "demand_precursor"
+    | "ecosystem_momentum";
   primaryIndiaRelevance?:
     | "explicit_India"
     | "existing_India_presence"
@@ -190,13 +194,16 @@ async function seedPromotionFixture(options: SeedOptions = {}) {
     const [signal] = await db
       .insert(globalRadarSignals)
       .values({
-        globalEntityId: entity.id,
+        globalEntityId:
+          signalClass === "ecosystem_momentum" ? null : entity.id,
         signalClass,
         demandDomain: "robot_learning_and_manipulation",
         signalType:
           signalClass === "direct_demand"
             ? "data_collection_request"
-            : "research_or_hiring_pattern",
+            : signalClass === "demand_precursor"
+              ? "research_or_hiring_pattern"
+              : "ecosystem_acceleration",
         title: `Qualified promotion signal ${index + 1}`,
         factualSummary:
           "The organisation published evidence of a current robotics requirement.",
@@ -220,7 +227,8 @@ async function seedPromotionFixture(options: SeedOptions = {}) {
         indiaFitUnknowns: [],
         indiaFitConfidence: 90,
         demandExplicitness: signalClass === "direct_demand" ? 90 : null,
-        evidenceConfidence: 90,
+        evidenceConfidence:
+          signalClass === "ecosystem_momentum" ? null : 90,
         freshness: signalClass === "direct_demand" ? 90 : null,
         actionability: signalClass === "direct_demand" ? 90 : null,
         indiaFit: signalClass === "direct_demand" ? 90 : null,
@@ -238,10 +246,43 @@ async function seedPromotionFixture(options: SeedOptions = {}) {
         estimatedTimeHorizon:
           signalClass === "demand_precursor" ? 80 : null,
         strategicRelevance: signalClass === "demand_precursor" ? 80 : null,
+        momentumIndependentEntityCount:
+          signalClass === "ecosystem_momentum" ? 2 : null,
+        momentumPrimarySourceCount:
+          signalClass === "ecosystem_momentum" ? 2 : null,
+        momentumSourceFamilyCount:
+          signalClass === "ecosystem_momentum" ? 2 : null,
+        momentumVolume7Days:
+          signalClass === "ecosystem_momentum" ? 2 : null,
+        momentumVolume30Days:
+          signalClass === "ecosystem_momentum" ? 4 : null,
+        momentumVolume90Days:
+          signalClass === "ecosystem_momentum" ? 8 : null,
+        momentumIndependentEntityBreadth:
+          signalClass === "ecosystem_momentum" ? 80 : null,
+        momentumPrimarySourceDepth:
+          signalClass === "ecosystem_momentum" ? 80 : null,
+        momentumSourceDiversity:
+          signalClass === "ecosystem_momentum" ? 80 : null,
+        momentumWeightedVolume:
+          signalClass === "ecosystem_momentum" ? 80 : null,
+        momentumGrowthVsPreviousPeriod:
+          signalClass === "ecosystem_momentum" ? 80 : null,
+        momentumTaxonomyConsistency:
+          signalClass === "ecosystem_momentum" ? 85 : null,
+        momentumEvidenceQuality:
+          signalClass === "ecosystem_momentum" ? 90 : null,
         directDemandScore: signalClass === "direct_demand" ? 88 : null,
         precursorScore: signalClass === "demand_precursor" ? 82 : null,
+        momentumScore: signalClass === "ecosystem_momentum" ? 84 : null,
         scoreCoverage: 100,
         scorePolicyVersion: configuration.scoreVersion,
+        momentumPolicyVersion:
+          signalClass === "ecosystem_momentum"
+            ? "global-radar-momentum-v1"
+            : null,
+        momentumQualificationGatesPassed:
+          signalClass === "ecosystem_momentum" ? true : null,
         announcedAt: signalClass === "direct_demand" ? observedAt : null,
         effectiveFrom: signalClass === "direct_demand" ? observedAt : null,
         expiresAt:
@@ -269,6 +310,16 @@ async function seedPromotionFixture(options: SeedOptions = {}) {
       .returning();
     if (!signal) throw new Error("Promotion signal was not created.");
     signals.push(signal);
+  }
+
+  if (primaryClass === "ecosystem_momentum") {
+    await db.insert(globalRadarSignalEntities).values({
+      signalId: signals[0]!.id,
+      globalEntityId: entity.id,
+      role: "contributor",
+      confidence: 95,
+      createdAt: now,
+    });
   }
 
   const sourceUrls =
@@ -356,6 +407,90 @@ describe("Global Demand Radar promotion bridge selection", () => {
 });
 
 describe("Global Demand Radar controlled promotion bridge", () => {
+  it("promotes qualified momentum for a selected contributor and rejects an unrelated entity", async () => {
+    const momentum = await seedPromotionFixture({
+      primaryClass: "ecosystem_momentum",
+      primaryEvidenceSupportsIndia: true,
+      primaryEvidenceSupportedFieldPaths: [
+        "indiaRelevance.existing_India_presence.manufacturing",
+      ],
+    });
+    const unrelated = await seedPromotionFixture();
+    const repository = createGlobalRadarPromotionRepository(db, configuration);
+    const detail = await createGlobalRadarAdminRepository(
+      db,
+      configuration,
+    ).getSignalDetail(momentum.signals[0]!.id);
+    const request = promotionInput(
+      momentum,
+      "documented_indian_relationship",
+    );
+
+    expect(detail).toMatchObject({
+      outcome: "found",
+      detail: {
+        organisation: null,
+        associatedOrganisations: {
+          items: [
+            {
+              role: "contributor",
+              organisation: { id: momentum.entity.id, revision: 0 },
+            },
+          ],
+        },
+        allowedActions: expect.arrayContaining(["promote"]),
+      },
+    });
+
+    await db
+      .update(globalSignalEvidence)
+      .set({ globalEntityId: unrelated.entity.id })
+      .where(eq(globalSignalEvidence.signalId, momentum.signals[0]!.id));
+    await expect(
+      repository.promote({
+        ...request,
+        idempotencyKey: nextIdempotencyKey(),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "signal_entity_mismatch",
+    });
+    await db
+      .update(globalSignalEvidence)
+      .set({ globalEntityId: momentum.entity.id })
+      .where(eq(globalSignalEvidence.signalId, momentum.signals[0]!.id));
+
+    await expect(
+      repository.promote({
+        ...request,
+        globalEntityId: unrelated.entity.id,
+        expectedEntityRevision: unrelated.entity.revision,
+        idempotencyKey: nextIdempotencyKey(),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "conflict",
+      reason: "signal_entity_mismatch",
+    });
+    const promoted = await repository.promote(request);
+    if (promoted.outcome !== "promoted") {
+      throw new Error("Momentum promotion did not complete.");
+    }
+    expect(promoted).toMatchObject({
+      outcome: "promoted",
+      entity: { id: momentum.entity.id, entityStatus: "promoted_to_candidate" },
+      primarySignal: {
+        id: momentum.signals[0]!.id,
+        signalClass: "ecosystem_momentum",
+        status: "promoted",
+      },
+      candidate: {
+        name: momentum.entity.canonicalName,
+        discoveryScore: 84,
+      },
+    });
+    expect(await db.select().from(discoveryCandidates)).toHaveLength(1);
+  });
+
   it("loads a read-only promotion context and adds the separately selected primary", async () => {
     const fixture = await seedPromotionFixture({ repeatedSignalCount: 3 });
     const repository = createGlobalRadarPromotionRepository(db, configuration);

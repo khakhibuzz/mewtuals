@@ -122,6 +122,7 @@ type DetailOptions = {
   signalClass?: "direct_demand" | "demand_precursor" | "ecosystem_momentum";
   includePromotion?: boolean;
   includeWatchlist?: boolean;
+  includePrimaryOrganisation?: boolean;
   notes?: readonly Record<string, unknown>[];
 };
 
@@ -173,7 +174,8 @@ export function globalRadarDetailFixture(options: DetailOptions = {}) {
       id: "organisation",
       title: RADAR_DETAIL_HEADINGS[0],
       data: {
-        primary: organisation,
+        primary:
+          options.includePrimaryOrganisation === false ? null : organisation,
         associated: {
           total: 1,
           truncated: false,

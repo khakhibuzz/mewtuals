@@ -934,6 +934,7 @@ export function globalRadarAllowedActions(input: Readonly<{
   status: SignalStatus;
   mergedIntoSignalId: string | null;
   hasOrganisation: boolean;
+  hasPromotionEntity?: boolean;
   hasActivePromotion: boolean;
 }>): GlobalRadarAllowedAction[] {
   if (input.mergedIntoSignalId !== null) return [];
@@ -947,7 +948,7 @@ export function globalRadarAllowedActions(input: Readonly<{
   if (input.signalClass === "direct_demand") actions.push("edit_expiry");
   if (input.hasOrganisation) actions.push("edit_watchlist");
   if (
-    input.hasOrganisation &&
+    (input.hasPromotionEntity ?? input.hasOrganisation) &&
     input.status === "qualified" &&
     !input.hasActivePromotion
   ) actions.push("promote");

@@ -640,5 +640,15 @@ describe("Global Radar administrator safe read contracts", () => {
         hasActivePromotion: false,
       }),
     ).toContain("edit_classification");
+    expect(
+      globalRadarAllowedActions({
+        signalClass: "ecosystem_momentum",
+        status: "qualified",
+        mergedIntoSignalId: null,
+        hasOrganisation: false,
+        hasPromotionEntity: true,
+        hasActivePromotion: false,
+      }),
+    ).toEqual(expect.arrayContaining(["promote"]));
   });
 });
