@@ -5700,7 +5700,6 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
         component.rationale =
           "Administrator metric is supported by public evidence cited for this momentum input.";
       }
-      if (component.component === "volume7Days") component.value = 0;
     }
     const assessedAssociations = structuredClone(
       administratorSnapshot.componentEvidence.filter(
@@ -5710,17 +5709,14 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
     );
     await db
       .update(globalRadarSignals)
-      .set({
-        momentumVolume7Days: 0,
-        scoreEvidenceSnapshot: administratorSnapshot,
-      })
+      .set({ scoreEvidenceSnapshot: administratorSnapshot })
       .where(eq(globalRadarSignals.id, initialSignal.id));
 
     const first = await repository.recomputeMomentum({
       now: new Date("2026-07-31T14:00:00.000Z"),
       policy: MOMENTUM_POLICY,
     });
-    expect(first).toEqual({ outcome: "completed", recomputed: 1, unchanged: 0 });
+    expect(first).toEqual({ outcome: "completed", recomputed: 0, unchanged: 1 });
     const [signal] = await db.select().from(globalRadarSignals);
     expect(signal).toMatchObject({
       signalClass: "ecosystem_momentum",
@@ -5752,7 +5748,7 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
         .select()
         .from(globalSignalUpdates)
         .where(eq(globalSignalUpdates.updateType, "momentum_recomputed")),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
 
     const snapshotBeforeScoreNeutralAppend = signal?.scoreEvidenceSnapshot;
     const revisionBeforeScoreNeutralAppend = signal?.revision;
@@ -5818,7 +5814,7 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
         .select()
         .from(globalSignalUpdates)
         .where(eq(globalSignalUpdates.updateType, "momentum_recomputed")),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
 
     const third = await repository.recomputeMomentum({
       now: refreshedAt,
@@ -5887,20 +5883,13 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
         .update(globalRadarSignals)
         .set({ scoreEvidenceSnapshot: administratorSnapshot })
         .where(eq(globalRadarSignals.id, signal.id));
-      await transaction
-        .update(globalSignalEvidence)
-        .set({
-          observedAt: new Date("2026-01-01T00:00:00.000Z"),
-          publishedAt: new Date("2026-01-01T00:00:00.000Z"),
-        })
-        .where(eq(globalSignalEvidence.id, citedEvidence.id));
       await transaction.insert(globalSignalEvidence).values({
         ...replacementEvidence,
         ingestOrdinal: replacementIngestOrdinal,
         sourceUrl: replacementUrl,
         canonicalSourceUrl: replacementUrl,
-        observedAt: new Date("2026-08-01T00:00:00.000Z"),
-        publishedAt: new Date("2026-08-01T00:00:00.000Z"),
+        observedAt: new Date("2027-01-31T00:00:00.000Z"),
+        publishedAt: new Date("2027-01-31T00:00:00.000Z"),
         evidenceFingerprint: createEvidenceFingerprint({
           sourceUrl: replacementUrl,
           canonicalSourceUrl: replacementUrl,
@@ -5918,7 +5907,7 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
 
     await expect(
       repository.recomputeMomentum({
-        now: new Date("2026-08-02T00:00:00.000Z"),
+        now: new Date("2027-02-01T00:00:00.000Z"),
         policy: MOMENTUM_POLICY,
       }),
     ).resolves.toEqual({ outcome: "completed", recomputed: 1, unchanged: 0 });
@@ -5935,7 +5924,7 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
       ),
     ).toEqual(administratorAssessmentsBefore);
     expect(recomputed?.scoreEvidenceSnapshot).toMatchObject({
-      scoreAsOf: "2026-08-02T00:00:00.000Z",
+      scoreAsOf: "2027-02-01T00:00:00.000Z",
       evidenceBoundaryOrdinal: replacementIngestOrdinal,
       evidenceSetCount: replacementIngestOrdinal,
       assessmentAuthority: "administrator",
@@ -5990,21 +5979,12 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
         evidence.map(({ evidenceFingerprint }) => evidenceFingerprint),
       ),
     );
-    await db.transaction(async (transaction) => {
-      await transaction
-        .update(globalRadarSignals)
-        .set({ scoreEvidenceSnapshot: administratorSnapshot })
-        .where(eq(globalRadarSignals.id, signal.id));
-      await transaction
-        .update(globalSignalEvidence)
-        .set({
-          observedAt: new Date("2026-01-01T00:00:00.000Z"),
-          publishedAt: null,
-        })
-        .where(eq(globalSignalEvidence.signalId, signal.id));
-    });
+    await db
+      .update(globalRadarSignals)
+      .set({ scoreEvidenceSnapshot: administratorSnapshot })
+      .where(eq(globalRadarSignals.id, signal.id));
 
-    const recomputedAt = new Date("2026-08-02T00:00:00.000Z");
+    const recomputedAt = new Date("2027-02-01T00:00:00.000Z");
     await expect(
       repository.recomputeMomentum({
         now: recomputedAt,
@@ -6071,7 +6051,7 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
     });
     await db
       .update(globalRadarSignals)
-      .set({ updatedAt: new Date("2026-12-01T00:00:00.000Z") })
+      .set({ updatedAt: new Date("2027-03-01T00:00:00.000Z") })
       .where(eq(globalRadarSignals.id, signal.id));
     await expect(
       adminRepository.getSignalDetail(signal.id),
@@ -6104,8 +6084,8 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
         canonicalSourceUrl: activeUrl,
         isPrimarySource: activeEvidence.isPrimarySource,
       }),
-      observedAt: new Date("2026-08-01T00:00:00.000Z"),
-      publishedAt: new Date("2026-08-01T00:00:00.000Z"),
+      observedAt: new Date("2027-01-31T00:00:00.000Z"),
+      publishedAt: new Date("2027-01-31T00:00:00.000Z"),
     });
     await expect(adminRepository.getSignalDetail(signal.id)).rejects.toThrow(
       "Invalid stored Global Radar empty momentum evidence window.",
@@ -6118,7 +6098,7 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
           expectedRevision: signal.revision + 1,
           idempotencyKey: "30000000-0000-4000-8000-000000000040",
           reason: "Confirm the persisted empty evidence-window proof.",
-          now: new Date("2026-12-01T00:01:00.000Z"),
+          now: new Date("2027-03-01T00:01:00.000Z"),
         },
         command: { type: "request_review" },
       }),
@@ -6211,7 +6191,9 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
           now: new Date("2026-07-31T14:00:00.000Z"),
           policy: MOMENTUM_POLICY,
         }),
-      ).rejects.toThrow("Invalid stored Global Radar score-evidence citations.");
+      ).rejects.toThrow(
+        "Invalid stored Global Radar score provenance: evidence_evaluation_mismatch.",
+      );
 
       const [after] = await db
         .select()
@@ -6274,7 +6256,9 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
         now: new Date("2026-07-31T14:00:00.000Z"),
         policy: MOMENTUM_POLICY,
       }),
-    ).rejects.toThrow("Invalid stored Global Radar score-evidence snapshot.");
+    ).rejects.toThrow(
+      "Invalid stored Global Radar score provenance: active_snapshot_mismatch.",
+    );
 
     const [after] = await db
       .select()
@@ -6287,6 +6271,114 @@ describe("PostgreSQL Global Radar expiry and momentum projections", () => {
     expect(after).toEqual(before);
     expect(updatesAfter).toEqual(updatesBefore);
   });
+
+  it.each([
+    {
+      drift: "status-only",
+      tamper: async (signal: typeof globalRadarSignals.$inferSelect) => {
+        await db
+          .update(globalRadarSignals)
+          .set({ status: "qualified" })
+          .where(eq(globalRadarSignals.id, signal.id));
+      },
+    },
+    {
+      drift: "coherent assessed-input",
+      tamper: async (signal: typeof globalRadarSignals.$inferSelect) => {
+        if (signal.momentumTaxonomyConsistency === null) {
+          throw new Error("Momentum drift fixture has no assessed input.");
+        }
+        const taxonomyConsistency =
+          signal.momentumTaxonomyConsistency === 100
+            ? 99
+            : signal.momentumTaxonomyConsistency + 1;
+        const rescored = scoreEcosystemMomentum({
+          independentEntityBreadth: signal.momentumIndependentEntityBreadth,
+          primarySourceDepth: signal.momentumPrimarySourceDepth,
+          sourceDiversity: signal.momentumSourceDiversity,
+          weightedVolume: signal.momentumWeightedVolume,
+          growthVsPreceding: signal.momentumGrowthVsPreviousPeriod,
+          taxonomyConsistency,
+          evidenceQuality: signal.momentumEvidenceQuality,
+        });
+        if (!rescored.valid) {
+          throw new Error("Momentum drift fixture did not rescore.");
+        }
+        const scoreEvidenceSnapshot = structuredClone(
+          signal.scoreEvidenceSnapshot,
+        ) as unknown as MutableActiveScoreEvidenceSnapshot;
+        const association = scoreEvidenceSnapshot.componentEvidence.find(
+          ({ component }) => component === "taxonomyConsistency",
+        );
+        if (!association) {
+          throw new Error("Momentum drift fixture has no assessed input.");
+        }
+        association.value = taxonomyConsistency;
+        await db
+          .update(globalRadarSignals)
+          .set({
+            momentumTaxonomyConsistency: taxonomyConsistency,
+            momentumScore: rescored.score,
+            scoreCoverage: rescored.scoreCoverage,
+            scoreEvidenceSnapshot,
+          })
+          .where(eq(globalRadarSignals.id, signal.id));
+      },
+    },
+  ])(
+    "fails closed with zero maintenance writes after $drift score provenance drift",
+    async ({ drift, tamper }) => {
+      const queueAt = new Date("2026-07-30T16:35:00.000Z");
+      await repository.queueRun(
+        queueInput(`momentum-${drift}-provenance-drift`, { now: queueAt }),
+      );
+      const claim = await repository.claimRun({ now: queueAt });
+      if (claim.outcome !== "claimed") {
+        throw new Error("Fixture was not claimed.");
+      }
+      const batch = validMomentumPersistenceBatch(claim.run.id);
+      await repository.completeRun({
+        ...completionInput(
+          claim.run.id,
+          claim.privateClaim.leaseToken,
+          new Date(queueAt.getTime() + 1_000),
+        ),
+        submissionHash: batch.canonicalSubmissionHash,
+        batch,
+      });
+      const [signal] = await db.select().from(globalRadarSignals);
+      if (!signal) throw new Error("Momentum signal was not persisted.");
+      await tamper(signal);
+      const [before] = await db
+        .select()
+        .from(globalRadarSignals)
+        .where(eq(globalRadarSignals.id, signal.id));
+      const updatesBefore = await db
+        .select()
+        .from(globalSignalUpdates)
+        .where(eq(globalSignalUpdates.signalId, signal.id));
+
+      await expect(
+        repository.recomputeMomentum({
+          now: new Date("2026-07-31T14:00:00.000Z"),
+          policy: MOMENTUM_POLICY,
+        }),
+      ).rejects.toThrow(
+        "Invalid stored Global Radar score provenance: score_input_mismatch.",
+      );
+
+      const [after] = await db
+        .select()
+        .from(globalRadarSignals)
+        .where(eq(globalRadarSignals.id, signal.id));
+      const updatesAfter = await db
+        .select()
+        .from(globalSignalUpdates)
+        .where(eq(globalSignalUpdates.signalId, signal.id));
+      expect(after).toEqual(before);
+      expect(updatesAfter).toEqual(updatesBefore);
+    },
+  );
 
   it("recomputes every eligible item in the full 180-day horizon without a newest-100 cutoff", async () => {
     const queueAt = new Date("2026-07-30T17:00:00.000Z");
@@ -8940,10 +9032,44 @@ describe("PostgreSQL Global Radar optimistic administrator review", () => {
         momentumScore: originalMomentumScore,
       })
       .where(eq(globalRadarSignals.id, momentum.id));
-    await db
-      .update(globalSignalEvidence)
-      .set({ isSyndicated: false })
-      .where(eq(globalSignalEvidence.signalId, momentum.id));
+    const [syndicatedEvidence] = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(
+        and(
+          eq(globalSignalEvidence.signalId, momentum.id),
+          eq(globalSignalEvidence.isSyndicated, true),
+        ),
+      );
+    if (!syndicatedEvidence) {
+      throw new Error("Momentum qualification evidence fixture is missing.");
+    }
+    const { id: _syndicatedEvidenceId, ...appendedEvidence } =
+      syndicatedEvidence;
+    void _syndicatedEvidenceId;
+    const appendedEvidenceUrl =
+      "https://gamma-robotics.example/momentum-observation";
+    await db.insert(globalSignalEvidence).values({
+      ...appendedEvidence,
+      ingestOrdinal: await nextGlobalRadarEvidenceIngestOrdinal(momentum.id),
+      sourceUrl: appendedEvidenceUrl,
+      canonicalSourceUrl: appendedEvidenceUrl,
+      sourceName: "Gamma Robotics",
+      sourceFamily: "official_company_material",
+      evidenceClaim:
+        "Gamma published an original robot-learning activity update.",
+      sourceExcerpt: "Gamma expanded its robot-learning data programme.",
+      englishSummary: "Gamma published new robot-learning data activity.",
+      evidenceFingerprint: createEvidenceFingerprint({
+        sourceUrl: appendedEvidenceUrl,
+        canonicalSourceUrl: appendedEvidenceUrl,
+        isPrimarySource: appendedEvidence.isPrimarySource,
+      }),
+      isSyndicated: false,
+      observedAt: new Date("2026-07-31T15:00:00.000Z"),
+      publishedAt: new Date("2026-07-31T15:00:00.000Z"),
+      createdAt: new Date("2026-07-31T15:00:00.000Z"),
+    });
     await expect(
       repository.recomputeMomentum({
         now: new Date("2026-07-31T16:00:00.000Z"),

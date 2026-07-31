@@ -2472,6 +2472,15 @@ export async function recomputeGlobalRadarMomentum(
   let recomputed = 0;
   let unchanged = 0;
   for (const signal of signals) {
+    const provenance = await validateStoredGlobalRadarScoreProvenance(
+      transaction,
+      signal,
+    );
+    if (!provenance.valid) {
+      throw new Error(
+        `Invalid stored Global Radar score provenance: ${provenance.reason}.`,
+      );
+    }
     const associations = await transaction
       .select()
       .from(globalRadarSignalEntities)
