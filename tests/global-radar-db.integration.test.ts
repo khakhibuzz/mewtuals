@@ -7607,6 +7607,7 @@ describe("PostgreSQL Global Radar score provenance on aggregate reads", () => {
 
   const cases = [
     { surface: "list", signalClass: "direct_demand" },
+    { surface: "class summary", signalClass: "direct_demand" },
     { surface: "class metrics", signalClass: "direct_demand" },
     { surface: "overview", signalClass: "demand_precursor" },
     { surface: "watchlist enrichment", signalClass: "direct_demand" },
@@ -7661,6 +7662,12 @@ describe("PostgreSQL Global Radar score provenance on aggregate reads", () => {
               signalClass: "direct_demand",
               filters: { page: 1 },
             })
+          : surface === "class summary"
+            ? adminRepository.getClassSummary({
+                signalClass: "direct_demand",
+                filters: {},
+                now: readAt,
+              })
           : surface === "class metrics"
             ? adminRepository.getClassMetrics({
                 signalClass: "direct_demand",

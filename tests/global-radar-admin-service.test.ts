@@ -497,6 +497,83 @@ describe("Global Radar administrator service", () => {
     expect(repository.getOverviewMetrics).not.toHaveBeenCalled();
   });
 
+  it("reports no signals when the unfiltered class baseline is honestly empty", async () => {
+    const repository = repositoryDouble({
+      getClassSummary: vi.fn(async () => ({
+        outcome: "listed",
+        page: 1,
+        pageSize: 25,
+        total: 0,
+        items: [],
+        classTotal: 0,
+        classMetrics: {},
+        overviewMetrics: {
+          capabilityFamilies: [],
+          promotedEntities: 0,
+          latestRun: null,
+          sourceErrors: 0,
+          mergedDuplicates: 0,
+        },
+      })),
+    });
+
+    await expect(
+      createService(repository).getClassSummary(ACTOR, {
+        signalClass: "direct_demand",
+        filters: {},
+      }),
+    ).resolves.toEqual({
+      outcome: "listed",
+      page: 1,
+      pageSize: 25,
+      total: 0,
+      hasAnySignals: false,
+      items: [],
+      metrics: {
+        class: {
+          total: 0,
+          highQuality: 0,
+          byStatus: {},
+          india: { explicit: 0, inferred: 0, other: 0 },
+          countries: { unitedStates: 0, china: 0, other: 0 },
+          requirementMix: { physicalData: 0, hardware: 0 },
+          demandFamilies: {},
+          active: 0,
+          expiring: 0,
+          horizon: {
+            within30Days: 0,
+            days31To90: 0,
+            days91To180: 0,
+            days181To365: 0,
+            unknown: 0,
+          },
+          qualified: 0,
+        },
+        newSignals: 0,
+        activeDirectDemand: 0,
+        highQualityPrecursors: 0,
+        india: { explicit: 0, inferred: 0 },
+        countries: { unitedStates: 0, china: 0, other: 0 },
+        requirementMix: { physicalData: 0, hardware: 0 },
+        capabilityFamilies: [],
+        expiringDirectDemand: 0,
+        promotionCount: 0,
+        latestRun: null,
+        sourceErrors: 0,
+        mergedDuplicates: 0,
+      },
+    });
+    expect(repository.getClassSummary).toHaveBeenCalledTimes(1);
+    expect(repository.getClassSummary).toHaveBeenCalledWith({
+      signalClass: "direct_demand",
+      filters: {},
+      now: NOW,
+    });
+    expect(repository.listSignals).not.toHaveBeenCalled();
+    expect(repository.getClassMetrics).not.toHaveBeenCalled();
+    expect(repository.getOverviewMetrics).not.toHaveBeenCalled();
+  });
+
   it("returns paginated run and enriched watchlist DTOs", async () => {
     const entry = watchlistReadModel();
     const repository = repositoryDouble({
