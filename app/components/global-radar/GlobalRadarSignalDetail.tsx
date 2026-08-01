@@ -33,7 +33,7 @@ function BackLink({ returnTo }: { returnTo: string }) {
     : returnTo.startsWith("/admin/global-demand-radar/momentum")
       ? "Momentum"
       : "Direct Demand";
-  return <Link className={styles.backLink} href={returnTo}>Back to {label}</Link>;
+  return <Link className={styles.backLink} href={returnTo} prefetch={false}>Back to {label}</Link>;
 }
 
 function Values({ values, empty = "Not recorded" }: { values: readonly string[]; empty?: string }) {

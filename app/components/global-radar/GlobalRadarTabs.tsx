@@ -28,6 +28,7 @@ export function GlobalRadarTabs({ current }: { current: GlobalRadarTab }) {
           className={styles.tabLink}
           href={tab.href}
           key={tab.id}
+          prefetch={false}
         >
           {tab.label}
         </Link>

@@ -1,4 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import GlobalRadarRootPage from "../app/admin/global-demand-radar/page";
@@ -38,6 +40,26 @@ const tabs = [
   ["Watchlist", "/admin/global-demand-radar/watchlist"],
   ["Radar Runs", "/admin/global-demand-radar/runs"],
 ] as const;
+
+const repoRoot = process.cwd();
+const authenticatedRadarLinkSources = [
+  ["app/admin/global-demand-radar/signal-list-page.tsx", 3],
+  ["app/components/global-radar/GlobalRadarSignalDetail.tsx", 1],
+  ["app/components/global-radar/GlobalRadarSignalList.tsx", 5],
+  ["app/components/global-radar/GlobalRadarTabs.tsx", 1],
+] as const;
+
+function source(path: string) {
+  return readFileSync(join(repoRoot, path), "utf8");
+}
+
+function tsxFiles(path: string): string[] {
+  return readdirSync(join(repoRoot, path), { withFileTypes: true }).flatMap((entry) => {
+    const child = join(path, entry.name);
+    if (entry.isDirectory()) return tsxFiles(child);
+    return entry.isFile() && entry.name.endsWith(".tsx") ? [child] : [];
+  });
+}
 
 const actor = {
   userId: "00000000-0000-4000-8000-000000000001",
@@ -127,6 +149,29 @@ beforeEach(() => {
 });
 
 describe("Global Radar pages", () => {
+  it("disables prefetch at every authenticated Radar link callsite", () => {
+    for (const [path, expectedCallsites] of authenticatedRadarLinkSources) {
+      const linkTags = source(path).match(/<Link\b[\s\S]*?>/g) ?? [];
+      expect(linkTags, path).toHaveLength(expectedCallsites);
+      for (const linkTag of linkTags) {
+        expect(linkTag, `${path}: ${linkTag}`).toMatch(/\bprefetch=\{false\}/);
+      }
+    }
+  });
+
+  it("tracks every authenticated Radar source that imports next/link", () => {
+    const discoveredSources = [
+      ...tsxFiles("app/components/global-radar"),
+      ...tsxFiles("app/admin/global-demand-radar"),
+    ]
+      .filter((path) => source(path).includes('from "next/link"'))
+      .sort();
+
+    expect(discoveredSources).toEqual(
+      authenticatedRadarLinkSources.map(([path]) => path).sort(),
+    );
+  });
+
   it("redirects the Radar root to the Direct Demand tab", async () => {
     await expect(GlobalRadarRootPage()).rejects.toThrow(
       "redirect:/admin/global-demand-radar/direct-demand",

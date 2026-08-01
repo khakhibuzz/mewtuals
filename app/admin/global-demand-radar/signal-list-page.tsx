@@ -43,7 +43,7 @@ export function GlobalRadarPageError({ current, retry }: { current: GlobalRadarT
       <section role="alert">
         <h2>Global Radar data is temporarily unavailable.</h2>
         <p>No private failure details have been exposed.</p>
-        <Link href={retry}>Retry</Link>
+        <Link href={retry} prefetch={false}>Retry</Link>
       </section>
     </GlobalRadarPageShell>
   );
@@ -99,9 +99,9 @@ export function GlobalRadarPagePagination({
   const href = (next: number) => next === 1 ? path : `${path}?page=${next}`;
   return (
     <nav aria-label={`${label} pagination`}>
-      {page > 1 ? <Link href={href(page - 1)}>Previous page</Link> : <span />}
+      {page > 1 ? <Link href={href(page - 1)} prefetch={false}>Previous page</Link> : <span />}
       <span>Page {page} of {pages}</span>
-      {page < pages ? <Link href={href(page + 1)}>Next page</Link> : <span />}
+      {page < pages ? <Link href={href(page + 1)} prefetch={false}>Next page</Link> : <span />}
     </nav>
   );
 }

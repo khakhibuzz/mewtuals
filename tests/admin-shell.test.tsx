@@ -1,11 +1,26 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import type { AnchorHTMLAttributes } from "react";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   ADMIN_DESTINATIONS,
   AdminShell,
   type AdminDestination,
 } from "../app/components/product/AdminShell";
+import { ProductShell } from "../app/components/product/ProductShell";
+
+type LinkDoubleProps = AnchorHTMLAttributes<HTMLAnchorElement> & {
+  prefetch?: boolean;
+};
+
+vi.mock("next/link", () => ({
+  default: ({ prefetch, ...props }: LinkDoubleProps) => (
+    <a
+      {...props}
+      data-next-prefetch={prefetch === undefined ? undefined : String(prefetch)}
+    />
+  ),
+}));
 
 const expectedDestinations = [
   ["Verification Queue", "/admin/verifications"],
@@ -49,6 +64,7 @@ describe("AdminShell", () => {
     expectedDestinations.forEach(([label, href], index) => {
       expect(links[index]).toHaveAccessibleName(label);
       expect(links[index]).toHaveAttribute("href", href);
+      expect(links[index]).toHaveAttribute("data-next-prefetch", "false");
     });
     expect(within(navigation).getByRole("link", { current: "page" })).toHaveTextContent(
       "Global Demand Radar",
@@ -86,5 +102,24 @@ describe("AdminShell", () => {
     })).toBeVisible();
     expect(screen.getByRole("heading", { name: "Queue" })).toBeVisible();
     expect(screen.getByText("Private content")).toBeVisible();
+  });
+
+  it("does not change prefetch behavior for public shell links", () => {
+    render(
+      <ProductShell
+        eyebrow="Public"
+        headerAction={{ href: "/apply", label: "Apply" }}
+        title="Public view"
+      >
+        <p>Public content</p>
+      </ProductShell>,
+    );
+
+    expect(screen.getByRole("link", { name: "Mewtuals home" })).not.toHaveAttribute(
+      "data-next-prefetch",
+    );
+    expect(screen.getByRole("link", { name: "Apply" })).not.toHaveAttribute(
+      "data-next-prefetch",
+    );
   });
 });

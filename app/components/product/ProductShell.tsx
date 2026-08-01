@@ -44,6 +44,7 @@ export function ProductShell({
                   className={styles.headerLink}
                   href={link.href}
                   key={link.href}
+                  prefetch={false}
                 >
                   {link.label}
                 </Link>

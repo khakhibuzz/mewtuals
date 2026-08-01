@@ -187,7 +187,7 @@ export function GlobalRadarSignalList({
         />
         <div className={styles.filterActions}>
           <button type="submit">Apply filters</button>
-          <Link href={action}>Clear filters</Link>
+          <Link href={action} prefetch={false}>Clear filters</Link>
         </div>
       </form>
       {snapshot.items.length === 0 ? (
@@ -209,7 +209,7 @@ export function GlobalRadarSignalList({
                     <td>{displayLabel(item.status)}</td>
                     <td>{item.score ?? "—"}</td>
                     <td><time dateTime={item.observedAt}>{formatDate(item.observedAt)}</time></td>
-                    <td><Link href={detailHref(item, canonicalListPath)}>Review {item.title}</Link></td>
+                    <td><Link href={detailHref(item, canonicalListPath)} prefetch={false}>Review {item.title}</Link></td>
                   </tr>
                 ))}
               </tbody>
@@ -220,7 +220,7 @@ export function GlobalRadarSignalList({
               <li className={styles.signalCard} key={item.id}>
                 <h2>{item.title}</h2>
                 <SignalDetails item={item} />
-                <Link href={detailHref(item, canonicalListPath)}>Review {item.title}</Link>
+                <Link href={detailHref(item, canonicalListPath)} prefetch={false}>Review {item.title}</Link>
               </li>
             ))}
           </ul>
@@ -228,9 +228,9 @@ export function GlobalRadarSignalList({
       )}
       {totalPages > 1 ? (
         <nav aria-label={`${classLabel} pagination`} className={styles.pagination}>
-          {snapshot.page > 1 ? <Link href={paginationHref(canonicalListPath, snapshot.page - 1)}>Previous page</Link> : <span />}
+          {snapshot.page > 1 ? <Link href={paginationHref(canonicalListPath, snapshot.page - 1)} prefetch={false}>Previous page</Link> : <span />}
           <span>Page {snapshot.page} of {totalPages}</span>
-          {snapshot.page < totalPages ? <Link href={paginationHref(canonicalListPath, snapshot.page + 1)}>Next page</Link> : <span />}
+          {snapshot.page < totalPages ? <Link href={paginationHref(canonicalListPath, snapshot.page + 1)} prefetch={false}>Next page</Link> : <span />}
         </nav>
       ) : null}
     </div>
