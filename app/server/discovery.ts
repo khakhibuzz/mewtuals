@@ -1,4 +1,5 @@
 import { createDiscoveryRepository } from "../../db/repositories/discovery-repository";
+import type { MewtualsDatabase } from "../../db";
 import { readDiscoveryConfig } from "./discovery-config";
 import {
   createDiscoveryService,
@@ -12,8 +13,8 @@ export function shouldCacheDiscoveryService(runtime: object): boolean {
   return !("Cloudflare" in runtime);
 }
 
-export function getDiscoveryService(): DiscoveryService {
-  const cacheService = shouldCacheDiscoveryService(globalThis);
+export function getDiscoveryService(database?: MewtualsDatabase): DiscoveryService {
+  const cacheService = database === undefined && shouldCacheDiscoveryService(globalThis);
   if (cacheService && service) return service;
 
   const environment = readServerEnvironment();
@@ -24,7 +25,7 @@ export function getDiscoveryService(): DiscoveryService {
     );
   }
   const nextService = createDiscoveryService({
-    repository: createDiscoveryRepository(),
+    repository: createDiscoveryRepository(database),
     adminEmails: environment.adminEmails,
     workerSecret: config.workerSecret,
     config,

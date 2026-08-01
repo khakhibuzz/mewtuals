@@ -7,8 +7,8 @@ import {
   indiaRelevanceTypeLookup,
   signalStatusLookup,
 } from "../../domain/global-radar";
+import { loadAdminPageContext } from "../../server/admin-page-context";
 import { getGlobalRadarApplication } from "../../server/global-radar";
-import { getCurrentSession } from "../../server/session";
 import type { GlobalRadarSignalClass, GlobalRadarTab } from "../../components/global-radar/types";
 
 export type GlobalRadarPageSearchParams = Record<
@@ -188,10 +188,10 @@ export function safeGlobalRadarReturnTo(
 }
 
 export async function loadAuthorizedGlobalRadarAdmin() {
-  const session = await getCurrentSession();
+  const { database, session } = await loadAdminPageContext();
   if (!session) redirect("/login");
   const actor = { userId: session.user.id, email: session.user.email };
-  const application = getGlobalRadarApplication();
+  const application = getGlobalRadarApplication({ database });
   // The invalid identifier is a no-I/O authorization probe: every admin method
   // checks the service-owned allowlist before validating its operation input.
   const authorization = await application.admin.getSignalDetail(actor, null);

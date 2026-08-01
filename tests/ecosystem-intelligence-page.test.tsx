@@ -2,8 +2,8 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import EcosystemIntelligenceAdminPage from "../app/admin/ecosystem-intelligence/page";
+import { loadAdminPageContext } from "../app/server/admin-page-context";
 import { getEcosystemIntelligenceService } from "../app/server/ecosystem-intelligence";
-import { getCurrentSession } from "../app/server/session";
 
 const { redirectMock, serializeMock } = vi.hoisted(() => ({
   redirectMock: vi.fn((path: string) => {
@@ -66,7 +66,7 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
   useSearchParams: () => new URLSearchParams(),
 }));
-vi.mock("../app/server/session", () => ({ getCurrentSession: vi.fn() }));
+vi.mock("../app/server/admin-page-context", () => ({ loadAdminPageContext: vi.fn() }));
 vi.mock("../app/server/ecosystem-intelligence", () => ({
   getEcosystemIntelligenceService: vi.fn(),
 }));
@@ -78,6 +78,7 @@ const session = {
   session: { id: "session", expiresAt: new Date("2026-08-15T00:00:00.000Z") },
   user: { id: "admin", email: "admin@example.com", name: null },
 };
+const database = { requestOwned: "ecosystem" } as never;
 const filters = {
   participantType: "company",
   includeEnablers: false,
@@ -91,17 +92,17 @@ const filters = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session });
 });
 
 describe("Ecosystem Intelligence administrator page", () => {
   it("redirects signed-out visitors to login", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(null);
+    vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: null });
     await expect(EcosystemIntelligenceAdminPage({ searchParams: Promise.resolve({}) }))
       .rejects.toThrow("redirect:/login");
   });
 
   it("redirects signed-in non-administrators to the member dashboard", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(session);
     vi.mocked(getEcosystemIntelligenceService).mockReturnValue({
       isAdministrator: vi.fn(() => false),
       getSnapshot: vi.fn(async () => ({ ok: false, status: 403, error: "No." })),
@@ -112,7 +113,6 @@ describe("Ecosystem Intelligence administrator page", () => {
   });
 
   it("redirects invalid and noncanonical filters to the canonical workspace URL", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(session);
     const getSnapshot = vi.fn()
       .mockResolvedValueOnce({ ok: false, status: 400, error: "Invalid." })
       .mockResolvedValueOnce({ ok: true, filters, snapshot: { private: true } });
@@ -130,7 +130,6 @@ describe("Ecosystem Intelligence administrator page", () => {
   });
 
   it("renders a retryable safe error inside the wide admin shell", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(session);
     vi.mocked(getEcosystemIntelligenceService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
       getSnapshot: vi.fn(async () => ({ ok: false, status: 500, error: "Safe." })),
@@ -155,7 +154,6 @@ describe("Ecosystem Intelligence administrator page", () => {
   });
 
   it("preserves canonical filters in the retry URL", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(session);
     vi.mocked(getEcosystemIntelligenceService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
       getSnapshot: vi.fn(async () => ({ ok: false, status: 500, error: "Safe." })),
@@ -171,7 +169,6 @@ describe("Ecosystem Intelligence administrator page", () => {
   });
 
   it("server-renders the first safe snapshot and canonical query", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(session);
     vi.mocked(getEcosystemIntelligenceService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
       getSnapshot: vi.fn(async () => ({ ok: true, filters, snapshot: { private: true } })),
@@ -189,5 +186,7 @@ describe("Ecosystem Intelligence administrator page", () => {
       "2026-07-29T08:30:00.000Z",
     );
     expect(serializeMock).toHaveBeenCalledWith({ private: true });
+    expect(loadAdminPageContext).toHaveBeenCalledOnce();
+    expect(getEcosystemIntelligenceService).toHaveBeenCalledWith(database);
   });
 });

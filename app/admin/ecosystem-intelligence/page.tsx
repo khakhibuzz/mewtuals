@@ -9,9 +9,9 @@ import {
   filtersFromSearchParams,
   serializeEcosystemFilters,
 } from "../../domain/ecosystem-intelligence";
+import { loadAdminPageContext } from "../../server/admin-page-context";
 import { getEcosystemIntelligenceService } from "../../server/ecosystem-intelligence";
 import { serializeEcosystemSnapshot } from "../../server/ecosystem-intelligence-route";
-import { getCurrentSession } from "../../server/session";
 
 type EcosystemIntelligenceAdminPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -51,11 +51,11 @@ function EcosystemIntelligenceShell({ children }: { children: ReactNode }) {
 export default async function EcosystemIntelligenceAdminPage({
   searchParams,
 }: EcosystemIntelligenceAdminPageProps) {
-  const session = await getCurrentSession();
+  const { database, session } = await loadAdminPageContext();
   if (!session) redirect("/login");
 
   const incoming = pageSearchParams(await searchParams);
-  const service = getEcosystemIntelligenceService();
+  const service = getEcosystemIntelligenceService(database);
   const actor = { userId: session.user.id, email: session.user.email };
   if (!service.isAdministrator(actor)) redirect("/dashboard");
   let canonicalQuery: string;

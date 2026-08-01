@@ -5,8 +5,8 @@ import {
   type DiscoveryDashboardSnapshot,
 } from "../../components/product/DiscoveryDashboard";
 import { AdminShell } from "../../components/product/AdminShell";
+import { loadAdminPageContext } from "../../server/admin-page-context";
 import { getDiscoveryService } from "../../server/discovery";
-import { getCurrentSession } from "../../server/session";
 import type { DiscoveryAdminSnapshot } from "../../../db/repositories/discovery-repository";
 
 type DiscoveryAdminPageProps = {
@@ -131,11 +131,11 @@ export function serializeDiscoverySnapshot(
 export default async function DiscoveryAdminPage({
   searchParams,
 }: DiscoveryAdminPageProps) {
-  const session = await getCurrentSession();
+  const { database, session } = await loadAdminPageContext();
   if (!session) redirect("/login");
 
   const filters = discoveryFilters(await searchParams);
-  const result = await getDiscoveryService().getAdminSummary(
+  const result = await getDiscoveryService(database).getAdminSummary(
     { userId: session.user.id, email: session.user.email },
     filters,
   );

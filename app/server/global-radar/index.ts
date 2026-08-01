@@ -187,7 +187,9 @@ export type GlobalRadarApplicationRuntimeOptions = Readonly<{
 export function getGlobalRadarApplication(
   options: GlobalRadarApplicationRuntimeOptions = {},
 ): GlobalRadarApplication {
-  const cache = shouldCacheGlobalRadarApplication(globalThis);
+  const cache =
+    Object.keys(options).length === 0 &&
+    shouldCacheGlobalRadarApplication(globalThis);
   if (cache && cachedApplication) return cachedApplication;
   const config = options.config ?? readGlobalRadarConfig();
   const database = options.database ?? getDb();

@@ -23,6 +23,7 @@ import {
 import {
   createGlobalRadarApplication,
   createGlobalRadarApplicationDependencies,
+  getGlobalRadarApplication,
   shouldCacheGlobalRadarApplication,
 } from "../app/server/global-radar";
 
@@ -165,6 +166,40 @@ function createService(
 }
 
 describe("Global Radar run service", () => {
+  it("bypasses the cached default application for an explicit database", async () => {
+    vi.stubEnv("DATABASE_URL", "postgres://user:password@localhost:5432/mewtuals");
+    vi.stubEnv("SESSION_SECRET", "test-session-secret-that-is-longer-than-32-characters");
+    vi.stubEnv("ADMIN_EMAILS", "admin@example.com");
+    vi.stubEnv(
+      "GLOBAL_RADAR_WORKER_SECRET",
+      "radar-worker-secret-that-is-longer-than-32-characters",
+    );
+
+    const cachedDefault = getGlobalRadarApplication();
+    const expectedError = new Error("explicit database used");
+    const select = vi.fn(() => {
+      throw expectedError;
+    });
+    const database = {
+      select,
+    } as never;
+
+    const explicit = getGlobalRadarApplication({ database });
+
+    expect(explicit).not.toBe(cachedDefault);
+    await expect(
+      explicit.admin.getSignalDetail(
+        {
+          userId: "00000000-0000-4000-8000-000000000001",
+          email: "admin@example.com",
+        },
+        "00000000-0000-4000-8000-000000000010",
+      ),
+    ).rejects.toBe(expectedError);
+    expect(select).toHaveBeenCalledOnce();
+    vi.unstubAllEnvs();
+  });
+
   it("runs all deterministic maintenance at one trusted time before claiming", async () => {
     const callOrder: string[] = [];
     const expireDirectDemand = vi.fn(async (input: { now: Date }) => {

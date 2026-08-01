@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import GlobalRadarSignalPage from "../app/admin/global-demand-radar/signals/[signalId]/page";
 import { GlobalRadarSignalDetail } from "../app/components/global-radar/GlobalRadarSignalDetail";
+import { loadAdminPageContext } from "../app/server/admin-page-context";
 import { getGlobalRadarApplication } from "../app/server/global-radar";
-import { getCurrentSession } from "../app/server/session";
 import {
   RADAR_ASSOCIATED_ENTITY_ID,
   RADAR_DETAIL_HEADINGS,
@@ -26,7 +26,7 @@ vi.mock("next/navigation", () => ({
   notFound: notFoundMock,
   useRouter: () => ({ refresh: vi.fn() }),
 }));
-vi.mock("../app/server/session", () => ({ getCurrentSession: vi.fn() }));
+vi.mock("../app/server/admin-page-context", () => ({ loadAdminPageContext: vi.fn() }));
 vi.mock("../app/server/global-radar", () => ({ getGlobalRadarApplication: vi.fn() }));
 
 const actor = {
@@ -37,10 +37,11 @@ const adminSession = {
   session: { id: "session", expiresAt: new Date("2026-08-15T00:00:00.000Z") },
   user: { id: actor.userId, email: actor.email, name: "Admin" },
 };
+const database = { requestOwned: "global-radar-detail" } as never;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
+  vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: adminSession });
   vi.mocked(getGlobalRadarApplication).mockReturnValue({
     admin: {
       getSignalDetail: vi.fn(async (_actor, signalId) =>
@@ -308,7 +309,7 @@ describe("GlobalRadarSignalDetail", () => {
 
 describe("Global Radar signal detail page", () => {
   it("authenticates before parsing an invalid identifier", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(null);
+    vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: null });
 
     await expect(GlobalRadarSignalPage({
       params: Promise.resolve({ signalId: "invalid" }),

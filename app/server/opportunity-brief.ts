@@ -1,4 +1,5 @@
 import { createOpportunityBriefRepository } from "../../db/repositories/opportunity-brief-repository";
+import type { MewtualsDatabase } from "../../db";
 import { createOpportunityBriefAcknowledgementSender } from "./email";
 import { readServerEnvironment } from "./env";
 import { createOpportunityBriefPostHandler } from "./opportunity-brief-route";
@@ -6,6 +7,7 @@ import { createOpportunityBriefService } from "./opportunity-brief-service";
 import type { ServerEnvironment } from "./env";
 
 export function getOpportunityBriefService(
+  database?: MewtualsDatabase,
   environment: ServerEnvironment = readServerEnvironment(),
 ) {
   const acknowledgementSender =
@@ -18,7 +20,7 @@ export function getOpportunityBriefService(
       : undefined;
 
   return createOpportunityBriefService({
-    repository: createOpportunityBriefRepository(),
+    repository: createOpportunityBriefRepository(database),
     acknowledgementSender,
     adminEmails: environment.adminEmails,
     now: () => new Date(),
@@ -27,7 +29,7 @@ export function getOpportunityBriefService(
 
 export async function handleOpportunityBriefPost(request: Request) {
   const environment = readServerEnvironment();
-  const service = getOpportunityBriefService(environment);
+  const service = getOpportunityBriefService(undefined, environment);
   const handler = createOpportunityBriefPostHandler({
     environment: environment.environment,
     sessionSecret: environment.sessionSecret,

@@ -4,12 +4,12 @@ import type { ReactNode } from "react";
 
 import { AdminShell } from "../../components/product/AdminShell";
 import { OpportunityBriefDashboard } from "../../components/product/OpportunityBriefDashboard";
+import { loadAdminPageContext } from "../../server/admin-page-context";
 import { getOpportunityBriefService } from "../../server/opportunity-brief";
 import {
   parseOpportunityBriefAdminFilters,
   serializeOpportunityBriefAdminSnapshot,
 } from "../../server/opportunity-brief-admin-route";
-import { getCurrentSession } from "../../server/session";
 
 type OpportunityBriefAdminPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -48,10 +48,10 @@ function OpportunityBriefAdminShell({ children }: { children: ReactNode }) {
 export default async function OpportunityBriefAdminPage({
   searchParams,
 }: OpportunityBriefAdminPageProps) {
-  const session = await getCurrentSession();
+  const { database, session } = await loadAdminPageContext();
   if (!session) redirect("/login");
 
-  const service = getOpportunityBriefService();
+  const service = getOpportunityBriefService(database);
   const actor = { userId: session.user.id, email: session.user.email };
   if (!service.isAdministrator(actor)) redirect("/dashboard");
 

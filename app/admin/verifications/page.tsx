@@ -6,7 +6,7 @@ import {
   type VerificationQueueProfile,
 } from "../../components/product/VerificationQueue";
 import type { VerificationProfile } from "../../server/verification-service";
-import { getCurrentSession } from "../../server/session";
+import { loadAdminPageContext } from "../../server/admin-page-context";
 import { getVerificationService } from "../../server/verification";
 
 const subtypeLabels: Record<string, string> = {
@@ -37,10 +37,10 @@ function toQueueProfile(profile: VerificationProfile): VerificationQueueProfile 
 }
 
 export default async function VerificationAdminPage() {
-  const session = await getCurrentSession();
+  const { database, session } = await loadAdminPageContext();
   if (!session) redirect("/login");
 
-  const service = getVerificationService();
+  const service = getVerificationService(database);
   const result = await service.listPending({
     userId: session.user.id,
     email: session.user.email,

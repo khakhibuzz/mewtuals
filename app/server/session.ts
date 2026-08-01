@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import type { NextResponse } from "next/server";
 
 import { createAuthRepository } from "../../db/repositories/auth-repository";
+import type { MewtualsDatabase } from "../../db";
 import { createAuthService } from "./auth-service";
 import { createEmailSender } from "./email";
 import { readServerEnvironment } from "./env";
@@ -37,14 +38,14 @@ export function clearSessionCookie(
   });
 }
 
-export async function getCurrentSession() {
+export async function getCurrentSession(database?: MewtualsDatabase) {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   if (!token) return null;
 
   const environment = readServerEnvironment();
   const service = createAuthService({
-    repository: createAuthRepository(),
+    repository: createAuthRepository(database),
     emailSender: createEmailSender({
       environment: environment.environment,
       apiKey: environment.resendApiKey,

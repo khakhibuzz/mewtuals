@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import OpportunityBriefAdminPage, {
   serializeOpportunityBriefSnapshot,
 } from "../app/admin/opportunity-briefs/page";
-import { getCurrentSession } from "../app/server/session";
+import { loadAdminPageContext } from "../app/server/admin-page-context";
 import { getOpportunityBriefService } from "../app/server/opportunity-brief";
 
 const { redirectMock } = vi.hoisted(() => ({
@@ -14,13 +14,14 @@ const { redirectMock } = vi.hoisted(() => ({
 }));
 
 vi.mock("next/navigation", () => ({ redirect: redirectMock }));
-vi.mock("../app/server/session", () => ({ getCurrentSession: vi.fn() }));
+vi.mock("../app/server/admin-page-context", () => ({ loadAdminPageContext: vi.fn() }));
 vi.mock("../app/server/opportunity-brief", () => ({ getOpportunityBriefService: vi.fn() }));
 
 const adminSession = {
   session: { id: "session", expiresAt: new Date("2026-08-15") },
   user: { id: "admin", email: "admin@example.com", name: null },
 };
+const database = { requestOwned: "opportunity" } as never;
 
 const snapshot = {
   summary: {
@@ -40,11 +41,17 @@ const snapshot = {
   totalPages: 0,
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(loadAdminPageContext).mockResolvedValue({
+    database,
+    session: adminSession,
+  });
+});
 
 describe("Opportunity Brief administrator page", () => {
   it("redirects signed-out visitors to login", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(null);
+    vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: null });
 
     await expect(OpportunityBriefAdminPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
       "redirect:/login",
@@ -52,9 +59,12 @@ describe("Opportunity Brief administrator page", () => {
   });
 
   it("redirects signed-in non-administrators to the member dashboard", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue({
-      ...adminSession,
-      user: { id: "member", email: "member@example.com", name: null },
+    vi.mocked(loadAdminPageContext).mockResolvedValue({
+      database,
+      session: {
+        ...adminSession,
+        user: { id: "member", email: "member@example.com", name: null },
+      },
     });
     vi.mocked(getOpportunityBriefService).mockReturnValue({
       isAdministrator: vi.fn(() => false),
@@ -72,7 +82,6 @@ describe("Opportunity Brief administrator page", () => {
 
   it("loads the safe snapshot and cross-links every admin operation", async () => {
     const getAdminSnapshot = vi.fn(async () => ({ ok: true as const, snapshot }));
-    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
     vi.mocked(getOpportunityBriefService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
       getAdminSnapshot,
@@ -93,11 +102,12 @@ describe("Opportunity Brief administrator page", () => {
       "href",
       "/admin/verifications",
     );
+    expect(loadAdminPageContext).toHaveBeenCalledOnce();
+    expect(getOpportunityBriefService).toHaveBeenCalledWith(database);
   });
 
   it("passes only supported filters to the service", async () => {
     const getAdminSnapshot = vi.fn(async () => ({ ok: true as const, snapshot }));
-    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
     vi.mocked(getOpportunityBriefService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
       getAdminSnapshot,
@@ -140,7 +150,6 @@ describe("Opportunity Brief administrator page", () => {
     { status: ["submitted", "researching"] },
   ])("resets invalid authorized filters to the canonical queue %#", async (searchParams) => {
     const getAdminSnapshot = vi.fn();
-    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
     vi.mocked(getOpportunityBriefService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
       getAdminSnapshot,
@@ -157,7 +166,6 @@ describe("Opportunity Brief administrator page", () => {
     [400, "/admin/opportunity-briefs"],
     [403, "/dashboard"],
   ] as const)("redirects actual service status %s to %s", async (status, path) => {
-    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
     vi.mocked(getOpportunityBriefService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
       getAdminSnapshot: vi.fn(async () => ({
@@ -173,7 +181,6 @@ describe("Opportunity Brief administrator page", () => {
   });
 
   it("renders a safe administrator error with retry after an authorized snapshot failure", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
     vi.mocked(getOpportunityBriefService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
       getAdminSnapshot: vi.fn(async () => ({
@@ -204,7 +211,6 @@ describe("Opportunity Brief administrator page", () => {
       ok: true as const,
       snapshot: { ...snapshot, page: 2, totalPages: 2 },
     }));
-    vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
     vi.mocked(getOpportunityBriefService).mockReturnValue({
       isAdministrator: vi.fn(() => true),
       getAdminSnapshot,

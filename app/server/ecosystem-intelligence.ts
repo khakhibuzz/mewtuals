@@ -1,4 +1,5 @@
 import { createEcosystemIntelligenceRepository } from "../../db/repositories/ecosystem-intelligence-repository";
+import type { MewtualsDatabase } from "../../db";
 import { readServerEnvironment } from "./env";
 import {
   createEcosystemIntelligenceService,
@@ -11,13 +12,15 @@ export function shouldCacheEcosystemIntelligenceService(runtime: object): boolea
   return !("Cloudflare" in runtime);
 }
 
-export function getEcosystemIntelligenceService(): EcosystemIntelligenceService {
-  const shouldCache = shouldCacheEcosystemIntelligenceService(globalThis);
+export function getEcosystemIntelligenceService(
+  database?: MewtualsDatabase,
+): EcosystemIntelligenceService {
+  const shouldCache = database === undefined && shouldCacheEcosystemIntelligenceService(globalThis);
   if (shouldCache && service) return service;
 
   const environment = readServerEnvironment();
   const nextService = createEcosystemIntelligenceService({
-    repository: createEcosystemIntelligenceRepository(),
+    repository: createEcosystemIntelligenceRepository(database),
     adminEmails: environment.adminEmails,
     now: () => new Date(),
   });

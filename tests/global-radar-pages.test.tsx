@@ -15,8 +15,8 @@ import {
   safeGlobalRadarReturnTo,
 } from "../app/admin/global-demand-radar/page-support";
 import { GlobalRadarTabs } from "../app/components/global-radar/GlobalRadarTabs";
+import { loadAdminPageContext } from "../app/server/admin-page-context";
 import { getGlobalRadarApplication } from "../app/server/global-radar";
-import { getCurrentSession } from "../app/server/session";
 
 const { redirectMock } = vi.hoisted(() => ({
   redirectMock: vi.fn((path: string) => {
@@ -28,7 +28,7 @@ vi.mock("next/navigation", () => ({
   redirect: redirectMock,
   useRouter: () => ({ refresh: vi.fn() }),
 }));
-vi.mock("../app/server/session", () => ({ getCurrentSession: vi.fn() }));
+vi.mock("../app/server/admin-page-context", () => ({ loadAdminPageContext: vi.fn() }));
 vi.mock("../app/server/global-radar", () => ({
   getGlobalRadarApplication: vi.fn(),
 }));
@@ -70,6 +70,7 @@ const adminSession = {
   session: { id: "session", expiresAt: new Date("2026-08-15T00:00:00.000Z") },
   user: { id: actor.userId, email: actor.email, name: "Admin" },
 };
+const database = { requestOwned: "global-radar" } as never;
 
 const emptyMetrics = {
   class: {
@@ -142,7 +143,7 @@ function adminDouble(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getCurrentSession).mockResolvedValue(adminSession);
+  vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: adminSession });
   vi.mocked(getGlobalRadarApplication).mockReturnValue({
     admin: adminDouble(),
   } as never);
@@ -315,7 +316,7 @@ describe("Global Radar pages", () => {
   });
 
   it("authenticates before parsing filters and redirects signed-out visitors", async () => {
-    vi.mocked(getCurrentSession).mockResolvedValue(null);
+    vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: null });
 
     await expect(
       DirectDemandPage({ searchParams: Promise.resolve({ unknown: "private" }) }),
@@ -361,6 +362,8 @@ describe("Global Radar pages", () => {
         observedTo: "2026-07-30",
       },
     });
+    expect(loadAdminPageContext).toHaveBeenCalledOnce();
+    expect(getGlobalRadarApplication).toHaveBeenCalledWith({ database });
     expect(
       screen.getByRole("link", { name: "Global Demand Radar", current: "page" }),
     ).toBeVisible();
