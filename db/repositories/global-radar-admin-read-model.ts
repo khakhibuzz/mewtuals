@@ -114,6 +114,12 @@ export type ListGlobalRadarSignalsResult =
       reason: GlobalRadarReadConflictReason;
     }>;
 
+export type GlobalRadarClassSummaryInput = Readonly<{
+  signalClass: SignalClass;
+  filters: GlobalRadarSignalListInput["filters"];
+  now: Date;
+}>;
+
 export type GlobalRadarClassMetrics = Readonly<{
   total: number;
   highQuality: number;
@@ -509,6 +515,22 @@ export type SafeGlobalRadarOverviewMetrics = Readonly<{
   mergedDuplicates: number;
 }>;
 
+export type GlobalRadarClassSummaryResult =
+  | Readonly<{
+      outcome: "listed";
+      page: number;
+      pageSize: 25;
+      total: number;
+      items: SafeGlobalRadarSignalListItem[];
+      classTotal: number;
+      classMetrics: GlobalRadarClassMetrics;
+      overviewMetrics: SafeGlobalRadarOverviewMetrics;
+    }>
+  | Readonly<{
+      outcome: "conflict";
+      reason: GlobalRadarReadConflictReason;
+    }>;
+
 export type SafeGlobalRadarWatchlistItem = Readonly<{
   id: string;
   globalEntityId: string;
@@ -781,6 +803,426 @@ export function globalRadarSignalFilterConditions(
     );
   }
   return conditions;
+}
+
+export type GlobalRadarClassSummaryRequirement = Readonly<{
+  signalId: string;
+  kind: RequirementKind;
+  capabilityTag: string;
+}>;
+
+type GlobalRadarSummarySignal = typeof globalRadarSignals.$inferSelect;
+
+type MutableClassMetrics = {
+  total: number;
+  highQuality: number;
+  byStatus: Partial<Record<SignalStatus, number>>;
+  explicitIndia: number;
+  inferredIndia: number;
+  unitedStates: number;
+  china: number;
+  physicalData: number;
+  hardware: number;
+  demandFamilies: Record<string, number>;
+  active: number;
+  expiring: number;
+  horizon: {
+    within30Days: number;
+    days31To90: number;
+    days91To180: number;
+    days181To365: number;
+    unknown: number;
+  };
+  qualified: number;
+};
+
+type MutableOverviewMetrics = {
+  newSignals: number;
+  activeDirectDemand: number;
+  highQualityPrecursors: number;
+  explicitIndia: number;
+  inferredIndia: number;
+  unitedStates: number;
+  china: number;
+  physicalData: number;
+  hardware: number;
+  capabilityCounts: Map<string, number>;
+  expiringDirectDemand: number;
+  activeSignalCount: number;
+  mergedDuplicates: number;
+};
+
+export type GlobalRadarClassSummaryAccumulator = {
+  classTotal: number;
+  classMetrics: MutableClassMetrics;
+  overviewMetrics: MutableOverviewMetrics;
+};
+
+function emptyClassMetrics(): MutableClassMetrics {
+  return {
+    total: 0,
+    highQuality: 0,
+    byStatus: {},
+    explicitIndia: 0,
+    inferredIndia: 0,
+    unitedStates: 0,
+    china: 0,
+    physicalData: 0,
+    hardware: 0,
+    demandFamilies: {},
+    active: 0,
+    expiring: 0,
+    horizon: {
+      within30Days: 0,
+      days31To90: 0,
+      days91To180: 0,
+      days181To365: 0,
+      unknown: 0,
+    },
+    qualified: 0,
+  };
+}
+
+export function createGlobalRadarClassSummaryAccumulator(): GlobalRadarClassSummaryAccumulator {
+  return {
+    classTotal: 0,
+    classMetrics: emptyClassMetrics(),
+    overviewMetrics: {
+      newSignals: 0,
+      activeDirectDemand: 0,
+      highQualityPrecursors: 0,
+      explicitIndia: 0,
+      inferredIndia: 0,
+      unitedStates: 0,
+      china: 0,
+      physicalData: 0,
+      hardware: 0,
+      capabilityCounts: new Map(),
+      expiringDirectDemand: 0,
+      activeSignalCount: 0,
+      mergedDuplicates: 0,
+    },
+  };
+}
+
+function directDemandIsActive(
+  signal: Pick<GlobalRadarSummarySignal, "evergreen" | "expiresAt" | "reobserveBy">,
+  now: Date,
+): boolean {
+  return signal.evergreen === true
+    ? signal.reobserveBy !== null && signal.reobserveBy > now
+    : signal.expiresAt === null || signal.expiresAt > now;
+}
+
+function signalMatchesFilters(
+  signal: GlobalRadarSummarySignal,
+  requirements: readonly GlobalRadarClassSummaryRequirement[],
+  filters: ParsedGlobalRadarSignalFilters,
+): boolean {
+  return (
+    (filters.status === undefined || signal.status === filters.status) &&
+    (filters.country === undefined || signal.sourceCountry === filters.country) &&
+    (filters.indiaRelevance === undefined ||
+      signal.indiaRelevanceType === filters.indiaRelevance) &&
+    (filters.demandDomain === undefined ||
+      signal.demandDomain === filters.demandDomain) &&
+    (filters.observedFrom === undefined ||
+      signal.observedAt >= filters.observedFrom) &&
+    (filters.observedTo === undefined || signal.observedAt < filters.observedTo) &&
+    (filters.expiresBefore === undefined ||
+      (signal.expiresAt !== null && signal.expiresAt < filters.expiresBefore)) &&
+    (filters.theme === undefined || signal.theme === filters.theme) &&
+    (filters.capability === undefined ||
+      requirements.some(
+        (requirement) =>
+          requirement.signalId === signal.id &&
+          requirement.capabilityTag === filters.capability,
+      )) &&
+    (filters.horizon === undefined ||
+      (filters.horizon === "within_30_days"
+        ? signal.estimatedTimeHorizon === 100
+        : filters.horizon === "days_31_to_90"
+          ? signal.estimatedTimeHorizon === 80
+          : filters.horizon === "days_91_to_180"
+            ? signal.estimatedTimeHorizon === 60
+            : filters.horizon === "days_181_to_365"
+              ? signal.estimatedTimeHorizon === 35
+              : signal.estimatedTimeHorizon === null))
+  );
+}
+
+function requirementSets(
+  requirements: readonly GlobalRadarClassSummaryRequirement[],
+) {
+  const kindsBySignal = new Map<string, Set<RequirementKind>>();
+  const capabilitiesBySignal = new Map<string, Set<string>>();
+  for (const requirement of requirements) {
+    const kinds = kindsBySignal.get(requirement.signalId) ?? new Set();
+    kinds.add(requirement.kind);
+    kindsBySignal.set(requirement.signalId, kinds);
+    const capabilities =
+      capabilitiesBySignal.get(requirement.signalId) ?? new Set();
+    capabilities.add(requirement.capabilityTag);
+    capabilitiesBySignal.set(requirement.signalId, capabilities);
+  }
+  return { kindsBySignal, capabilitiesBySignal };
+}
+
+function accumulateClassSignal(
+  metrics: MutableClassMetrics,
+  signal: GlobalRadarSummarySignal,
+  kinds: ReadonlySet<RequirementKind>,
+  input: Readonly<{
+    signalClass: SignalClass;
+    now: Date;
+    configuration: GlobalRadarAdminConfiguration;
+  }>,
+) {
+  metrics.total += 1;
+  metrics.byStatus[signal.status] = (metrics.byStatus[signal.status] ?? 0) + 1;
+  if (
+    globalRadarDemandFamilyLookup[
+      signal.demandDomain as keyof typeof globalRadarDemandFamilyLookup
+    ]
+  ) {
+    metrics.demandFamilies[signal.demandDomain] =
+      (metrics.demandFamilies[signal.demandDomain] ?? 0) + 1;
+  }
+  if (signal.indiaRelevanceType === "explicit_India") metrics.explicitIndia += 1;
+  else if (signal.indiaRelevanceType === "inferred_India_compatible") {
+    metrics.inferredIndia += 1;
+  }
+  if (["United States", "US"].includes(signal.sourceCountry)) {
+    metrics.unitedStates += 1;
+  } else if (["China", "CN"].includes(signal.sourceCountry)) {
+    metrics.china += 1;
+  }
+  if (kinds.has("physical_data")) metrics.physicalData += 1;
+  if (kinds.has("robotics_hardware")) metrics.hardware += 1;
+  if (signal.status === "qualified") metrics.qualified += 1;
+  const activeStatus = !["dismissed", "expired", "promoted"].includes(
+    signal.status,
+  );
+  const directActive =
+    input.signalClass !== "direct_demand" ||
+    directDemandIsActive(signal, input.now);
+  if (activeStatus && directActive) metrics.active += 1;
+  if (
+    input.signalClass === "direct_demand" &&
+    ((signal.expiresAt !== null && signal.expiresAt > input.now) ||
+      (signal.reobserveBy !== null && signal.reobserveBy > input.now))
+  ) {
+    metrics.expiring += 1;
+  }
+  if (input.signalClass === "demand_precursor") {
+    if (signal.estimatedTimeHorizon === 100) metrics.horizon.within30Days += 1;
+    else if (signal.estimatedTimeHorizon === 80) metrics.horizon.days31To90 += 1;
+    else if (signal.estimatedTimeHorizon === 60) metrics.horizon.days91To180 += 1;
+    else if (signal.estimatedTimeHorizon === 35) metrics.horizon.days181To365 += 1;
+    else metrics.horizon.unknown += 1;
+  }
+  const score =
+    input.signalClass === "direct_demand"
+      ? signal.directDemandScore
+      : input.signalClass === "demand_precursor"
+        ? signal.precursorScore
+        : signal.momentumScore;
+  const hardGates =
+    input.signalClass === "direct_demand"
+      ? (signal.demandExplicitness ?? -1) >= 75 &&
+        (signal.evidenceConfidence ?? -1) >= 60 &&
+        directActive
+      : input.signalClass === "demand_precursor"
+        ? (signal.evidenceConfidence ?? -1) >= 60 &&
+          (signal.proximityToExternalDemand ?? -1) >= 50
+        : (signal.momentumIndependentEntityCount ?? 0) >= 2 &&
+          (signal.momentumPrimarySourceCount ?? 0) >= 1 &&
+          (signal.momentumTaxonomyConsistency ?? -1) >= 70 &&
+          (signal.momentumEvidenceQuality ?? -1) >= 60 &&
+          signal.momentumQualificationGatesPassed === true;
+  if (
+    signal.scorePolicyVersion === input.configuration.scoreVersion &&
+    score !== null &&
+    score >= input.configuration.thresholds[input.signalClass] &&
+    hardGates
+  ) {
+    metrics.highQuality += 1;
+  }
+}
+
+export function accumulateGlobalRadarClassSummaryChunk(
+  accumulator: GlobalRadarClassSummaryAccumulator,
+  input: Readonly<{
+    signalClass: SignalClass;
+    filters: ParsedGlobalRadarSignalFilters;
+    now: Date;
+    configuration: GlobalRadarAdminConfiguration;
+    signals: readonly GlobalRadarSummarySignal[];
+    requirements: readonly GlobalRadarClassSummaryRequirement[];
+  }>,
+): GlobalRadarClassSummaryAccumulator {
+  const next: GlobalRadarClassSummaryAccumulator = {
+    classTotal: accumulator.classTotal,
+    classMetrics: {
+      ...accumulator.classMetrics,
+      byStatus: { ...accumulator.classMetrics.byStatus },
+      demandFamilies: { ...accumulator.classMetrics.demandFamilies },
+      horizon: { ...accumulator.classMetrics.horizon },
+    },
+    overviewMetrics: {
+      ...accumulator.overviewMetrics,
+      capabilityCounts: new Map(
+        accumulator.overviewMetrics.capabilityCounts,
+      ),
+    },
+  };
+  const { kindsBySignal, capabilitiesBySignal } = requirementSets(
+    input.requirements,
+  );
+  const expiryWindowEnd = new Date(
+    input.now.getTime() + 30 * 24 * 60 * 60 * 1_000,
+  );
+  for (const signal of input.signals) {
+    if (signal.mergedIntoSignalId !== null) {
+      next.overviewMetrics.mergedDuplicates += 1;
+      continue;
+    }
+    const kinds = kindsBySignal.get(signal.id) ?? new Set<RequirementKind>();
+    const capabilities = capabilitiesBySignal.get(signal.id) ?? new Set<string>();
+    next.overviewMetrics.activeSignalCount += 1;
+    next.overviewMetrics.newSignals +=
+      countGlobalRadarSignalsObservedToday([signal.observedAt], input.now);
+    if (signal.indiaRelevanceType === "explicit_India") {
+      next.overviewMetrics.explicitIndia += 1;
+    } else if (signal.indiaRelevanceType === "inferred_India_compatible") {
+      next.overviewMetrics.inferredIndia += 1;
+    }
+    const country = signal.sourceCountry.trim().toLowerCase();
+    if (["united states", "us"].includes(country)) {
+      next.overviewMetrics.unitedStates += 1;
+    } else if (["china", "cn"].includes(country)) {
+      next.overviewMetrics.china += 1;
+    }
+    if (kinds.has("physical_data")) next.overviewMetrics.physicalData += 1;
+    if (kinds.has("robotics_hardware")) next.overviewMetrics.hardware += 1;
+    for (const capability of capabilities) {
+      next.overviewMetrics.capabilityCounts.set(
+        capability,
+        (next.overviewMetrics.capabilityCounts.get(capability) ?? 0) + 1,
+      );
+    }
+    if (signal.signalClass === "direct_demand") {
+      const active =
+        !["dismissed", "expired", "promoted"].includes(signal.status) &&
+        directDemandIsActive(signal, input.now);
+      if (active) next.overviewMetrics.activeDirectDemand += 1;
+      const deadline = signal.evergreen ? signal.reobserveBy : signal.expiresAt;
+      if (
+        active &&
+        deadline !== null &&
+        deadline > input.now &&
+        deadline <= expiryWindowEnd
+      ) {
+        next.overviewMetrics.expiringDirectDemand += 1;
+      }
+    }
+    if (
+      signal.signalClass === "demand_precursor" &&
+      signal.scorePolicyVersion === input.configuration.scoreVersion &&
+      (signal.precursorScore ?? -1) >=
+        input.configuration.thresholds.demand_precursor &&
+      (signal.evidenceConfidence ?? -1) >= 60 &&
+      (signal.proximityToExternalDemand ?? -1) >= 50
+    ) {
+      next.overviewMetrics.highQualityPrecursors += 1;
+    }
+    if (signal.signalClass !== input.signalClass) continue;
+    next.classTotal += 1;
+    if (!signalMatchesFilters(signal, input.requirements, input.filters)) continue;
+    accumulateClassSignal(next.classMetrics, signal, kinds, input);
+  }
+  return next;
+}
+
+export function finalizeGlobalRadarClassSummaryMetrics(
+  accumulator: GlobalRadarClassSummaryAccumulator,
+  metadata: Readonly<{
+    promotedEntities: number;
+    latestRun: SafeGlobalRadarOverviewMetrics["latestRun"];
+    sourceErrors: number;
+  }>,
+): Readonly<{
+  classTotal: number;
+  classMetrics: GlobalRadarClassMetrics;
+  overviewMetrics: SafeGlobalRadarOverviewMetrics;
+}> {
+  const classMetrics = accumulator.classMetrics;
+  const overview = accumulator.overviewMetrics;
+  return {
+    classTotal: accumulator.classTotal,
+    classMetrics: {
+      total: classMetrics.total,
+      highQuality: classMetrics.highQuality,
+      byStatus: classMetrics.byStatus,
+      india: {
+        explicit: classMetrics.explicitIndia,
+        inferred: classMetrics.inferredIndia,
+        other:
+          classMetrics.total -
+          classMetrics.explicitIndia -
+          classMetrics.inferredIndia,
+      },
+      countries: {
+        unitedStates: classMetrics.unitedStates,
+        china: classMetrics.china,
+        other:
+          classMetrics.total -
+          classMetrics.unitedStates -
+          classMetrics.china,
+      },
+      requirementMix: {
+        physicalData: classMetrics.physicalData,
+        hardware: classMetrics.hardware,
+      },
+      demandFamilies: classMetrics.demandFamilies,
+      active: classMetrics.active,
+      expiring: classMetrics.expiring,
+      horizon: classMetrics.horizon,
+      qualified: classMetrics.qualified,
+    },
+    overviewMetrics: {
+      newSignals: overview.newSignals,
+      activeDirectDemand: overview.activeDirectDemand,
+      highQualityPrecursors: overview.highQualityPrecursors,
+      india: {
+        explicit: overview.explicitIndia,
+        inferred: overview.inferredIndia,
+      },
+      countries: {
+        unitedStates: overview.unitedStates,
+        china: overview.china,
+        other:
+          overview.activeSignalCount - overview.unitedStates - overview.china,
+      },
+      requirementMix: {
+        physicalData: overview.physicalData,
+        hardware: overview.hardware,
+      },
+      capabilityFamilies: [...overview.capabilityCounts.entries()]
+        .map(([capability, signals]) => ({ capability, signals }))
+        .sort(
+          (left, right) =>
+            right.signals - left.signals ||
+            left.capability.localeCompare(right.capability),
+        )
+        .slice(0, 50),
+      expiringDirectDemand: overview.expiringDirectDemand,
+      promotedEntities: metadata.promotedEntities,
+      latestRun: metadata.latestRun,
+      sourceErrors: metadata.sourceErrors,
+      mergedDuplicates: overview.mergedDuplicates,
+    },
+  };
 }
 
 export function globalRadarSignalOrder(signalClass: SignalClass): SQL[] {

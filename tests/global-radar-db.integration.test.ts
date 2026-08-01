@@ -6706,6 +6706,203 @@ describe("PostgreSQL Global Radar administrator safe reads", () => {
     expect(momentum).toMatchObject({ outcome: "listed", total: 1 });
   });
 
+  it("returns one unfiltered class summary for each Global Radar signal class", async () => {
+    await persistClassFixture("summary-direct", "direct");
+    await persistClassFixture("summary-precursor", "precursor");
+    await persistClassFixture("summary-momentum", "momentum");
+
+    for (const signalClass of [
+      "direct_demand",
+      "demand_precursor",
+      "ecosystem_momentum",
+    ] as const) {
+      const summary = await adminRepository.getClassSummary({
+        signalClass,
+        filters: {},
+        now: new Date("2026-07-30T13:00:00.000Z"),
+      });
+      expect(summary).toMatchObject({
+        outcome: "listed",
+        page: 1,
+        pageSize: 25,
+        total: 1,
+        classTotal: 1,
+        items: [{ signalClass }],
+        classMetrics: { total: 1 },
+        overviewMetrics: { latestRun: { status: "succeeded" } },
+      });
+    }
+  });
+
+  it("keeps an unfiltered class baseline when active filters return an empty page", async () => {
+    await persistClassFixture("summary-filter-empty", "direct");
+
+    await expect(
+      adminRepository.getClassSummary({
+        signalClass: "direct_demand",
+        filters: { country: "Japan" },
+        now: new Date("2026-07-30T13:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "listed",
+      page: 1,
+      total: 0,
+      items: [],
+      classTotal: 1,
+      classMetrics: { total: 0 },
+    });
+  });
+
+  it("preserves exact class-summary ordering and pagination", async () => {
+    await persistClassFixture("summary-page", "direct");
+    const [owner] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.signalClass, "direct_demand"));
+    if (!owner) throw new Error("Class-summary page fixture is missing.");
+    const requirements = await db
+      .select()
+      .from(globalSignalRequirements)
+      .where(eq(globalSignalRequirements.signalId, owner.id));
+    const evidence = await db
+      .select()
+      .from(globalSignalEvidence)
+      .where(eq(globalSignalEvidence.signalId, owner.id));
+    const cloneIds = Array.from(
+      { length: 25 },
+      (_, index) =>
+        `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    await db.insert(globalRadarSignals).values(
+      cloneIds.map((id) => ({
+        ...owner,
+        id,
+        title: `Class summary ordering ${id}`,
+        dedupeKey: createHash("sha256").update(id).digest("hex"),
+      })),
+    );
+    await db.insert(globalSignalRequirements).values(
+      cloneIds.flatMap((signalId) =>
+        requirements.map(({ id: _id, ...requirement }) => {
+          void _id;
+          return { ...requirement, signalId };
+        }),
+      ),
+    );
+    await db.insert(globalSignalEvidence).values(
+      cloneIds.flatMap((signalId) =>
+        evidence.map(({ id: _id, ...item }) => {
+          void _id;
+          return { ...item, signalId };
+        }),
+      ),
+    );
+    const expectedOrder = [owner.id, ...cloneIds].sort();
+
+    const firstPage = await adminRepository.getClassSummary({
+      signalClass: "direct_demand",
+      filters: { page: 1 },
+      now: new Date("2026-07-30T13:00:00.000Z"),
+    });
+    const secondPage = await adminRepository.getClassSummary({
+      signalClass: "direct_demand",
+      filters: { page: 2 },
+      now: new Date("2026-07-30T13:00:00.000Z"),
+    });
+    expect(firstPage).toMatchObject({ outcome: "listed", total: 26 });
+    expect(secondPage).toMatchObject({
+      outcome: "listed",
+      page: 2,
+      pageSize: 25,
+      total: 26,
+      classTotal: 26,
+    });
+    expect(
+      firstPage.outcome === "listed" ? firstPage.items.map(({ id }) => id) : [],
+    ).toEqual(expectedOrder.slice(0, 25));
+    expect(
+      secondPage.outcome === "listed" ? secondPage.items.map(({ id }) => id) : [],
+    ).toEqual(expectedOrder.slice(25));
+  });
+
+  it("projects requirements, latest run, promoted entities, and overview metrics in one summary", async () => {
+    await persistClassFixture("summary-overview", "direct");
+    const [signal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.signalClass, "direct_demand"));
+    if (!signal || !signal.globalEntityId) {
+      throw new Error("Class-summary overview fixture is missing.");
+    }
+    const [requirement] = await db
+      .select()
+      .from(globalSignalRequirements)
+      .where(eq(globalSignalRequirements.signalId, signal.id));
+    if (!requirement) throw new Error("Class-summary requirement is missing.");
+    await db.insert(globalSignalRequirements).values({
+      ...requirement,
+      id: randomUUID(),
+      kind: "robotics_hardware",
+      capabilityTag: "contract_manufacturing",
+      requirementFingerprint: createHash("sha256")
+        .update("summary-overview-hardware")
+        .digest("hex"),
+    });
+    await db
+      .update(globalEntities)
+      .set({ entityStatus: "promoted_to_candidate" })
+      .where(eq(globalEntities.id, signal.globalEntityId));
+
+    await expect(
+      adminRepository.getClassSummary({
+        signalClass: "direct_demand",
+        filters: {},
+        now: new Date("2026-07-30T13:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      outcome: "listed",
+      classMetrics: {
+        requirementMix: { physicalData: 1, hardware: 1 },
+      },
+      overviewMetrics: {
+        activeDirectDemand: 1,
+        requirementMix: { physicalData: 1, hardware: 1 },
+        capabilityFamilies: expect.arrayContaining([
+          { capability: "contract_manufacturing", signals: 1 },
+        ]),
+        promotedEntities: 1,
+        latestRun: { status: "succeeded" },
+        mergedDuplicates: 0,
+      },
+    });
+  });
+
+  it("fails a class summary generically without partial data when stored score provenance is corrupt", async () => {
+    await persistClassFixture("summary-corrupt", "direct");
+    const [signal] = await db
+      .select()
+      .from(globalRadarSignals)
+      .where(eq(globalRadarSignals.signalClass, "direct_demand"));
+    if (!signal || signal.directDemandScore === null) {
+      throw new Error("Class-summary provenance fixture is missing.");
+    }
+    await db
+      .update(globalRadarSignals)
+      .set({ directDemandScore: signal.directDemandScore + 1 })
+      .where(eq(globalRadarSignals.id, signal.id));
+
+    const result = await adminRepository.getClassSummary({
+      signalClass: "direct_demand",
+      filters: {},
+      now: new Date("2026-07-30T13:00:00.000Z"),
+    });
+    expect(result).toEqual({
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
+    expect(JSON.stringify(result)).not.toMatch(/"items"|"metrics"|"score":/);
+  });
+
   it("returns bounded class metrics, safe detail children, watchlist rows, and generic run notices", async () => {
     await persistClassFixture("metrics", "direct");
     const [signal] = await db.select().from(globalRadarSignals);
@@ -7313,7 +7510,7 @@ describe("PostgreSQL Global Radar score provenance on aggregate reads", () => {
     return signal;
   }
 
-  it("uses bounded keyset aggregate scans and max-plus-one score-prefix reads", async () => {
+  it("uses one bounded class-summary aggregation scan and max-plus-one score-prefix reads", async () => {
     await persistReadProvenanceFixture("bounded-query-recording", "direct_demand");
     const recordedQueries: Array<{
       query: string;
@@ -7346,31 +7543,40 @@ describe("PostgreSQL Global Radar score provenance on aggregate reads", () => {
     );
     try {
       await expect(
-        recordingRepository.getClassMetrics({
+        recordingRepository.getClassSummary({
           signalClass: "direct_demand",
           filters: {},
           now: readAt,
         }),
       ).resolves.toMatchObject({ outcome: "listed" });
-      await expect(
-        recordingRepository.getOverviewMetrics({ now: readAt }),
-      ).resolves.toMatchObject({ outcome: "listed" });
     } finally {
       await recordingClient.end({ timeout: 5 });
     }
 
-    const signalReads = recordedQueries.filter(({ query }) =>
-      /select[\s\S]+from "global_radar_signals"/i.test(query),
+    const aggregateSignalReads = recordedQueries.filter(({ query }) =>
+      /select[\s\S]+from "global_radar_signals"[\s\S]+order by[\s\S]+"global_radar_signals"\."id" asc[\s\S]+limit/i.test(
+        query,
+      ) && !/left join "global_entities"/i.test(query),
     );
-    expect(signalReads.length).toBeGreaterThanOrEqual(2);
-    expect(signalReads.every(({ query }) => /order by[\s\S]+"id" asc[\s\S]+limit/i.test(query))).toBe(true);
+    expect(aggregateSignalReads).toHaveLength(1);
     expect(
-      signalReads.every(({ params }) =>
+      aggregateSignalReads.every(({ params }) =>
         params.some(
           (value) => Number(value) === 100,
         ),
       ),
     ).toBe(true);
+    const requirementReads = recordedQueries.filter(({ query }) =>
+      /from "global_signal_requirements"/i.test(query),
+    );
+    expect(requirementReads.length).toBeLessThanOrEqual(1);
+    const classOrOverviewRescans = recordedQueries.filter(({ query }) =>
+      /from "global_radar_signals"/i.test(query) &&
+      !/count\(\*\)/i.test(query) &&
+      !/left join "global_entities"/i.test(query) &&
+      !/order by[\s\S]+"global_radar_signals"\."id" asc[\s\S]+limit/i.test(query),
+    );
+    expect(classOrOverviewRescans).toHaveLength(0);
     const prefixReads = recordedQueries.filter(({ query }) =>
       /from "global_signal_evidence"[\s\S]+"ingest_ordinal"[\s\S]+limit/i.test(
         query,

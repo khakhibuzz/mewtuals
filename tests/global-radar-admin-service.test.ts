@@ -226,6 +226,7 @@ function repositoryDouble(
   overrides: Partial<GlobalRadarAdminRepositoryPort> = {},
 ): GlobalRadarAdminRepositoryPort {
   return {
+    getClassSummary: vi.fn(),
     listSignals: vi.fn(),
     getClassMetrics: vi.fn(),
     getOverviewMetrics: vi.fn(),
@@ -283,43 +284,26 @@ describe("Global Radar administrator service", () => {
     expect(repository.getSignalDetail).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["listSignals", "getClassMetrics", "getOverviewMetrics"] as const)(
-    "preserves the generic score-provenance conflict from %s without partial class data",
-    async (failingRead) => {
-      const repository = repositoryDouble({
-        listSignals: vi.fn(async () => ({
-          outcome: "listed",
-          page: 1,
-          pageSize: 25,
-          total: 0,
-          items: [],
-        })),
-        getClassMetrics: vi.fn(async () => ({
-          outcome: "listed",
-          metrics: {},
-        })),
-        getOverviewMetrics: vi.fn(async () => ({
-          outcome: "listed",
-          metrics: {},
-        })),
-        [failingRead]: vi.fn(async () => ({
-          outcome: "conflict",
-          reason: "score_provenance_invalid",
-        })),
-      });
-
-      const result = await createService(repository).getClassSummary(ACTOR, {
-        signalClass: "direct_demand",
-        filters: {},
-      });
-
-      expect(result).toEqual({
+  it("preserves a generic class-summary score-provenance conflict without partial data", async () => {
+    const repository = repositoryDouble({
+      getClassSummary: vi.fn(async () => ({
         outcome: "conflict",
         reason: "score_provenance_invalid",
-      });
-      expect(JSON.stringify(result)).not.toMatch(/"items"|"metrics"|"score":/);
-    },
-  );
+      })),
+    });
+
+    const result = await createService(repository).getClassSummary(ACTOR, {
+      signalClass: "direct_demand",
+      filters: {},
+    });
+
+    expect(result).toEqual({
+      outcome: "conflict",
+      reason: "score_provenance_invalid",
+    });
+    expect(repository.getClassSummary).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(result)).not.toMatch(/"items"|"metrics"|"score":/);
+  });
 
   it("preserves the generic score-provenance conflict from watchlist enrichment without partial entries", async () => {
     const entry = watchlistReadModel();
@@ -350,16 +334,14 @@ describe("Global Radar administrator service", () => {
 
   it("validates class filters and converts Kolkata calendar dates to half-open instants", async () => {
     const repository = repositoryDouble({
-      listSignals: vi.fn(async () => ({
+      getClassSummary: vi.fn(async () => ({
         outcome: "listed",
         page: 2,
         pageSize: 25,
         total: 26,
         items: [signalListItem()],
-      })),
-      getClassMetrics: vi.fn(async () => ({
-        outcome: "listed",
-        metrics: {
+        classTotal: 26,
+        classMetrics: {
           total: 26,
           highQuality: 10,
           byStatus: { qualified: 5 },
@@ -378,10 +360,7 @@ describe("Global Radar administrator service", () => {
           },
           qualified: 5,
         },
-      })),
-      getOverviewMetrics: vi.fn(async () => ({
-        outcome: "listed",
-        metrics: {
+        overviewMetrics: {
           newSignals: 4,
           activeDirectDemand: 20,
           highQualityPrecursors: 8,
@@ -436,7 +415,8 @@ describe("Global Radar administrator service", () => {
         mergedDuplicates: 2,
       },
     });
-    expect(repository.listSignals).toHaveBeenCalledWith({
+    expect(repository.getClassSummary).toHaveBeenCalledTimes(1);
+    expect(repository.getClassSummary).toHaveBeenCalledWith({
       signalClass: "direct_demand",
       filters: {
         observedFrom: "2026-07-29T18:30:00.000Z",
@@ -444,7 +424,11 @@ describe("Global Radar administrator service", () => {
         expiresBefore: "2026-08-01T18:30:00.000Z",
         page: 2,
       },
+      now: NOW,
     });
+    expect(repository.listSignals).not.toHaveBeenCalled();
+    expect(repository.getClassMetrics).not.toHaveBeenCalled();
+    expect(repository.getOverviewMetrics).not.toHaveBeenCalled();
     await expect(
       service.getClassSummary(ACTOR, {
         signalClass: "direct_demand",
@@ -454,11 +438,15 @@ describe("Global Radar administrator service", () => {
   });
 
   it("distinguishes an empty filtered result from an honestly empty signal class", async () => {
-    const getClassMetrics = vi
-      .fn()
-      .mockResolvedValueOnce({
+    const repository = repositoryDouble({
+      getClassSummary: vi.fn(async () => ({
         outcome: "listed",
-        metrics: {
+        page: 1,
+        pageSize: 25,
+        total: 0,
+        items: [],
+        classTotal: 4,
+        classMetrics: {
           total: 0,
           highQuality: 0,
           byStatus: {},
@@ -477,51 +465,16 @@ describe("Global Radar administrator service", () => {
           },
           qualified: 0,
         },
-      })
-      .mockResolvedValueOnce({
-        outcome: "listed",
-        metrics: {
-          total: 4,
-          highQuality: 1,
-          byStatus: { monitoring: 4 },
-          india: { explicit: 0, inferred: 1, other: 3 },
-          countries: { unitedStates: 2, china: 1, other: 1 },
-          requirementMix: { physicalData: 1, hardware: 1 },
-          demandFamilies: {},
-          active: 4,
-          expiring: 0,
-          horizon: {
-            within30Days: 0,
-            days31To90: 0,
-            days91To180: 0,
-            days181To365: 0,
-            unknown: 0,
-          },
-          qualified: 0,
+        overviewMetrics: {
+          capabilityFamilies: [],
+          promotedEntities: 0,
+          latestRun: null,
+          sourceErrors: 0,
+          mergedDuplicates: 0,
         },
-      });
-    const service = createService(
-      repositoryDouble({
-        listSignals: vi.fn(async () => ({
-          outcome: "listed",
-          page: 1,
-          pageSize: 25,
-          total: 0,
-          items: [],
-        })),
-        getClassMetrics,
-        getOverviewMetrics: vi.fn(async () => ({
-          outcome: "listed",
-          metrics: {
-            capabilityFamilies: [],
-            promotedEntities: 0,
-            latestRun: null,
-            sourceErrors: 0,
-            mergedDuplicates: 0,
-          },
-        })),
-      }),
-    );
+      })),
+    });
+    const service = createService(repository);
 
     await expect(
       service.getClassSummary(ACTOR, {
@@ -533,16 +486,15 @@ describe("Global Radar administrator service", () => {
       total: 0,
       hasAnySignals: true,
     });
-    expect(getClassMetrics).toHaveBeenNthCalledWith(1, {
+    expect(repository.getClassSummary).toHaveBeenCalledTimes(1);
+    expect(repository.getClassSummary).toHaveBeenCalledWith({
       signalClass: "direct_demand",
       filters: { country: "Japan" },
       now: NOW,
     });
-    expect(getClassMetrics).toHaveBeenNthCalledWith(2, {
-      signalClass: "direct_demand",
-      filters: {},
-      now: NOW,
-    });
+    expect(repository.listSignals).not.toHaveBeenCalled();
+    expect(repository.getClassMetrics).not.toHaveBeenCalled();
+    expect(repository.getOverviewMetrics).not.toHaveBeenCalled();
   });
 
   it("returns paginated run and enriched watchlist DTOs", async () => {

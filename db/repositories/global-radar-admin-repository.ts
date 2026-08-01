@@ -101,8 +101,11 @@ import {
 import {
   GLOBAL_RADAR_ADMIN_MAX_PAGE as MAX_PAGE,
   GLOBAL_RADAR_ADMIN_PAGE_SIZE as PAGE_SIZE,
+  accumulateGlobalRadarClassSummaryChunk,
   assembleGlobalRadarWatchlistEnrichment,
   countGlobalRadarSignalsObservedToday,
+  createGlobalRadarClassSummaryAccumulator,
+  finalizeGlobalRadarClassSummaryMetrics,
   globalRadarSafeListSelection as safeListSelection,
   globalRadarSignalFilterConditions as filterConditions,
   globalRadarSignalOrder as signalOrder,
@@ -111,6 +114,8 @@ import {
   isGlobalRadarEntityQualifiableStatus,
   toSafeGlobalRadarSignalListItem as toSafeListItem,
   type GlobalRadarAdminConfiguration,
+  type GlobalRadarClassSummaryInput,
+  type GlobalRadarClassSummaryResult,
   type GlobalRadarClassMetrics,
   type GlobalRadarCommonFilters,
   type GlobalRadarReadConflictReason,
@@ -134,6 +139,8 @@ export type {
 } from "./global-radar-admin-watchlist";
 export type {
   GlobalRadarAdminConfiguration,
+  GlobalRadarClassSummaryInput,
+  GlobalRadarClassSummaryResult,
   GlobalRadarClassMetrics,
   GlobalRadarCommonFilters,
   GlobalRadarHorizon,
@@ -676,6 +683,145 @@ export function createGlobalRadarAdminRepository(
   const getDetail = detailRepository.getSignalDetail;
   const repository = {
     ...detailRepository,
+    async getClassSummary(
+      input: GlobalRadarClassSummaryInput,
+    ): Promise<GlobalRadarClassSummaryResult> {
+      if (
+        !signalClassLookup[input.signalClass] ||
+        !(input.now instanceof Date) ||
+        Number.isNaN(input.now.getTime())
+      ) {
+        return { outcome: "conflict", reason: "invalid_input" };
+      }
+      const filters = parseSignalFilters(input.signalClass, input.filters);
+      if (!filters) return { outcome: "conflict", reason: "invalid_input" };
+      const conditions = filterConditions(input.signalClass, filters);
+      const [[countRow], pageRows] = await Promise.all([
+        database
+          .select({ count: sql<number>`count(*)::int` })
+          .from(globalRadarSignals)
+          .where(and(...conditions)),
+        database
+          .select(safeListSelection())
+          .from(globalRadarSignals)
+          .leftJoin(
+            globalEntities,
+            eq(globalRadarSignals.globalEntityId, globalEntities.id),
+          )
+          .where(and(...conditions))
+          .orderBy(...signalOrder(input.signalClass))
+          .limit(PAGE_SIZE)
+          .offset((filters.page - 1) * PAGE_SIZE),
+      ]);
+      const pendingPageIds = new Set(pageRows.map(({ id }) => id));
+      let accumulator = createGlobalRadarClassSummaryAccumulator();
+      const metadataPromise = Promise.all([
+        database
+          .select({
+            id: globalRadarRuns.id,
+            status: globalRadarRuns.status,
+            completedAt: globalRadarRuns.completedAt,
+            numberSourceErrors: globalRadarRuns.numberSourceErrors,
+            createdAt: globalRadarRuns.createdAt,
+          })
+          .from(globalRadarRuns)
+          .orderBy(desc(globalRadarRuns.createdAt), desc(globalRadarRuns.id))
+          .limit(1),
+        database
+          .select({ count: sql<number>`count(*)::int` })
+          .from(globalEntities)
+          .where(eq(globalEntities.entityStatus, "promoted_to_candidate")),
+      ]);
+      const aggregatePromise = (async () => {
+        let cursor: string | null = null;
+        while (true) {
+          const rows = await database
+            .select()
+            .from(globalRadarSignals)
+            .where(
+              cursor === null ? undefined : gt(globalRadarSignals.id, cursor),
+            )
+            .orderBy(asc(globalRadarSignals.id))
+            .limit(GLOBAL_RADAR_ADMIN_AGGREGATE_CHUNK_SIZE);
+          if (rows.length === 0) break;
+          const activeRows = rows.filter(
+            ({ mergedIntoSignalId }) => mergedIntoSignalId === null,
+          );
+          const relevantRows = activeRows.filter(
+            ({ signalClass }) =>
+              signalClass === input.signalClass ||
+              signalClass === "direct_demand" ||
+              signalClass === "demand_precursor",
+          );
+          const scoreProvenance =
+            await validateStoredGlobalRadarScoreProvenanceBatch(
+              database,
+              relevantRows,
+            );
+          if (!scoreProvenance.valid) return false;
+          for (const signal of relevantRows) pendingPageIds.delete(signal.id);
+          const requirements = activeRows.length
+            ? await database
+                .select({
+                  signalId: globalSignalRequirements.signalId,
+                  kind: globalSignalRequirements.kind,
+                  capabilityTag: globalSignalRequirements.capabilityTag,
+                })
+                .from(globalSignalRequirements)
+                .where(
+                  inArray(
+                    globalSignalRequirements.signalId,
+                    activeRows.map(({ id }) => id),
+                  ),
+                )
+            : [];
+          accumulator = accumulateGlobalRadarClassSummaryChunk(accumulator, {
+            signalClass: input.signalClass,
+            filters,
+            now: input.now,
+            configuration,
+            signals: rows,
+            requirements,
+          });
+          cursor = rows.at(-1)!.id;
+          if (rows.length < GLOBAL_RADAR_ADMIN_AGGREGATE_CHUNK_SIZE) break;
+        }
+        return true;
+      })();
+      const [aggregateValid, [latestRuns, promotedRows]] = await Promise.all([
+        aggregatePromise,
+        metadataPromise,
+      ]);
+      if (!aggregateValid || pendingPageIds.size > 0) {
+        return { outcome: "conflict", reason: "score_provenance_invalid" };
+      }
+      const latestRun = latestRuns[0];
+      const projection = finalizeGlobalRadarClassSummaryMetrics(accumulator, {
+        promotedEntities: promotedRows[0]?.count ?? 0,
+        latestRun: latestRun
+          ? {
+              id: latestRun.id,
+              status: latestRun.status,
+              completedAt: latestRun.completedAt,
+              createdAt: latestRun.createdAt,
+            }
+          : null,
+        sourceErrors: latestRun?.numberSourceErrors ?? 0,
+      });
+      const total = countRow?.count ?? 0;
+      if (projection.classMetrics.total !== total) {
+        return { outcome: "conflict", reason: "score_provenance_invalid" };
+      }
+      return {
+        outcome: "listed",
+        page: filters.page,
+        pageSize: PAGE_SIZE,
+        total,
+        items: pageRows.map(toSafeListItem),
+        ...projection,
+      };
+    },
+
     async listSignals(input: GlobalRadarSignalListInput): Promise<ListGlobalRadarSignalsResult> {
       if (!signalClassLookup[input.signalClass]) {
         return { outcome: "conflict", reason: "invalid_input" };

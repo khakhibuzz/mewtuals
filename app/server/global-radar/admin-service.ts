@@ -96,7 +96,16 @@ const entityQualificationSchema = z.strictObject({
 
 type RepositoryResult = Readonly<Record<string, unknown>>;
 
+type GlobalRadarClassSummaryRepositoryInput = Readonly<{
+  signalClass: SignalClass;
+  filters: ParsedSignalFilters;
+  now: Date;
+}>;
+
 export type GlobalRadarAdminRepositoryPort = Readonly<{
+  getClassSummary(
+    input: GlobalRadarClassSummaryRepositoryInput,
+  ): Promise<RepositoryResult>;
   listSignals(input: unknown): Promise<RepositoryResult>;
   getClassMetrics(input: unknown): Promise<RepositoryResult>;
   getOverviewMetrics(input: unknown): Promise<RepositoryResult>;
@@ -514,64 +523,33 @@ export function createGlobalRadarAdminService(
     const filters = normalizedFilters(signalClass, input.filters ?? {});
     if (!filters) return { outcome: "invalid" as const };
     const observedAt = now();
-    const hasActiveFilters = Object.keys(filters).some(
-      (key) => key !== "page",
-    );
-    const [list, classMetrics, overview, unfilteredClassMetrics] = await Promise.all([
-      dependencies.repository.listSignals({ signalClass, filters }),
-      dependencies.repository.getClassMetrics({
-        signalClass,
-        filters,
-        now: observedAt,
-      }),
-      dependencies.repository.getOverviewMetrics({ now: observedAt }),
-      hasActiveFilters
-        ? dependencies.repository.getClassMetrics({
-            signalClass,
-            filters: {},
-            now: observedAt,
-          })
-        : Promise.resolve(null),
-    ]);
-    if (
-      hasScoreProvenanceConflict(
-        list,
-        classMetrics,
-        overview,
-        unfilteredClassMetrics,
-      )
-    ) {
+    const summary = await dependencies.repository.getClassSummary({
+      signalClass,
+      filters,
+      now: observedAt,
+    });
+    if (hasScoreProvenanceConflict(summary)) {
       return {
         outcome: "conflict" as const,
         reason: SCORE_PROVENANCE_INVALID_REASON,
       };
     }
     if (
-      list.outcome !== "listed" ||
-      classMetrics.outcome !== "listed" ||
-      overview.outcome !== "listed" ||
-      (hasActiveFilters && unfilteredClassMetrics?.outcome !== "listed") ||
-      !Array.isArray(list.items)
+      summary.outcome !== "listed" ||
+      !Array.isArray(summary.items)
     ) {
       return { outcome: "invalid" as const };
     }
-    const baselineMetrics = hasActiveFilters
-      ? unfilteredClassMetrics?.metrics
-      : classMetrics.metrics;
     return {
       outcome: "listed" as const,
-      page: numberValue(list.page),
-      pageSize: numberValue(list.pageSize),
-      total: numberValue(list.total),
-      hasAnySignals:
-        numberValue(
-          (baselineMetrics as Record<string, unknown> | null | undefined)
-            ?.total,
-        ) > 0,
-      items: list.items.map(serializeGlobalRadarSignalListItem),
+      page: numberValue(summary.page),
+      pageSize: numberValue(summary.pageSize),
+      total: numberValue(summary.total),
+      hasAnySignals: numberValue(summary.classTotal) > 0,
+      items: summary.items.map(serializeGlobalRadarSignalListItem),
       metrics: {
-        class: metricsRecord(classMetrics.metrics),
-        ...overviewRecord(overview.metrics),
+        class: metricsRecord(summary.classMetrics),
+        ...overviewRecord(summary.overviewMetrics),
       },
     };
   }

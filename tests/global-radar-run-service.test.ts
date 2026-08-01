@@ -1232,6 +1232,7 @@ describe("Global Radar run service", () => {
       adminEmails: ["admin@example.com"],
       runRepository,
       adminRepository: {
+        getClassSummary: vi.fn(),
         listSignals: vi.fn(),
         getClassMetrics: vi.fn(),
         getOverviewMetrics: vi.fn(),
