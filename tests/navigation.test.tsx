@@ -2,35 +2,50 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ApplySection } from "../app/components/ApplySection";
-import { ForStartups } from "../app/components/ForStartups";
+import { ForCompanies } from "../app/components/ForCompanies";
 import { Hero } from "../app/components/Hero";
 import { SiteHeader } from "../app/components/SiteHeader";
 
 const navigation = [
-  ["How it works", "#how-it-works"],
-  ["For startups", "#for-startups"],
-  ["For creators", "/join"],
+  ["Ecosystem", "/ecosystem"],
+  ["For companies", "/companies"],
   ["Join Mewtuals", "/join"],
-  ["Log in", "/login"],
 ] as const;
 
 describe("SiteHeader", () => {
-  it("renders exactly the five approved landing destinations in order", () => {
+  it("renders exactly the three approved public destinations in order", () => {
     render(<SiteHeader />);
 
-    const header = within(screen.getByRole("banner"));
-    const links = header.getAllByRole("link");
+    const navigationRegion = within(
+      screen.getByRole("navigation", { name: "Primary navigation" }),
+    );
+    const links = navigationRegion.getAllByRole("link");
     expect(links).toHaveLength(navigation.length);
 
     navigation.forEach(([label, href], index) => {
       expect(links[index]).toHaveAccessibleName(label);
       expect(links[index]).toHaveAttribute("href", href);
     });
-    expect(header.queryByRole("link", { name: "About" })).not.toBeInTheDocument();
-    expect(header.queryByRole("link", { name: "Apply" })).not.toBeInTheDocument();
-    expect(
-      header.queryByRole("link", { name: "Global Demand Radar" }),
-    ).not.toBeInTheDocument();
+    for (const removedLabel of [
+      "How it works",
+      "For startups",
+      "For creators",
+      "Log in",
+      "About",
+      "Apply",
+      "Global Demand Radar",
+    ]) {
+      expect(
+        navigationRegion.queryByRole("link", { name: removedLabel }),
+      ).not.toBeInTheDocument();
+    }
+
+    const home = screen.getByRole("link", { name: "Mewtuals home" });
+    expect(home).toHaveAttribute("href", "/");
+    expect(home.querySelector(".wordmark-mark")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
   });
 
   it("opens the compact menu and closes it after a destination is chosen", async () => {
@@ -43,7 +58,7 @@ describe("SiteHeader", () => {
     expect(menu).toHaveAttribute("aria-expanded", "true");
     expect(menu).toHaveAccessibleName("Close navigation");
 
-    await user.click(screen.getByRole("link", { name: "For startups" }));
+    await user.click(screen.getByRole("link", { name: "For companies" }));
     expect(menu).toHaveAttribute("aria-expanded", "false");
     expect(menu).toHaveAccessibleName("Open navigation");
   });
@@ -54,44 +69,56 @@ describe("SiteHeader", () => {
     const menu = screen.getByRole("button", { name: "Open navigation" });
 
     await user.click(menu);
-    screen.getByRole("link", { name: "How it works" }).focus();
+    screen.getByRole("link", { name: "Ecosystem" }).focus();
     await user.keyboard("{Escape}");
 
     expect(menu).toHaveAttribute("aria-expanded", "false");
     expect(menu).toHaveFocus();
   });
 
-  it("prefixes landing fragments when the header is rendered off the homepage", () => {
-    render(<SiteHeader anchorBase="/" />);
+  it("keeps route destinations stable away from the homepage", () => {
+    render(<SiteHeader />);
 
     expect(
-      screen.getByRole("link", { name: "How it works" }),
-    ).toHaveAttribute("href", "/#how-it-works");
+      screen.getByRole("link", { name: "Ecosystem" }),
+    ).toHaveAttribute("href", "/ecosystem");
     expect(
-      screen.getByRole("link", { name: "For startups" }),
-    ).toHaveAttribute("href", "/#for-startups");
+      screen.getByRole("link", { name: "For companies" }),
+    ).toHaveAttribute("href", "/companies");
   });
 });
 
 describe("landing product entry points", () => {
-  it("starts the join flow from the hero and keeps the explanation link", () => {
+  it("positions Mewtuals for Physical AI and links into the ecosystem", () => {
     render(<Hero />);
 
     expect(
+      screen.getByText(
+        "The External Partnerships function for Physical AI companies",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("heading", {
+        name: "One partnership can change a robotics company. We find the right one.",
+      }),
+    ).toBeVisible();
+    expect(
       screen.getByRole("link", { name: "Find my next partnership" }),
     ).toHaveAttribute("href", "/join");
-    expect(screen.getByRole("link", { name: "See how it works" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Explore the ecosystem" })).toHaveAttribute(
       "href",
-      "#how-it-works",
+      "/ecosystem",
     );
+    expect(screen.getByText("Labs & researchers")).toBeVisible();
   });
 
   it("merges the startup positioning with the two-part partnership map", () => {
-    render(<ForStartups />);
+    render(<ForCompanies />);
 
     expect(
       screen.getByRole("heading", {
-        name: "Built for companies that move at internet speed.",
+        name: "Built for companies bringing intelligence into the physical world.",
+        level: 1,
       }),
     ).toBeVisible();
     expect(

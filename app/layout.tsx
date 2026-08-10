@@ -13,14 +13,14 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const title = "Mewtuals — Partnerships for internet-native companies";
+const title = "Mewtuals — Partnerships for Physical AI companies";
 const description =
-  "Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands.";
+  "Mewtuals maps the Physical AI ecosystem and advances the right external partnerships from signal to pilot.";
 const socialImage = {
   url: "https://mewtuals.com/og.png",
-  width: 1200,
-  height: 630,
-  alt: "Mewtuals — One partnership can change a company. We find the right one.",
+  width: 1731,
+  height: 909,
+  alt: "Mewtuals — External partnerships for Physical AI companies.",
 };
 
 export const metadata: Metadata = {

@@ -1,20 +1,20 @@
-export function ForStartups() {
+export function ForCompanies() {
   return (
-    <section className="startups-section site-section" id="for-startups">
-      <p className="section-label">For startups</p>
-      <div className="startups-layout">
-        <h2>Built for companies that move at internet speed.</h2>
-        <div className="startups-copy">
+    <section className="companies-section site-section" id="for-companies">
+      <p className="section-label">For companies</p>
+      <div className="companies-layout">
+        <h1>Built for companies bringing intelligence into the physical world.</h1>
+        <div className="companies-copy">
           <p>
-            AI startups, creator-economy companies, and consumer brands already
-            live where reputation, distribution, and demand move quickly. We learn
+            Robotics and Physical AI companies grow through an ecosystem of
+            components, manufacturing, pilots, distribution, and trust. We learn
             the company as it is now, then advance the relationships that can
             support its next step.
           </p>
-          <p className="startups-principle">
+          <p className="companies-principle">
             Less corporate theatre. More useful movement.
           </p>
-          <a className="startups-cta text-link" href="/join">
+          <a className="companies-cta text-link" href="/join">
             Join Mewtuals
           </a>
         </div>

@@ -83,7 +83,7 @@ test("mobile member and administrator journey stays responsive and private offli
   await page.goto("/");
   await expect(
     page.getByRole("heading", {
-      name: "One partnership can change a company. We find the right one.",
+      name: "One partnership can change a robotics company. We find the right one.",
     }),
   ).toBeVisible();
   await auditResponsiveState(page, "landing", { desktop: true });
@@ -91,34 +91,50 @@ test("mobile member and administrator journey stays responsive and private offli
 
   const primaryNavigation = page.locator("#primary-navigation");
   const primaryLinks = primaryNavigation.locator("a");
-  await expect(primaryLinks).toHaveCount(5);
+  await expect(primaryLinks).toHaveCount(3);
   await expect(primaryLinks).toHaveText([
-    "How it works",
-    "For startups",
-    "For creators",
+    "Ecosystem",
+    "For companies",
     "Join Mewtuals",
-    "Log in",
   ]);
-  await expect(primaryLinks.filter({ hasText: /^About$/ })).toHaveCount(0);
-  await expect(primaryLinks.filter({ hasText: /^Apply$/ })).toHaveCount(0);
 
-  await page
-    .getByRole("button", { name: /Open case study:/ })
-    .first()
-    .click();
-  await page
-    .getByRole("dialog")
-    .getByRole("link", { name: "Apply with this path" })
-    .click();
-  await expect(page).toHaveURL(/\/apply$/);
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await page.getByRole("link", { name: "For companies" }).click();
+  await expect(page).toHaveURL(/\/companies$/);
+  await expect(
+    page.getByRole("heading", {
+      name: "Built for companies bringing intelligence into the physical world.",
+    }),
+  ).toBeVisible();
+  await auditResponsiveState(page, "companies page", { desktop: true });
+
+  await page.goto("/ecosystem");
+  await expect(
+    page.getByRole("heading", { name: "How the ecosystem fits together" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "What Mewtuals can unlock" }),
+  ).toBeVisible();
+  await auditResponsiveState(page, "ecosystem page", { desktop: true });
+
+  await page.goto("/apply");
   await expect(
     page.getByRole("heading", { name: "Put Mewtuals on your company’s side." }),
   ).toBeVisible();
   await expect(page.getByLabel("Company URL")).toBeVisible();
   await expect(
-    page.locator("#primary-navigation a").filter({ hasText: /^How it works$/ }),
-  ).toHaveAttribute("href", "/#how-it-works");
+    page.locator("#primary-navigation a").filter({ hasText: /^Ecosystem$/ }),
+  ).toHaveAttribute("href", "/ecosystem");
   await auditResponsiveState(page, "application page", { desktop: true });
+
+  await page.goto("/join");
+  await waitForProductHydration(page);
+  await expect(
+    page.getByRole("heading", {
+      name: "Find who you should collaborate with next.",
+    }),
+  ).toBeVisible();
+  await auditResponsiveState(page, "public join", { desktop: true });
 
   await page.goto("/network/join");
   await waitForProductHydration(page);
@@ -348,11 +364,14 @@ async function expectTouchControls(page: Page) {
   );
   for (const control of await controls.all()) {
     if (!(await control.isVisible())) continue;
-    const height = (await control.boundingBox())?.height ?? 0;
+    const box = await control.boundingBox();
+    const height = box?.height ?? 0;
+    const width = box?.width ?? 0;
     const label = `${await control.evaluate((element) => element.tagName.toLowerCase())}: ${(
       await control.innerText().catch(() => "")
     ).trim()}`;
     expect(height, label).toBeGreaterThanOrEqual(44);
+    expect(width, label).toBeGreaterThanOrEqual(44);
   }
 
   const toggles = page.locator('input[type="checkbox"], input[type="radio"]');
@@ -376,19 +395,6 @@ async function verifyLandingKeyboardInteractions(page: Page) {
   await expect(menu).toHaveAttribute("aria-expanded", "false");
   await expect(menu).toBeFocused();
 
-  const firstCaseStudy = page
-    .getByRole("button", { name: /Open case study:/ })
-    .first();
-  await firstCaseStudy.focus();
-  await page.keyboard.press("Enter");
-  const dialog = page.getByRole("dialog");
-  await expect(dialog).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: "Back to case studies" }),
-  ).toBeFocused();
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await expect(firstCaseStudy).toBeFocused();
 }
 
 async function openLocalMagicLink(page: Page, email: string, purpose: string) {
@@ -538,7 +544,7 @@ async function provePublicOnlyOfflineBoundary(
   await page.goto(`${PWA_BASE_URL}/`);
   await expect(
     page.getByRole("heading", {
-      name: "One partnership can change a company. We find the right one.",
+      name: "One partnership can change a robotics company. We find the right one.",
     }),
   ).toBeVisible();
   await expectNoHorizontalOverflow(page);
@@ -548,13 +554,11 @@ async function provePublicOnlyOfflineBoundary(
   await expect(menu).toHaveAttribute("aria-expanded", "true");
   await menu.click();
   await expect(menu).toHaveAttribute("aria-expanded", "false");
-
-  await page
-    .getByRole("button", { name: /Open case study:/ })
-    .first()
-    .click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(page.locator("#primary-navigation a")).toHaveText([
+    "Ecosystem",
+    "For companies",
+    "Join Mewtuals",
+  ]);
   await expect(page.getByRole("dialog")).toHaveCount(0);
 
   await page.goto(`${PWA_BASE_URL}/dashboard`);

@@ -1,21 +1,20 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
-function navigationLinks(anchorBase: "" | "/") {
+function navigationLinks() {
   return [
-    { href: `${anchorBase}#how-it-works`, label: "How it works" },
-    { href: `${anchorBase}#for-startups`, label: "For startups" },
-    { href: "/join", label: "For creators", productEntry: true },
+    { href: "/ecosystem", label: "Ecosystem" },
+    { href: "/companies", label: "For companies" },
     { href: "/join", label: "Join Mewtuals", primary: true },
-    { href: "/login", label: "Log in", productEntry: true },
   ] as const;
 }
 
-export function SiteHeader({ anchorBase = "" }: { anchorBase?: "" | "/" }) {
+export function SiteHeader() {
   const [isOpen, setIsOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
-  const links = navigationLinks(anchorBase);
+  const links = navigationLinks();
 
   useEffect(() => {
     if (!isOpen) return;
@@ -32,7 +31,17 @@ export function SiteHeader({ anchorBase = "" }: { anchorBase?: "" | "/" }) {
 
   return (
     <header className="site-header">
-      <span className="wordmark">Mewtuals</span>
+      <Link
+        aria-label="Mewtuals home"
+        className="wordmark"
+        href="/"
+        prefetch={false}
+      >
+        <span aria-hidden="true" className="wordmark-mark">
+          M
+        </span>
+        <span>Mewtuals</span>
+      </Link>
       <button
         aria-controls="primary-navigation"
         aria-expanded={isOpen}
@@ -50,20 +59,17 @@ export function SiteHeader({ anchorBase = "" }: { anchorBase?: "" | "/" }) {
         id="primary-navigation"
       >
         {links.map((link) => (
-          <a
+          <Link
             className={
-              "primary" in link && link.primary
-                ? "header-primary-link"
-                : "productEntry" in link && link.productEntry
-                  ? "header-product-link"
-                  : undefined
+              "primary" in link && link.primary ? "header-primary-link" : undefined
             }
             href={link.href}
             key={link.label}
             onClick={() => setIsOpen(false)}
+            prefetch={false}
           >
             {link.label}
-          </a>
+          </Link>
         ))}
       </nav>
     </header>

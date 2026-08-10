@@ -68,9 +68,9 @@ describe("public product entry pages", () => {
     expect(screen.getByLabelText("Company URL")).toBeRequired();
     expect(screen.getByLabelText("Work email")).toBeRequired();
     expect(screen.getByLabelText("Phone number")).toBeRequired();
-    expect(screen.getByRole("link", { name: "How it works" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Ecosystem" })).toHaveAttribute(
       "href",
-      "/#how-it-works",
+      "/ecosystem",
     );
   });
 });

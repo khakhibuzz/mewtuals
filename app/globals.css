@@ -132,10 +132,27 @@ button {
 }
 
 .wordmark {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
   color: var(--ink);
   font-size: 1.45rem;
   font-weight: 540;
   letter-spacing: -0.045em;
+}
+
+.wordmark-mark {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: -0.08em;
+  line-height: 1;
 }
 
 .primary-navigation {
@@ -304,14 +321,140 @@ main {
   line-height: 1.6;
 }
 
-.hero-graph {
+.ecosystem-map {
+  position: relative;
+  width: min(100%, 650px);
+  aspect-ratio: 1;
   margin: 0;
+  justify-self: end;
 }
 
-.hero-graph img {
-  display: block;
-  width: 100%;
-  height: auto;
+.ecosystem-orbit {
+  position: absolute;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+}
+
+.ecosystem-orbit-outer {
+  inset: 10%;
+}
+
+.ecosystem-orbit-inner {
+  inset: 29%;
+}
+
+.ecosystem-map::before,
+.ecosystem-map::after {
+  position: absolute;
+  z-index: 0;
+  background: var(--line-strong);
+  content: "";
+  opacity: 0.42;
+}
+
+.ecosystem-map::before {
+  top: 13%;
+  bottom: 13%;
+  left: 50%;
+  width: 1px;
+}
+
+.ecosystem-map::after {
+  top: 50%;
+  right: 13%;
+  left: 13%;
+  height: 1px;
+}
+
+.ecosystem-map-center {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: clamp(72px, 8vw, 104px);
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--paper);
+  box-shadow: 0 22px 54px color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+  font-size: clamp(2rem, 3.2vw, 3.25rem);
+  font-weight: 500;
+  transform: translate(-50%, -50%);
+}
+
+.ecosystem-map ul {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ecosystem-node {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  width: clamp(138px, 12vw, 174px);
+  min-height: 62px;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font-size: clamp(0.68rem, 0.74vw, 0.8rem);
+  line-height: 1.25;
+}
+
+.ecosystem-node svg {
+  flex: 0 0 auto;
+}
+
+.ecosystem-node-1 {
+  top: 2%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.ecosystem-node-2 {
+  top: 24%;
+  right: 0;
+}
+
+.ecosystem-node-3 {
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+}
+
+.ecosystem-node-4 {
+  right: 8%;
+  bottom: 10%;
+}
+
+.ecosystem-node-5 {
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.ecosystem-node-6 {
+  bottom: 10%;
+  left: 8%;
+}
+
+.ecosystem-node-7 {
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+}
+
+.ecosystem-node-8 {
+  top: 27%;
+  left: 0;
 }
 
 .site-section {
@@ -343,7 +486,7 @@ main {
 }
 
 .section-heading h2,
-.startups-layout h2,
+.companies-layout h1,
 .apply-intro h2,
 .application-success h2 {
   margin: 0;
@@ -680,43 +823,43 @@ main {
   margin-top: 42px;
 }
 
-.startups-section {
+.companies-section {
   min-height: 80svh;
   display: flex;
   flex-direction: column;
   justify-content: center;
 }
 
-.startups-layout {
+.companies-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.28fr) minmax(280px, 0.5fr);
   gap: clamp(58px, 9vw, 160px);
   align-items: end;
 }
 
-.startups-layout h2 {
+.companies-layout h1 {
   max-width: 960px;
 }
 
-.startups-copy {
+.companies-copy {
   font-size: 1rem;
   line-height: 1.72;
 }
 
-.startups-copy p {
+.companies-copy p {
   margin: 0;
 }
 
-.startups-copy p + p {
+.companies-copy p + p {
   margin-top: 26px;
 }
 
-.startups-principle {
+.companies-principle {
   color: var(--ink);
   font-weight: 560;
 }
 
-.startups-cta {
+.companies-cta {
   display: inline-block;
   margin-top: 34px;
 }
@@ -753,6 +896,149 @@ main {
   font-weight: 500;
   letter-spacing: -0.045em;
   line-height: 1.08;
+}
+
+.ecosystem-page,
+.companies-page {
+  min-height: calc(100svh - var(--header-height));
+}
+
+.ecosystem-intro {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: clamp(104px, 12vw, 190px) var(--page-gutter) clamp(82px, 9vw, 140px);
+}
+
+.ecosystem-intro h1 {
+  max-width: 980px;
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(3.4rem, 6.6vw, 7.6rem);
+  font-weight: 490;
+  letter-spacing: -0.07em;
+  line-height: 0.98;
+}
+
+.ecosystem-intro > p:last-child {
+  max-width: 570px;
+  margin: clamp(34px, 4vw, 56px) 0 0;
+  font-size: clamp(1rem, 1.2vw, 1.18rem);
+  line-height: 1.7;
+}
+
+.ecosystem-chain-section,
+.ecosystem-unlocks {
+  padding: clamp(78px, 8vw, 126px) var(--page-gutter);
+  border-top: 1px solid var(--line);
+}
+
+.ecosystem-chain {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 26px;
+  max-width: 1720px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+.ecosystem-chain > li {
+  position: relative;
+  min-width: 0;
+}
+
+.ecosystem-stage {
+  min-height: 174px;
+  padding: clamp(22px, 2vw, 32px);
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.ecosystem-stage > div {
+  margin-top: 32px;
+}
+
+.ecosystem-stage h2,
+.ecosystem-outcome h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(1rem, 1.15vw, 1.25rem);
+  font-weight: 560;
+  letter-spacing: -0.025em;
+}
+
+.ecosystem-stage p,
+.ecosystem-outcome p {
+  margin: 10px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.ecosystem-chain-arrow {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: -26px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  background: var(--paper);
+  color: var(--ink-faint);
+  transform: translateY(-50%);
+}
+
+.ecosystem-unlocks {
+  padding-bottom: clamp(120px, 14vw, 220px);
+}
+
+.ecosystem-section-heading {
+  display: flex;
+  max-width: 1720px;
+  align-items: end;
+  justify-content: space-between;
+  gap: 36px;
+  margin: 0 auto clamp(52px, 6vw, 90px);
+}
+
+.ecosystem-section-heading h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(2.8rem, 5.2vw, 6rem);
+  font-weight: 490;
+  letter-spacing: -0.065em;
+  line-height: 1;
+}
+
+.ecosystem-section-heading .text-link {
+  min-height: 44px;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.ecosystem-outcomes {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+  max-width: 1720px;
+  margin: 0 auto;
+}
+
+.ecosystem-outcome {
+  display: grid;
+  min-height: 250px;
+  align-content: space-between;
+  padding: clamp(26px, 2.6vw, 42px);
+  border: 1px solid var(--line);
+}
+
+.ecosystem-outcome p {
+  max-width: 300px;
+  font-size: 0.84rem;
+}
+
+.companies-page .companies-section {
+  border-top: 0;
 }
 
 .apply-section {
@@ -891,6 +1177,18 @@ main {
   .application-form {
     max-width: 720px;
   }
+
+  .ecosystem-chain {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .ecosystem-chain-arrow {
+    display: none;
+  }
+
+  .ecosystem-outcomes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 900px) {
@@ -945,19 +1243,20 @@ main {
     font-size: clamp(2.8rem, 8.2vw, 4.8rem);
   }
 
-  .hero-graph {
+  .ecosystem-map {
     width: min(700px, 92%);
     margin-left: auto;
+    justify-self: center;
   }
 
   .section-heading,
-  .startups-layout,
+  .companies-layout,
   .apply-section {
     grid-template-columns: 1fr;
   }
 
   .section-heading > p:last-child,
-  .startups-copy {
+  .companies-copy {
     max-width: 620px;
   }
 
@@ -974,7 +1273,7 @@ main {
     grid-template-columns: 1fr 1fr;
   }
 
-  .startups-cta {
+  .companies-cta {
     display: inline-flex;
     min-height: 44px;
     align-items: center;
@@ -1061,10 +1360,115 @@ main {
     justify-content: center;
   }
 
-  .hero-graph {
+  .ecosystem-map {
     width: 100%;
-    max-width: 520px;
-    margin: 0 auto;
+    max-width: none;
+    aspect-ratio: auto;
+    margin-top: 28px;
+  }
+
+  .ecosystem-orbit,
+  .ecosystem-map::before,
+  .ecosystem-map::after {
+    display: none;
+  }
+
+  .ecosystem-map-center {
+    position: static;
+    width: 76px;
+    margin: 0 auto 34px;
+    transform: none;
+  }
+
+  .ecosystem-map ul {
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .ecosystem-node {
+    position: static;
+    width: auto;
+    min-height: 82px;
+    padding: 14px;
+    font-size: 0.74rem;
+    transform: none;
+  }
+
+  .ecosystem-intro {
+    padding: 94px var(--page-gutter-end) 100px var(--page-gutter);
+  }
+
+  .ecosystem-intro h1 {
+    font-size: clamp(3rem, 15.5vw, 4.7rem);
+  }
+
+  .ecosystem-intro > p:last-child {
+    margin-top: 38px;
+  }
+
+  .ecosystem-chain-section,
+  .ecosystem-unlocks {
+    padding-right: var(--page-gutter-end);
+    padding-left: var(--page-gutter);
+  }
+
+  .ecosystem-chain {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .ecosystem-stage {
+    display: grid;
+    min-height: 154px;
+    grid-template-columns: 36px 1fr;
+    gap: 22px;
+    padding: 28px 24px;
+  }
+
+  .ecosystem-stage > div {
+    margin-top: 0;
+  }
+
+  .ecosystem-stage h2 {
+    font-size: 1.1rem;
+  }
+
+  .ecosystem-stage p {
+    max-width: 230px;
+    margin-top: 14px;
+    font-size: 0.82rem;
+  }
+
+  .ecosystem-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    margin-bottom: 50px;
+  }
+
+  .ecosystem-section-heading h2 {
+    font-size: clamp(2.75rem, 14vw, 4rem);
+  }
+
+  .ecosystem-section-heading .text-link {
+    display: inline-flex;
+  }
+
+  .ecosystem-outcomes {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .ecosystem-outcome {
+    min-height: 230px;
+    padding: 30px 24px;
+  }
+
+  .companies-page .companies-section {
+    min-height: auto;
+    padding-top: 108px;
+    padding-bottom: 112px;
   }
 
   .site-section {
@@ -1082,7 +1486,7 @@ main {
   }
 
   .section-heading h2,
-  .startups-layout h2,
+  .companies-layout h1,
   .apply-intro h2,
   .application-success h2 {
     font-size: clamp(2.45rem, 13vw, 3.8rem);

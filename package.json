@@ -45,6 +45,7 @@
     "db:setup:local": "npm run db:start && DATABASE_URL=postgresql://127.0.0.1:${MEWTUALS_LOCAL_DATABASE_PORT:-55432}/mewtuals npm run db:migrate && DATABASE_URL=postgresql://127.0.0.1:${MEWTUALS_LOCAL_DATABASE_PORT:-55432}/mewtuals npm run db:seed"
   },
   "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
     "d3-geo": "3.1.1",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",

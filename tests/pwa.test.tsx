@@ -295,9 +295,9 @@ describe("public-only PWA metadata", () => {
       images: [
         {
           url: "https://mewtuals.com/og.png",
-          width: 1200,
-          height: 630,
-          alt: "Mewtuals — One partnership can change a company. We find the right one.",
+          width: 1731,
+          height: 909,
+          alt: "Mewtuals — External partnerships for Physical AI companies.",
         },
       ],
     });
@@ -410,6 +410,24 @@ describe("generated public-only service worker", () => {
 });
 
 describe("service worker cache behavior", () => {
+  it("keeps ecosystem and companies pages network-only and uncached", async () => {
+    const worker = createWorkerHarness({
+      fetchResponse: (pathname) =>
+        new Response(`network ${pathname}`, { status: 200 }),
+    });
+
+    await worker.dispatchLifecycle("install");
+    const cachedBefore = [...worker.cache().entries.keys()].sort();
+
+    for (const pathname of ["/ecosystem", "/companies"]) {
+      const result = await worker.dispatchFetch(documentRequest(pathname));
+      expect(result.intercepted).toBe(true);
+      await expect(result.response?.text()).resolves.toBe(`network ${pathname}`);
+    }
+
+    expect([...worker.cache().entries.keys()].sort()).toEqual(cachedBefore);
+  });
+
   it("stages the public shell, exact allowlist, and discovered landing assets", async () => {
     const worker = createWorkerHarness({ fetchResponse: publicShellResponder });
 

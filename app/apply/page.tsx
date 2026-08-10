@@ -4,7 +4,7 @@ import { SiteHeader } from "../components/SiteHeader";
 export default function ApplyPage() {
   return (
     <>
-      <SiteHeader anchorBase="/" />
+      <SiteHeader />
       <main>
         <ApplySection />
       </main>

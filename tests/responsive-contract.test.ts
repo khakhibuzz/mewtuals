@@ -63,7 +63,13 @@ describe("public landing mobile responsive contract", () => {
     expectRule(mobile, ".hero", ["grid-template-columns: 1fr", "padding-left: var(--page-gutter)"]);
     expectRule(mobile, ".hero-actions", ["flex-direction: column"]);
     expectRule(mobile, ".hero-actions > *", ["width: 100%", "min-height: 44px"]);
-    expectRule(mobile, ".hero-graph", ["width: 100%"]);
+    expectRule(mobile, ".ecosystem-map", ["width: 100%", "aspect-ratio: auto"]);
+    expectRule(mobile, ".ecosystem-map ul", [
+      "grid-template-columns: repeat(2, minmax(0, 1fr))",
+    ]);
+    expectRule(mobile, ".ecosystem-chain", ["grid-template-columns: 1fr"]);
+    expectRule(mobile, ".ecosystem-outcomes", ["grid-template-columns: 1fr"]);
+    expectRule(mobile, ".ecosystem-stage", ["min-height: 154px"]);
 
     expectRule(mobile, ".case-study-rail", ["overflow-x: auto", "scroll-snap-type: x mandatory"]);
     expectRule(mobile, ".case-study-card", ["min-height: 0"]);
