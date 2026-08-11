@@ -1,67 +1,55 @@
-# Mutuals landing page — design QA
+# Mewtuals Ecosystem viewport correction — design QA
 
-## Reference and capture set
+## Evidence
 
-- Source of truth: `design/reference/mutuals-objective-field.png`
-- Desktop viewport: `artifacts/mutuals-desktop-viewport.png` at 1440 × 1100
-- Mobile viewport: `artifacts/mutuals-mobile.png` at 390 × 844
-- Full-view comparison: `artifacts/mutuals-comparison.png`
-- Focused states:
-  - `artifacts/mutuals-how-it-works.png`
-  - `artifacts/mutuals-case-dialog.png`
-  - `artifacts/mutuals-for-startups.png`
-  - `artifacts/mutuals-about.png`
-  - `artifacts/mutuals-apply.png`
-  - `artifacts/mutuals-mobile-menu.png`
-  - `artifacts/mutuals-mobile-how.png`
+- Source visual truth:
+  - `/Users/keshavgarg/Desktop/Screenshot 2026-08-11 at 10.36.28 AM.png`
+  - `/Users/keshavgarg/Desktop/Screenshot 2026-08-11 at 10.36.39 AM.png`
+- Browser-rendered implementation:
+  - `/private/tmp/mewtuals-ecosystem-overview-1728.png`
+  - `/private/tmp/mewtuals-ecosystem-unlocks-1728.png`
+  - `/private/tmp/mewtuals-ecosystem-mobile.png`
+  - `/private/tmp/mewtuals-home-mobile.png`
+- Same-input comparisons:
+  - `/private/tmp/mewtuals-qa-overview-comparison.png`
+  - `/private/tmp/mewtuals-qa-unlocks-comparison.png`
+- State: public, unauthenticated `/ecosystem` and `/` routes.
+- Desktop normalization: each source screenshot was 3456 × 2234 pixels at 2× density. The 66-pixel browser strip was removed and the result was downsampled to 1728 × 1084, matching the implementation capture at a 1728 × 1084 CSS viewport and 1× screenshot density.
+- Mobile validation: 390 × 844 CSS viewport and 390 × 844 implementation pixels.
 
-The comparison places the selected visual direction beside the implemented hero. The focused captures cover every new section and the two responsive interaction states that materially change the layout: the mobile menu and horizontally scrollable case-study rail.
+## Full-view comparison
 
-## Fidelity review
+The overview comparison shows the source on the left and the implementation on the right. The source cuts the ecosystem chain at the viewport edge. The implementation preserves the same typography, warm paper palette, linear icon family, six-stage order, borders, and negative-space character while keeping the complete heading, explanation, and chain inside one viewport below the sticky header.
 
-### Typography
+The unlocks comparison uses the same source-left, implementation-right arrangement. The source includes the preceding chain at the top of the viewport. The implementation begins cleanly below the header and keeps the complete unlock heading, link, and four outcome cards within the second viewport.
 
-Geist Sans preserves the selected neutral-grotesk character without introducing a decorative brand voice. The hero keeps the reference hierarchy: a large soft-charcoal statement with the final decision phrase in near-black. The wordmark, navigation, section labels, and body copy remain deliberately subordinate.
+## Fidelity surfaces
 
-### Spacing and layout
+- Fonts and typography: existing Geist display and body hierarchy is preserved. Heading weight, tight tracking, line height, and copy wrapping remain consistent with the source at the normalized desktop size.
+- Spacing and layout rhythm: the two desktop regions are now independent `100svh - header` panels. Content is vertically centered without clipping, overlap, or adjacent-section bleed. Mobile remains content-led with intentional negative space and a single-column card flow.
+- Colors and tokens: existing paper, charcoal, and neutral-line tokens are unchanged.
+- Image and asset quality: no raster imagery was introduced. Existing Phosphor icons remain crisp, aligned, and consistent; no placeholder or custom-drawn substitutes were added.
+- Copy and content: ecosystem and outcome copy is unchanged. The homepage headline now reads “One partnership can change a company. We find the right one.” and the removed “robotics” wording does not remain.
+- Responsiveness and accessibility: 390 × 844 captures have no horizontal overflow; the sticky header, menu target sizing, semantic headings, link affordances, and natural mobile document flow are preserved.
 
-The desktop hero retains the selected copy-left, graph-right composition and large negative-space field. The five case studies remain in one row at desktop width. On mobile they become a horizontal rail with a visible next-card edge, preserving the sequence without compressing the content into unusable cards. Section spacing remains generous and dividers provide the only persistent structure.
+## Focused-region comparison
 
-### Color
+No additional crops were needed. At 1728 × 1084, both combined comparisons keep the headings, navigation, icon cards, dividers, and body copy readable enough to judge typography, spacing, icons, color, and content directly. The separate 390 × 844 captures cover the materially different mobile layout.
 
-The implementation uses warm paper `#f3f0e9`, soft charcoal `#69665f`, readable secondary charcoal `#6b6861`, near-black `#11110f`, and restrained neutral rules. The two normal-text charcoals measure 5.03:1 and 4.88:1 against the paper; the secondary charcoal remains 4.50:1 on the interactive paper-deep surface. Input boundaries measure 3.45:1 against paper. This matches the selected toned-white and pastel-black direction while keeping emphasis objective and legible.
+## Findings
 
-### Graph asset
+- No actionable P0, P1, or P2 differences remain.
+- The implementation intentionally differs from the source only where required: it compacts vertical spacing enough to contain each complete desktop panel and removes the previous cross-panel bleed.
 
-The hero graph is a generated 1122 × 1402 raster asset sized for its actual placement. It keeps the selected grid, node progression, and exact labels: “signal captured”, “conversation initiated”, “interest aligned”, and “human decision”. It remains sharp at the tested desktop and mobile sizes.
+## Comparison history
 
-### Copy and information hierarchy
+- Pass 1: the combined overview and unlocks comparisons confirmed the requested viewport containment without new visual drift. No P0, P1, or P2 fix iteration was required.
 
-The hero uses the approved core promise verbatim. The top navigation contains only “How it works”, “For startups”, “About”, and “Apply”. Each supporting section answers one question: how value paths start, whom Mutuals represents, why the network exists, and how to apply. Case studies are explicitly labeled illustrative so invented examples cannot be mistaken for customer proof.
+## Interaction and browser checks
 
-### Interaction and accessibility
+- Verified both ecosystem panels in the in-app browser at 1440 × 900 and 1728 × 1084.
+- Verified the Ecosystem page and homepage at 390 × 844.
+- Confirmed desktop panel bounds match `100svh - header`, mobile document width equals client width, and the revised homepage heading has one accessible match.
+- No new interactive control was introduced; existing navigation and Join Mewtuals affordances remain unchanged.
 
-- All navigation anchors were exercised in the browser.
-- Each case-study card opens an in-depth dialog.
-- Escape closes the dialog and restores focus to its originating card.
-- The application form validates company URL, work email, and phone number with accessible error states.
-- The live error summary includes every field-specific message, not only generic guidance.
-- The prototype success state clearly says information was not sent and can be reset.
-- The mobile menu opens, exposes all four destinations, and closes after selection.
-- Escape from the mobile menu, the case-study Apply path, and the application reset all place focus on the next useful control.
-- Keyboard focus styling is visible and the live browser console showed no errors or warnings.
-
-## Findings and iteration history
-
-The initial side-by-side visual comparison showed no P0, P1, or P2 fidelity differences. A subsequent static and interaction review found P2 implementation issues outside that first capture: the Apply grid could clip around 1000px; secondary text missed minimum contrast; input focus rings were suppressed; card theses were clamped; and several keyboard/error handoffs lacked complete context. The implementation now stacks Apply at 1180px, uses compliant text tokens, restores focus rings and deliberate focus destinations, announces field-level errors in the live summary, and shows every thesis in full.
-
-P3 polish observations:
-
-- The graph image field is slightly more explicit than the reference because its paper tone creates a very subtle rectangular boundary.
-- The rendered Mutuals wordmark is marginally heavier than the reference mock.
-
-Both observations are non-blocking and preserve the intended hierarchy. There are no broken layouts, cropped assets, missing core interactions, inaccessible primary controls, or requirement gaps in the tested states.
-
-## Final result
-
-passed
+final result: passed

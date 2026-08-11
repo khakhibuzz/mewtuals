@@ -25,7 +25,8 @@ test("homepage is a sparse Physical AI positioning surface", async () => {
   const html = await response.text();
 
   assert.match(html, /The External Partnerships function for Physical AI companies/);
-  assert.match(html, /One partnership can change a robotics company\./);
+  assert.match(html, /One partnership can change a company\./);
+  assert.doesNotMatch(html, /One partnership can change a robotics company\./);
   assert.match(html, /href="\/ecosystem">Explore the ecosystem<\/a>/);
   assert.match(html, /aria-label="Mewtuals at the centre of the Physical AI partnership ecosystem"/);
   assert.doesNotMatch(html, /id="how-it-works"|id="for-startups"/);
@@ -37,6 +38,14 @@ test("ecosystem route explains the chain and four Mewtuals outcomes", async () =
   const html = await response.text();
 
   assert.match(html, />How the ecosystem fits together<\/h1>/);
+  assert.match(
+    html,
+    /<section class="ecosystem-overview ecosystem-panel">[\s\S]*?class="ecosystem-intro"[\s\S]*?class="ecosystem-chain-section"[\s\S]*?<\/section>/,
+  );
+  assert.match(
+    html,
+    /<section(?=[^>]*class="ecosystem-unlocks ecosystem-panel")(?=[^>]*id="unlocks")[^>]*>/,
+  );
   for (const stage of [
     "Components",
     "Manufacturing",

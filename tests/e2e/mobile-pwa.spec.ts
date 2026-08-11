@@ -83,7 +83,7 @@ test("mobile member and administrator journey stays responsive and private offli
   await page.goto("/");
   await expect(
     page.getByRole("heading", {
-      name: "One partnership can change a robotics company. We find the right one.",
+      name: "One partnership can change a company. We find the right one.",
     }),
   ).toBeVisible();
   await auditResponsiveState(page, "landing", { desktop: true });
@@ -544,7 +544,7 @@ async function provePublicOnlyOfflineBoundary(
   await page.goto(`${PWA_BASE_URL}/`);
   await expect(
     page.getByRole("heading", {
-      name: "One partnership can change a robotics company. We find the right one.",
+      name: "One partnership can change a company. We find the right one.",
     }),
   ).toBeVisible();
   await expectNoHorizontalOverflow(page);

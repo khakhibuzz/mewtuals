@@ -96,6 +96,23 @@ describe("public landing mobile responsive contract", () => {
   });
 });
 
+describe("ecosystem desktop viewport contract", () => {
+  it("keeps the overview and unlocks in two complete desktop panels", () => {
+    const desktopPanels = mobileBlock(
+      css,
+      "@media (min-width: 1181px) and (min-height: 700px)",
+    );
+
+    expect(desktopPanels).not.toBe("");
+    expectRule(desktopPanels, ".ecosystem-overview", [
+      "min-height: calc(100svh - var(--header-height))",
+    ]);
+    expectRule(desktopPanels, ".ecosystem-unlocks", [
+      "min-height: calc(100svh - var(--header-height))",
+    ]);
+  });
+});
+
 describe("member and admin mobile responsive contract", () => {
   it("keeps every product surface intentional, touch-friendly, and readable below 768px", () => {
     const mobile = mobileBlock(productCss);

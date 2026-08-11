@@ -99,7 +99,7 @@ describe("landing product entry points", () => {
     ).toBeVisible();
     expect(
       screen.getByRole("heading", {
-        name: "One partnership can change a robotics company. We find the right one.",
+        name: "One partnership can change a company. We find the right one.",
       }),
     ).toBeVisible();
     expect(

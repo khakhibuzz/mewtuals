@@ -42,7 +42,8 @@ test("server-renders the sparse Physical AI landing page", async () => {
     /<a(?=[^>]*href="\/")(?=[^>]*aria-label="Mewtuals home")(?=[^>]*class="wordmark")[^>]*>/,
   );
   assert.match(html, /The External Partnerships function for Physical AI companies/);
-  assert.match(html, /One partnership can change a robotics company\./);
+  assert.match(html, /One partnership can change a company\./);
+  assert.doesNotMatch(html, /One partnership can change a robotics company\./);
   assert.match(html, />We find the right one\.<\/strong>/);
   assert.match(html, /href="\/join">Find my next partnership<\/a>/);
   assert.match(html, /href="\/ecosystem">Explore the ecosystem<\/a>/);

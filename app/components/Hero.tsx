@@ -8,7 +8,7 @@ export function Hero() {
           The External Partnerships function for Physical AI companies
         </p>
         <h1>
-          One partnership can change a robotics company. {" "}
+          One partnership can change a company. {" "}
           <strong>We find the right one.</strong>
         </h1>
         <p className="hero-support">
