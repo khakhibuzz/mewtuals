@@ -235,7 +235,7 @@ function publicShellResponder(
   if (pathname === "/offline") return new Response("offline page", { status: 200 });
   if (pathname === "/app/globals.css") {
     const accept = !request || typeof request === "string" ? null :
-      "headers" in request ? request.headers.get("accept") : null;
+      new Headers(request.headers).get("accept");
     return new Response(
       accept?.includes("text/css") ? "public styles" : "development css module",
       { headers: { Vary: "Accept" }, status: 200 },
@@ -268,12 +268,12 @@ describe("public-only PWA metadata", () => {
         expect.objectContaining({
           src: "/icons/mewtuals-192.png",
           sizes: "192x192",
-          purpose: "any maskable",
+          purpose: "maskable",
         }),
         expect.objectContaining({
           src: "/icons/mewtuals-512.png",
           sizes: "512x512",
-          purpose: "any maskable",
+          purpose: "maskable",
         }),
       ]),
     );

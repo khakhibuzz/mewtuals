@@ -135,7 +135,7 @@ export function validateApplication(input: ApplicationInput): ApplicationResult 
   if (!workEmail.ok) errors.workEmail = workEmail.error;
   if (!phone.ok) errors.phone = phone.error;
 
-  if (Object.keys(errors).length > 0) {
+  if (!companyUrl.ok || !workEmail.ok || !phone.ok) {
     return { ok: false, errors };
   }
 

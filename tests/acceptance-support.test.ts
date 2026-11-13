@@ -19,9 +19,7 @@ describe("acceptance environment safety", () => {
     const environmentExample = readFileSync(".env.example", "utf8");
 
     expect(packageJson.scripts["db:setup"]).toBe("npm run db:setup:local");
-    expect(packageJson.scripts["db:setup:local"]).toContain(
-      `DATABASE_URL=${LOCAL_APP_DATABASE_URL}`,
-    );
+    expect(packageJson.scripts["db:setup:local"]).toContain("scripts/with-local-db.mjs app");
     expect(packageJson.scripts["db:setup:local"]).not.toContain(
       "${DATABASE_URL",
     );
@@ -50,7 +48,7 @@ describe("acceptance environment safety", () => {
     for (const unsafe of [
       LOCAL_APP_DATABASE_URL,
       "postgresql://db.example.com:5432/mewtuals_test",
-      "postgresql://127.0.0.1:5432/mewtuals_test",
+      `postgresql://127.0.0.1:${new URL(LOCAL_TEST_DATABASE_URL).port === "5432" ? "5433" : "5432"}/mewtuals_test`,
       "postgresql://127.0.0.1:55432/production",
     ]) {
       expect(() => requireLocalTestDatabaseUrl(unsafe)).toThrow(
@@ -65,9 +63,9 @@ describe("acceptance environment safety", () => {
     );
     expect(
       requireLocalAppDatabaseUrl(
-        "postgresql://local-user@127.0.0.1:55432/mewtuals",
+        LOCAL_APP_DATABASE_URL.replace("postgresql://", "postgresql://local-user@"),
       ),
-    ).toBe("postgresql://local-user@127.0.0.1:55432/mewtuals");
+    ).toBe(LOCAL_APP_DATABASE_URL.replace("postgresql://", "postgresql://local-user@"));
     expect(() =>
       requireLocalAppDatabaseUrl(LOCAL_TEST_DATABASE_URL),
     ).toThrow(/local application database/);

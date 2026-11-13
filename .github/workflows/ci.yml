@@ -1,0 +1,52 @@
+name: Fresh clone
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PLAYWRIGHT_CHANNEL: chromium
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install PostgreSQL 16
+        run: sudo apt-get update && sudo apt-get install -y postgresql-16
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Create independent local configuration and seed data
+        run: npm run setup:local
+      - name: Verify setup can be repeated
+        run: npm run setup:local
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:db
+      - run: npm run test:acceptance
+      - name: Start development app
+        run: npm run dev:4000 > /tmp/mewtuals-dev.log 2>&1 &
+      - name: Wait for development app
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://localhost:4000/ > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/mewtuals-dev.log
+          exit 1
+      - run: npm run test:e2e
+      - name: Show server output on failure
+        if: failure()
+        run: cat /tmp/mewtuals-dev.log 2>/dev/null || true
+      - name: Stop local database
+        if: always()
+        run: npm run db:stop

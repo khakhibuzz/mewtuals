@@ -3,13 +3,17 @@ import { userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { localDatabasePort } from "./local-development.mjs";
+import { loadLocalEnvironment } from "./load-local-env.mjs";
+
+loadLocalEnvironment();
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = join(projectRoot, ".local-postgres");
 const dataDir = join(runtimeDir, "data");
 const logFile = join(runtimeDir, "postgres.log");
 const host = "127.0.0.1";
-const port = "55432";
+const port = localDatabasePort();
 const databaseNames = ["mewtuals", "mewtuals_test"];
 const primaryDatabaseName = databaseNames[0];
 
@@ -74,6 +78,9 @@ function postgres16BinDir(candidate) {
 }
 
 function locatePostgres16() {
+  const linuxCandidate = postgres16BinDir("/usr/lib/postgresql/16/bin");
+  if (linuxCandidate) return linuxCandidate;
+
   const pgConfig = pathFor("pg_config");
   if (pgConfig) {
     const version = run(pgConfig, ["--version"], {
@@ -120,7 +127,7 @@ function locatePostgres16() {
   }
 
   throw new Error(
-    "PostgreSQL 16 was not found on PATH or via `brew --prefix postgresql@16`.",
+    "PostgreSQL 16 was not found. Install it using the README instructions and expose its bin directory on PATH.",
   );
 }
 
@@ -207,6 +214,9 @@ function ensureDatabase(binDir, databaseName) {
 }
 
 function start(binDir) {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    throw new Error("PostgreSQL local setup must run as a normal user, not root.");
+  }
   initialise(binDir);
 
   if (!isRunning(binDir)) {
@@ -220,6 +230,11 @@ function start(binDir) {
       "-w",
       "start",
     ]);
+  } else {
+    const runningPort = readFileSync(join(dataDir, "postmaster.pid"), "utf8").split("\n")[3];
+    if (runningPort !== port) {
+      throw new Error(`This checkout's PostgreSQL is already running on port ${runningPort}. Stop it before changing ports.`);
+    }
   }
 
   for (const databaseName of databaseNames) {

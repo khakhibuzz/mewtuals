@@ -51,7 +51,7 @@ export type ServerEnvironment = {
 };
 
 export function readServerEnvironment(
-  source: NodeJS.ProcessEnv = process.env,
+  source: Record<string, string | undefined> = process.env,
 ): ServerEnvironment {
   const result = serverEnvironmentSchema.safeParse(source);
   if (!result.success) {

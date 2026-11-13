@@ -64,6 +64,13 @@ test.afterAll(async () => {
   await closeDb();
 });
 
+test("production startup refuses local approval despite generated development configuration", async ({ request }) => {
+  const response = await request.post("http://localhost:4002/api/dev/verification/approve", {
+    headers: { origin: "http://localhost:4002" },
+  });
+  expect(response.status()).toBe(404);
+});
+
 test("fresh member completes and retains the product-v1 journey", async ({
   page,
 }) => {

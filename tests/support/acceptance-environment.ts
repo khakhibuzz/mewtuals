@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
+import { localDatabasePort } from "../../scripts/local-development.mjs";
 
 export const LOCAL_APP_DATABASE_URL =
-  "postgresql://127.0.0.1:55432/mewtuals";
+  `postgresql://127.0.0.1:${localDatabasePort()}/mewtuals`;
 export const LOCAL_TEST_DATABASE_URL =
-  "postgresql://127.0.0.1:55432/mewtuals_test";
+  `postgresql://127.0.0.1:${localDatabasePort()}/mewtuals_test`;
 
 function requireLocalDatabaseUrl(
   value: string | undefined,
@@ -21,13 +22,13 @@ function requireLocalDatabaseUrl(
     !url ||
     !["postgres:", "postgresql:"].includes(url.protocol) ||
     url.hostname !== "127.0.0.1" ||
-    url.port !== "55432" ||
+    url.port !== localDatabasePort() ||
     url.pathname !== `/${databaseName}` ||
     url.search ||
     url.hash
   ) {
     throw new Error(
-      `This command requires the ${label} at 127.0.0.1:55432/${databaseName}. Refusing the configured DATABASE_URL.`,
+      `This command requires the ${label} at 127.0.0.1:${localDatabasePort()}/${databaseName}. Refusing the configured DATABASE_URL.`,
     );
   }
   return value;

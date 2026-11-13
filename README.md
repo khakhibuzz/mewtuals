@@ -19,54 +19,67 @@ members use `/login`.
 
 ## Local setup
 
-Requirements:
+The local member journey needs no email account, Google credentials, cloud
+database, Sites account, or files from the original developer's computer. UI
+assets and seed data are committed. Dependency downloads require internet access.
 
-- Node.js `>=22.13.0`
-- PostgreSQL 16 (`brew install postgresql@16` on macOS)
+Prerequisites: Node.js **22.22.3** (see `.nvmrc`), npm, and **PostgreSQL 16**.
+Use macOS or Linux as a normal user; on Windows use Ubuntu in WSL2. PostgreSQL
+initialization cannot run as root.
 
-Install dependencies and create local configuration:
+- macOS: `brew install postgresql@16`
+- Ubuntu 24.04: `sudo apt-get update && sudo apt-get install -y postgresql-16`
+- Other Linux distributions: install PostgreSQL 16 and put its bin directory,
+  including `initdb`, `pg_ctl`, `psql`, and `createdb`, on `PATH`.
 
-```bash
-npm install
-cp .env.example .env.local
-```
-
-Use these development values as a starting point. Keep the placeholders blank
-until the corresponding integration is configured.
-
-```dotenv
-DATABASE_URL=postgresql://<local-user>@127.0.0.1:55432/mewtuals
-NODE_ENV=development
-SESSION_SECRET=<at-least-32-random-characters>
-RESEND_API_KEY=
-EMAIL_FROM=
-ADMIN_EMAILS=admin@example.com
-MEWTUALS_DEV_AUTH=true
-GOOGLE_CLIENT_ID=
-GOOGLE_CLIENT_SECRET=
-```
-
-Generate a session secret with `openssl rand -base64 48`, then start and prepare
-the project-local database. Replace `<local-user>` with the output of `whoami`;
-Vinext's worker runtime cannot infer the local PostgreSQL role:
+Do not start a global PostgreSQL service for this project. From a fresh clone:
 
 ```bash
-npm run db:setup
-```
-
-Start Mewtuals on the product-v1 local URL:
-
-```bash
+git clone https://github.com/khakhibuzz/mewtuals.git
+cd mewtuals
+npm ci
+npm run setup:local
 npm run dev:4000
 ```
 
 Open [http://localhost:4000](http://localhost:4000).
 
-With `MEWTUALS_DEV_AUTH=true`, a login request made on an exact loopback host
-(`localhost`, `127.0.0.1`, or `::1`) exposes a development confirmation link.
-After submitting a profile for verification, the same local-only mode exposes
-the development approval action. Neither shortcut is available in production
-or on a non-loopback preview host.
+`setup:local` generates ignored `.env.local` and `.dev.vars` files with matching
+settings and a random session secret, initializes a checkout-owned cluster in
+`.local-postgres`, then applies migrations and seeds four opportunities. It
+creates separate `mewtuals` and `mewtuals_test` databases. Repeating setup preserves
+the generated secret and existing user records; it refuses to overwrite manually
+created or mismatched configuration.
+
+The database listens only on `127.0.0.1:55432`, using trust authentication for
+local development. Never use this configuration for public deployment. Stop the
+cluster with `npm run db:stop`. If port 55432 is occupied, choose a free port on
+the first setup; the generated files remember it:
+
+```bash
+MEWTUALS_LOCAL_DATABASE_PORT=55439 npm run setup:local
+```
+
+An occupied port causes setup to fail instead of attaching to another database.
+If the first attempt failed because the port was busy, stop this clone's database
+with `npm run db:stop`, remove only its generated `.env.local` and `.dev.vars`,
+then rerun setup with a free port. Do not remove manually maintained configuration.
+Keep each clone's generated configuration and cluster separate. Do not copy
+`.env.local`, `.dev.vars`, or `.local-postgres` between clones. The committed
+`.env.example` and `.dev.vars.example` are blank manual-configuration references.
+
+To try the member journey, visit `/join`, enter `reader@example.test`, select
+**Open local sign-in link**, then **Continue to Mewtuals**. No email is sent in
+this mode. Complete onboarding with sample information, submit the profile, and
+use the development approval action. Verified members may receive zero matches.
+
+These shortcuts require `MEWTUALS_DEV_AUTH=true`, a non-production runtime, and
+an exact loopback request host (`localhost`, `127.0.0.1`, or `::1`). They stay
+disabled in production and on public preview domains. The generated admin
+allowlist contains only `mewtuals-mobile-e2e@example.test`, a disposable test
+identity. External service credentials remain blank.
+`npm start` explicitly selects production mode, which disables these shortcuts
+even when generated local configuration is present.
 
 ## Installable app and offline behavior
 
@@ -102,6 +115,7 @@ npm test
 npm run test:db
 npm run test:acceptance
 npm run test:e2e
+npm run typecheck
 npm run lint
 npm run build
 ```
@@ -111,14 +125,22 @@ magic-link confirmation, onboarding, pending verification, local approval,
 signals, curated picks, idempotent advancement, persistence, logout/re-login,
 protected access, and token-at-rest assertions.
 
+For browser tests, run `npx playwright install chromium`, then
+`PLAYWRIGHT_CHANNEL=chromium npm run test:e2e`. Chrome is the default when
+already installed. Linux CI installs browser OS packages with
+`npx playwright install --with-deps chromium`.
+
 `test:e2e` expects Mewtuals to already be running at
 `http://localhost:4000`. It drives the rendered member and administrator forms,
 checks responsive layouts and protected redirects, and fails on browser or
 offline-boundary errors. It also builds and starts a separate production-mode
-server at `http://localhost:4002` for service-worker checks. Add
-`mewtuals-mobile-e2e@example.test` only to the ignored local `ADMIN_EMAILS`
-allowlist before running the gate. Set `PLAYWRIGHT_CHANNEL=chromium` after
-installing Playwright's Chromium binary if Google Chrome is unavailable.
+server at `http://localhost:4002` for service-worker checks. Local setup configures
+the disposable admin identity. Browser tests use synthetic `example.test`
+accounts and remove their own records.
+
+The **Fresh clone** GitHub Actions workflow runs these checks without repository
+secrets. Historical `examples/d1` starter snippets are not wired into this
+PostgreSQL application and are excluded from the application's type check.
 
 ## Database commands
 
@@ -132,7 +154,8 @@ npm run db:stop
 ```
 
 `db:setup` is an alias for the guarded `db:setup:local` command. It always uses
-`127.0.0.1:55432/mewtuals`, even when the shell exports another `DATABASE_URL`.
+`127.0.0.1:<local-port>/mewtuals` (55432 by default), even when the shell exports
+another `DATABASE_URL`.
 `db:test:prepare` similarly owns the separate local `mewtuals_test` database.
 Production migrations should use the managed `DATABASE_URL` directly; do not
 use either local convenience command in production.
@@ -167,3 +190,12 @@ deployment checklist, backup procedure, security behavior, and incident notes.
 The application uses vinext for the Sites-compatible build, Drizzle for schema
 and migrations, Postgres.js for database access, and Vitest for automated
 verification.
+
+## License and assets
+
+Mewtuals source and original project assets are provided under the [MIT
+license](LICENSE). The committed graph artwork and brand icons are project
+assets; no private asset directory or generated build output is required.
+Names and trademarks in sample/editorial content remain their owners' property.
+Dependencies installed from npm retain their respective licenses. MIT does not
+replace those licenses or grant trademark rights.
