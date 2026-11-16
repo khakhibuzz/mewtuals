@@ -14,8 +14,10 @@ Product v1 supports four directions:
 
 The public landing page remains available without an account. The standalone
 application form is directly shareable at `/apply` but intentionally absent
-from the landing-page navigation. The member flow starts at `/join`; returning
-members use `/login`.
+from the landing-page navigation. New and returning members share one email
+entry at `/join` (`/login` redirects there). After the emailed link is
+confirmed, registered members continue to their dashboard and new members
+start onboarding.
 
 ## Local setup
 

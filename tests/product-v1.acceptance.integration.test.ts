@@ -52,7 +52,6 @@ const email = `product-v1-${testId}@example.test`;
 const sessionSecret = process.env.SESSION_SECRET;
 const firstMagicToken = acceptanceToken(testId, "first-magic");
 const secondMagicToken = acceptanceToken(testId, "second-magic");
-const secondSessionToken = acceptanceToken(testId, "second-session");
 const requesterIdentity = `acceptance:${testId}`;
 
 async function cleanAcceptanceMember() {
@@ -119,7 +118,7 @@ describe("Mewtuals product v1 acceptance", () => {
     });
 
     expect(resolveProtectedPage(null, "/dashboard", "/dashboard")).toEqual({
-      redirectTo: "/login",
+      redirectTo: "/join",
     });
     await expect(
       requestAuth.requestMagicLink({
@@ -402,7 +401,6 @@ describe("Mewtuals product v1 acceptance", () => {
     expect(signedOutResponse.status).toBe(401);
 
     currentTime = new Date(currentTime.getTime() + 61_000);
-    const reloginTokens = [secondMagicToken, secondSessionToken];
     const reloginAuth = createAuthService({
       repository: authRepository,
       emailSender: { sendMagicLink: async () => undefined },
@@ -410,15 +408,32 @@ describe("Mewtuals product v1 acceptance", () => {
       environment: "development",
       exposeDevelopmentVerifyUrl: true,
       now: () => currentTime,
-      tokenFactory: () => reloginTokens.shift() ?? randomUUID(),
+      tokenFactory: () => secondMagicToken,
     });
     await reloginAuth.requestMagicLink({
       email,
       origin: "http://localhost:4000",
       requesterIdentity,
     });
-    const secondSession = await reloginAuth.verifyMagicLink(secondMagicToken);
-    expect(secondSession?.token).toBe(secondSessionToken);
+    // The same email entry serves returning members: once the link is
+    // confirmed, a registered member goes straight to the dashboard.
+    const reconfirmed = await verifyRoute.POST(
+      new Request("http://localhost:4000/auth/verify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Origin: "http://localhost:4000",
+        },
+        body: new URLSearchParams({ token: secondMagicToken }),
+      }),
+    );
+    expect(reconfirmed.status).toBe(303);
+    expect(reconfirmed.headers.get("location")).toBe(
+      "http://localhost:4000/dashboard",
+    );
+    const secondSessionToken = sessionTokenFrom(reconfirmed);
+    expect(secondSessionToken).not.toBe(firstSessionToken);
+    const secondSession = await sessionAuth.getSession(secondSessionToken);
     expect(secondSession?.user.id).toBe(firstSession.user.id);
     if (!secondSession) throw new Error("Second member session was not stored.");
 

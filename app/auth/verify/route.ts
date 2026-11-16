@@ -4,6 +4,7 @@ import { createAuthRepository } from "../../../db/repositories/auth-repository";
 import { createAuthService } from "../../server/auth-service";
 import { createEmailSender } from "../../server/email";
 import { readServerEnvironment } from "../../server/env";
+import { getOnboardingService } from "../../server/onboarding";
 import {
   assertSameOrigin,
   SameOriginError,
@@ -41,7 +42,7 @@ export async function POST(request: Request) {
   const token = formData?.get("token");
   if (typeof token !== "string" || !tokenPattern.test(token)) {
     return NextResponse.redirect(
-      new URL("/login?error=invalid-link", requestUrl),
+      new URL("/join?error=invalid-link", requestUrl),
       303,
     );
   }
@@ -62,15 +63,16 @@ export async function POST(request: Request) {
 
   if (!verified) {
     return NextResponse.redirect(
-      new URL("/login?error=invalid-link", requestUrl),
+      new URL("/join?error=invalid-link", requestUrl),
       303,
     );
   }
 
-  const response = NextResponse.redirect(
-    new URL("/onboarding/identity", requestUrl),
-    303,
-  );
+  // Ownership of the email is only proven once the link is consumed, so this is
+  // where a registered member is told apart from a new one: members land on
+  // their dashboard, everyone else starts (or resumes) onboarding.
+  const nextPath = await getOnboardingService().nextPath(verified.user.id);
+  const response = NextResponse.redirect(new URL(nextPath, requestUrl), 303);
   setSessionCookie(response, verified.token, requestUrl.hostname);
   return response;
 }
@@ -131,7 +133,7 @@ function confirmationContent(token: string): string {
 function invalidLinkContent(): string {
   return `<p>Mewtuals</p>
 <h1>This sign-in link is not valid.</h1>
-<p>It may be incomplete. <a href="/login">Request a fresh sign-in link</a>.</p>`;
+<p>It may be incomplete. <a href="/join">Request a fresh sign-in link</a>.</p>`;
 }
 
 function escapeHtmlAttribute(value: string): string {

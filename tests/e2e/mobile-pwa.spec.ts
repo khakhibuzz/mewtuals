@@ -79,13 +79,12 @@ test("mobile member and administrator journey stays responsive and private offli
 
   const primaryNavigation = page.locator("#primary-navigation");
   const primaryLinks = primaryNavigation.locator("a");
-  await expect(primaryLinks).toHaveCount(5);
+  await expect(primaryLinks).toHaveCount(4);
   await expect(primaryLinks).toHaveText([
     "How it works",
     "For startups",
     "For creators",
-    "Join Mewtuals",
-    "Log in",
+    "Join or log in",
   ]);
   await expect(primaryLinks.filter({ hasText: /^About$/ })).toHaveCount(0);
   await expect(primaryLinks.filter({ hasText: /^Apply$/ })).toHaveCount(0);
@@ -115,16 +114,15 @@ test("mobile member and administrator journey stays responsive and private offli
   ).toBeVisible();
   await auditResponsiveState(page, "join");
   await page.getByLabel("Email address").fill(memberEmail);
-  await page.getByRole("button", { name: "Join Mewtuals" }).click();
+  await page.getByRole("button", { name: "Continue with email" }).click();
   await expect(
     page.getByRole("link", { name: "Open local sign-in link" }),
   ).toBeVisible();
   await auditResponsiveState(page, "join magic-link result");
 
   await page.goto("/login");
+  await expect(page).toHaveURL(/\/join$/);
   await waitForProductHydration(page);
-  await expect(page.getByRole("heading", { name: "Welcome back." })).toBeVisible();
-  await auditResponsiveState(page, "login");
 
   await page.goto("/auth/verify?token=invalid");
   await expect(
@@ -402,11 +400,11 @@ async function provePublicOnlyOfflineBoundary(
   await expect(
     page.getByRole("heading", { name: "Find the right partnership moment." }),
   ).toBeVisible();
-  await page.getByRole("link", { name: "Log in" }).click();
-  await expect(page).toHaveURL(/\/login$/);
+  await page.goto(`${PWA_BASE_URL}/login`);
+  await expect(page).toHaveURL(/\/join$/);
   await waitForProductHydration(page);
   await expect(
-    page.getByRole("heading", { name: "Welcome back." }),
+    page.getByRole("button", { name: "Continue with email" }),
   ).toBeVisible();
   await page.goto(`${PWA_BASE_URL}/`);
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));

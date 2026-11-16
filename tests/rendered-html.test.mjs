@@ -91,8 +91,8 @@ test("server-renders the complete Mewtuals landing page", async () => {
   assert.match(html, /href="\/join">Find my next partnership<\/a>/);
   assert.match(html, /href="#how-it-works">See how it works<\/a>/);
   assert.match(html, /href="\/join">For creators<\/a>/);
-  assert.match(html, /href="\/join">Join Mewtuals<\/a>/);
-  assert.match(html, /href="\/login">Log in<\/a>/);
+  assert.match(html, /href="\/join">Join or log in<\/a>/);
+  assert.doesNotMatch(html, /href="\/login"|>Log in</);
   assert.match(
     html,
     /<meta name="description" content="Mewtuals identifies and advances high-value partnerships for AI startups, creator-economy companies, and consumer brands\."\/?>/,
@@ -121,8 +121,7 @@ test("server-renders the complete Mewtuals landing page", async () => {
     "How it works",
     "For startups",
     "For creators",
-    "Join Mewtuals",
-    "Log in",
+    "Join or log in",
   ]) {
     assert.match(html, new RegExp(`>${label}<`));
   }
@@ -164,8 +163,8 @@ test("server-renders the standalone application route", async () => {
   assert.match(html, /href="\/#how-it-works">How it works<\/a>/);
   assert.match(html, /href="\/#for-startups">For startups<\/a>/);
   assert.match(html, /href="\/join">For creators<\/a>/);
-  assert.match(html, /href="\/join">Join Mewtuals<\/a>/);
-  assert.match(html, /href="\/login">Log in<\/a>/);
+  assert.match(html, /href="\/join">Join or log in<\/a>/);
+  assert.doesNotMatch(html, /href="\/login"|>Log in</);
   assert.doesNotMatch(html, /href="#apply"/);
 });
 

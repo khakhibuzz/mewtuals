@@ -38,7 +38,7 @@ function toQueueProfile(profile: VerificationProfile): VerificationQueueProfile 
 
 export default async function VerificationAdminPage() {
   const session = await getCurrentSession();
-  if (!session) redirect("/login");
+  if (!session) redirect("/join");
 
   const service = getVerificationService();
   const result = await service.listPending({

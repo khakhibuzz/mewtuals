@@ -14,7 +14,7 @@ export function resolveProtectedPage(
   requestedPath: string,
   nextPath: string,
 ): ProtectedPageResolution {
-  if (!session) return { redirectTo: "/login" };
+  if (!session) return { redirectTo: "/join" };
   if (requestedPath !== nextPath) return { redirectTo: nextPath };
   return { userId: session.user.id };
 }

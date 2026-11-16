@@ -1,15 +1,7 @@
-import { MagicLinkForm } from "../components/product/MagicLinkForm";
-import { ProductShell } from "../components/product/ProductShell";
+import { redirect } from "next/navigation";
 
+// Joining and signing in share one email entry at /join. Keep /login so
+// existing bookmarks and older emails still arrive there.
 export default function LoginPage() {
-  return (
-    <ProductShell
-      eyebrow="Member sign in"
-      title="Welcome back."
-      intro="We will email a private, single-use link to continue to your Mewtuals profile."
-      headerAction={{ href: "/join", label: "Join Mewtuals" }}
-    >
-      <MagicLinkForm mode="login" />
-    </ProductShell>
-  );
+  redirect("/join");
 }

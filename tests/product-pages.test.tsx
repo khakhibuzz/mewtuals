@@ -1,23 +1,30 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import ApplyPage from "../app/apply/page";
 import JoinPage from "../app/join/page";
 import LoginPage from "../app/login/page";
 
+const { redirect } = vi.hoisted(() => ({
+  redirect: vi.fn((path: string) => {
+    throw new Error(`NEXT_REDIRECT:${path}`);
+  }),
+}));
+vi.mock("next/navigation", () => ({ redirect }));
+
 describe("public product entry pages", () => {
-  it("presents the join flow as a private curated network", () => {
+  it("offers one email entry for both new and returning members", () => {
     render(<JoinPage />);
     expect(screen.getByRole("heading", { name: "Find the right partnership moment." })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Join Mewtuals" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
+    expect(screen.getByRole("button", { name: "Continue with email" })).toBeVisible();
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    expect(screen.queryByRole("link", { name: "Log in" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
   });
 
-  it("gives returning members a distinct sign-in entry", () => {
-    render(<LoginPage />);
-    expect(screen.getByRole("heading", { name: "Welcome back." })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Send sign-in link" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "Join Mewtuals" })).toHaveAttribute("href", "/join");
+  it("sends the legacy sign-in route to the shared entry", () => {
+    expect(() => LoginPage()).toThrow("NEXT_REDIRECT:/join");
+    expect(redirect).toHaveBeenCalledWith("/join");
   });
 
   it("keeps the application form on a directly shareable page", () => {

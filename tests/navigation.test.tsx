@@ -10,12 +10,11 @@ const navigation = [
   ["How it works", "#how-it-works"],
   ["For startups", "#for-startups"],
   ["For creators", "/join"],
-  ["Join Mewtuals", "/join"],
-  ["Log in", "/login"],
+  ["Join or log in", "/join"],
 ] as const;
 
 describe("SiteHeader", () => {
-  it("renders exactly the five approved landing destinations in order", () => {
+  it("renders exactly the four approved landing destinations in order", () => {
     render(<SiteHeader />);
 
     const header = within(screen.getByRole("banner"));

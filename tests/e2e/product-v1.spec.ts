@@ -34,16 +34,17 @@ async function waitForProductHydration(page: Page) {
   ).toHaveCount(1);
 }
 
-async function requestAndConfirmMagicLink(page: Page, mode: "join" | "login") {
+async function requestAndConfirmMagicLink(
+  page: Page,
+  entry: "/join" | "/login",
+) {
   if (!memberEmail) throw new Error("Browser member email is not available.");
-  await page.goto(mode === "join" ? "/join" : "/login");
+  await page.goto(entry);
+  // /login is a legacy alias; joining and signing in share one entry.
+  await expect(page).toHaveURL(/\/join$/);
   await waitForProductHydration(page);
   await page.getByLabel("Email address").fill(memberEmail);
-  await page
-    .getByRole("button", {
-      name: mode === "join" ? "Join Mewtuals" : "Send sign-in link",
-    })
-    .click();
+  await page.getByRole("button", { name: "Continue with email" }).click();
 
   const localLink = page.getByRole("link", {
     name: "Open local sign-in link",
@@ -85,9 +86,9 @@ test("fresh member completes and retains the product-v1 journey", async ({
   page.on("pageerror", (error) => browserErrors.push(error.message));
 
   await page.goto("/dashboard");
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/join$/);
 
-  await requestAndConfirmMagicLink(page, "join");
+  await requestAndConfirmMagicLink(page, "/join");
   await expect(page).toHaveURL(/\/onboarding\/identity$/);
   await waitForProductHydration(page);
 
@@ -163,12 +164,12 @@ test("fresh member completes and retains the product-v1 journey", async ({
   ).toHaveText("Mewtuals is reviewing the relationship");
 
   await page.getByRole("button", { name: "Log out" }).click();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/join$/);
   await page.goto("/dashboard");
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/join$/);
 
   await ageMemberMagicLinks();
-  await requestAndConfirmMagicLink(page, "login");
+  await requestAndConfirmMagicLink(page, "/login");
   await expect(page).toHaveURL(/\/dashboard$/);
   await waitForProductHydration(page);
   await expect(

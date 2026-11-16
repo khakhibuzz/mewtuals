@@ -7,8 +7,7 @@ function navigationLinks(anchorBase: "" | "/") {
     { href: `${anchorBase}#how-it-works`, label: "How it works" },
     { href: `${anchorBase}#for-startups`, label: "For startups" },
     { href: "/join", label: "For creators", productEntry: true },
-    { href: "/join", label: "Join Mewtuals", primary: true },
-    { href: "/login", label: "Log in", productEntry: true },
+    { href: "/join", label: "Join or log in", primary: true },
   ] as const;
 }
 

@@ -10,7 +10,8 @@ type ProductShellProps = {
   title: string;
   intro?: string;
   children: ReactNode;
-  headerAction?: { href: string; label: string };
+  /** Omit for the signed-in logout button; pass false for no header action. */
+  headerAction?: { href: string; label: string } | false;
 };
 
 export function ProductShell({
@@ -31,7 +32,7 @@ export function ProductShell({
           <Link className={styles.headerLink} href={headerAction.href}>
             {headerAction.label}
           </Link>
-        ) : (
+        ) : headerAction === false ? null : (
           <LogoutButton />
         )}
       </header>

@@ -6,7 +6,7 @@ import { continueTo } from "./form-client";
 import styles from "./product.module.css";
 
 export function LogoutButton({
-  onLoggedOut = () => continueTo("/login"),
+  onLoggedOut = () => continueTo("/join"),
 }: {
   onLoggedOut?: () => void;
 }) {

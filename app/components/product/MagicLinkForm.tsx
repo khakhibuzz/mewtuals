@@ -5,13 +5,12 @@ import { FormEvent, useState } from "react";
 import styles from "./product.module.css";
 import { postForm } from "./form-client";
 
-export function MagicLinkForm({ mode }: { mode: "join" | "login" }) {
+export function MagicLinkForm() {
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
   const [verifyUrl, setVerifyUrl] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
-  const buttonLabel = mode === "join" ? "Join Mewtuals" : "Send sign-in link";
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -60,7 +59,7 @@ export function MagicLinkForm({ mode }: { mode: "join" | "login" }) {
         ) : null}
       </div>
       <button className={styles.button} type="submit" disabled={submitting}>
-        {submitting ? "Sending…" : buttonLabel}
+        {submitting ? "Sending…" : "Continue with email"}
       </button>
       {message ? (
         <p className={styles.status} role="status">
