@@ -321,6 +321,14 @@ main {
   line-height: 1.6;
 }
 
+.ecosystem-atlas-link {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  min-height: 44px;
+  min-width: 44px;
+}
+
 .ecosystem-map {
   position: relative;
   width: min(100%, 650px);

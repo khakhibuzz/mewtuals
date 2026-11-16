@@ -1,7 +1,8 @@
 # India state geometry
 
 `india-states-simplified.geojson` is a build-time asset used only to draw the
-administrator-only Ecosystem Intelligence map. The application does not fetch a
+administrator-only Ecosystem Intelligence map and the public Battery Atlas.
+The Battery Atlas uses only the geometry, never administrator data. The application does not fetch a
 map, tiles, geocoding results, or geometry at runtime.
 
 ## Canonical upstream

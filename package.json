@@ -29,7 +29,7 @@
     "test:migrations": "npm run db:start && npm run test:migrations:forward && node scripts/test-migrations.mjs",
     "test:migrations:forward": "node --test tests/migration-harness-forward-compat.test.mjs",
     "test:acceptance": "npm run db:test:prepare && DATABASE_URL=postgresql://127.0.0.1:${MEWTUALS_LOCAL_DATABASE_PORT:-55432}/mewtuals_test vitest run --no-file-parallelism tests/product-v1.acceptance.integration.test.ts tests/discovery.acceptance.integration.test.ts tests/opportunity-brief-repository.integration.test.ts tests/opportunity-brief.acceptance.integration.test.ts tests/global-radar.acceptance.integration.test.ts tests/ecosystem-intelligence-import.integration.test.ts tests/ecosystem-intelligence-repository.integration.test.ts",
-    "test:e2e": "playwright test tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts tests/e2e/opportunity-brief.spec.ts tests/e2e/ecosystem-intelligence.spec.ts tests/e2e/global-radar.spec.ts",
+    "test:e2e": "playwright test tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts tests/e2e/opportunity-brief.spec.ts tests/e2e/ecosystem-intelligence.spec.ts tests/e2e/global-radar.spec.ts tests/e2e/battery-atlas.spec.ts",
     "test:watch": "vitest",
     "test:render": "npm run build && node --test tests/rendered-html.test.mjs",
     "typecheck": "tsc --noEmit",
@@ -53,6 +53,7 @@
     "qrcode": "^1.5.4",
     "react": "19.2.6",
     "react-dom": "19.2.6",
+    "three": "^0.185.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -68,6 +69,7 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/three": "^0.185.4",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",

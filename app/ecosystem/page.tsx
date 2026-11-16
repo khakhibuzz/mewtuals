@@ -20,6 +20,9 @@ export default function EcosystemPage() {
           <div className="ecosystem-chain-section">
             <EcosystemChain />
           </div>
+          <a className="text-link ecosystem-atlas-link" href="/ecosystem/batteries">
+            Explore the Battery Atlas · India →
+          </a>
         </section>
 
         <section className="ecosystem-unlocks ecosystem-panel" id="unlocks">
