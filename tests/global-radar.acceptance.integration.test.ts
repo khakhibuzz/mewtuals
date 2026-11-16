@@ -1243,7 +1243,7 @@ describe("Global Demand Radar release-suite selection", () => {
       );
     }
     expect(scripts["test:e2e"]).toBe(
-      "playwright test tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts tests/e2e/opportunity-brief.spec.ts tests/e2e/ecosystem-intelligence.spec.ts tests/e2e/global-radar.spec.ts tests/e2e/battery-atlas.spec.ts",
+      "node scripts/with-local-db.mjs app playwright test tests/e2e/product-v1.spec.ts tests/e2e/mobile-pwa.spec.ts tests/e2e/opportunity-brief.spec.ts tests/e2e/ecosystem-intelligence.spec.ts tests/e2e/global-radar.spec.ts tests/e2e/battery-atlas.spec.ts",
     );
     expect(scripts["test:migrations"]).toBe(
       "npm run db:start && npm run test:migrations:forward && node scripts/test-migrations.mjs",

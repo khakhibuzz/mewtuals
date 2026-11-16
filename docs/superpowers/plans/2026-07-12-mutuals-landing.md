@@ -33,7 +33,7 @@ The initializer accepts only an empty target. Preserve the approved work inside 
 ```bash
 mkdir -p work/preinit
 mv .gitignore design docs .superpowers work/preinit/
-/Users/keshavgarg/.codex/plugins/cache/openai-bundled/sites/0.1.27/scripts/init-site.sh "$PWD"
+"<historical-sites-plugin-directory>/scripts/init-site.sh" "$PWD"
 mv work/preinit/design work/preinit/docs work/preinit/.superpowers .
 mv work/preinit/.gitignore work/preinit-gitignore
 rmdir work/preinit

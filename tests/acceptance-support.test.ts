@@ -23,12 +23,7 @@ describe("acceptance environment safety", () => {
     const environmentExample = readFileSync(".env.example", "utf8");
 
     expect(packageJson.scripts["db:setup"]).toBe("npm run db:setup:local");
-    expect(packageJson.scripts["db:setup:local"]).toContain(
-      "MEWTUALS_LOCAL_DATABASE_PORT:-55432",
-    );
-    expect(packageJson.scripts["db:setup:local"]).toContain(
-      "/mewtuals",
-    );
+    expect(packageJson.scripts["db:setup:local"]).toContain("scripts/with-local-db.mjs app");
     expect(packageJson.scripts["db:setup:local"]).not.toContain(
       "${DATABASE_URL",
     );
@@ -43,7 +38,7 @@ describe("acceptance environment safety", () => {
   it("checks local PostgreSQL status against the primary database", () => {
     const source = readFileSync("scripts/local-postgres.mjs", "utf8");
 
-    expect(source).toContain("process.env.MEWTUALS_LOCAL_DATABASE_PORT");
+    expect(source).toContain('import { localDatabasePort } from "./local-development.mjs"');
     expect(source).toContain("const primaryDatabaseName = databaseNames[0]");
     expect(source).toContain(
       '["-h", host, "-p", port, "-d", primaryDatabaseName]',
@@ -63,11 +58,11 @@ describe("acceptance environment safety", () => {
       "db:setup:local",
     ]) {
       expect(packageJson.scripts[scriptName]).toContain(
-        "MEWTUALS_LOCAL_DATABASE_PORT:-55432",
+        "scripts/with-local-db.mjs",
       );
     }
     expect(migrationHarness).toContain(
-      "process.env.MEWTUALS_LOCAL_DATABASE_PORT",
+      "configuredLocalDatabasePort()",
     );
   });
 
@@ -79,7 +74,7 @@ describe("acceptance environment safety", () => {
     for (const unsafe of [
       LOCAL_APP_DATABASE_URL,
       "postgresql://db.example.com:5432/mewtuals_test",
-      "postgresql://127.0.0.1:5432/mewtuals_test",
+      `postgresql://127.0.0.1:${new URL(LOCAL_TEST_DATABASE_URL).port === "5432" ? "5433" : "5432"}/mewtuals_test`,
       "postgresql://127.0.0.1:55432/production",
     ]) {
       expect(() => requireLocalTestDatabaseUrl(unsafe)).toThrow(
@@ -117,9 +112,9 @@ describe("acceptance environment safety", () => {
     );
     expect(
       requireLocalAppDatabaseUrl(
-        "postgresql://local-user@127.0.0.1:55432/mewtuals",
+        LOCAL_APP_DATABASE_URL.replace("postgresql://", "postgresql://local-user@"),
       ),
-    ).toBe("postgresql://local-user@127.0.0.1:55432/mewtuals");
+    ).toBe(LOCAL_APP_DATABASE_URL.replace("postgresql://", "postgresql://local-user@"));
     expect(() =>
       requireLocalAppDatabaseUrl(LOCAL_TEST_DATABASE_URL),
     ).toThrow(/local application database/);

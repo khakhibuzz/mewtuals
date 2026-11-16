@@ -121,7 +121,7 @@ The current local prototype does not transmit submissions; preserve that honesty
 
 ## Existing implementation
 
-- Repository: `/Users/keshavgarg/Documents/Creativity`
+- Repository: the root of your Mewtuals clone
 - Branch: `codex/mutuals-landing`
 - Current landing implementation commit: `e59d6a5 feat: build Mutuals landing experience`
 - Main files:

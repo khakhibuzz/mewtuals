@@ -30,9 +30,11 @@ interface LauncherFixture {
 function createLauncherFixture({
   initialised = false,
   ownServerRunning = false,
+  configuredPort,
 }: {
   initialised?: boolean;
   ownServerRunning?: boolean;
+  configuredPort?: string;
 } = {}): LauncherFixture {
   const projectRoot = realpathSync(
     mkdtempSync(join(tmpdir(), "mewtuals-postgres-launcher-")),
@@ -63,7 +65,12 @@ function createLauncherFixture({
   ]) {
     mkdirSync(directory, { recursive: true });
   }
-  copyFileSync("scripts/local-postgres.mjs", join(scriptsDir, "local-postgres.mjs"));
+  for (const script of ["local-postgres.mjs", "local-development.mjs", "load-local-env.mjs"]) {
+    copyFileSync(join("scripts", script), join(scriptsDir, script));
+  }
+  if (configuredPort !== undefined) {
+    writeFileSync(join(projectRoot, ".env.local"), `MEWTUALS_LOCAL_DATABASE_PORT=${configuredPort}\n`);
+  }
 
   if (initialised) {
     mkdirSync(ownDataDir, { recursive: true });
@@ -108,6 +115,9 @@ if (command === "pg_config") {
   mkdirSync(dataDirectory, { recursive: true });
   writeFileSync(dataDirectory + "/PG_VERSION", "16\\n");
 } else if (command === "psql") {
+  if (args[args.indexOf("-p") + 1] !== process.env.FAKE_EXPECTED_PORT) {
+    throw new Error("Unexpected PostgreSQL connection port");
+  }
   const query = args[args.indexOf("-tAc") + 1];
   if (query.includes("server_version_num")) {
     record("psql identity");
@@ -152,7 +162,9 @@ if (command === "pg_config") {
         encoding: "utf8",
         env: {
           ...process.env,
+          MEWTUALS_LOCAL_DATABASE_PORT: undefined,
           PATH: `${binDir}:${process.env.PATH ?? ""}`,
+          FAKE_EXPECTED_PORT: configuredPort ?? "55432",
           FAKE_COMMON_GIT_DIR: commonGitDir,
           FAKE_DATABASE_USER: userInfo().username,
           FAKE_ENDPOINT_DATA_DIR: endpointDataDir ?? "",
@@ -179,6 +191,30 @@ afterEach(() => {
 });
 
 describe("local PostgreSQL launcher", () => {
+  it("loads an alternate port from the checkout configuration before reusing a server", () => {
+    const fixture = createLauncherFixture({ configuredPort: "55439" });
+
+    const result = fixture.run("start", fixture.siblingDataDir);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("PostgreSQL 16 is running at 127.0.0.1:55439.");
+    expect(fixture.events()).toEqual([
+      "psql identity",
+      "psql database",
+      "psql database",
+    ]);
+  });
+
+  it("rejects an invalid configured port before contacting PostgreSQL", () => {
+    const fixture = createLauncherFixture({ configuredPort: "05432" });
+
+    const result = fixture.run("start", fixture.siblingDataDir);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("MEWTUALS_LOCAL_DATABASE_PORT");
+    expect(fixture.events()).toEqual([]);
+  });
+
   it("reuses a repository-owned sibling PostgreSQL 16 server without stopping it", () => {
     const fixture = createLauncherFixture();
 

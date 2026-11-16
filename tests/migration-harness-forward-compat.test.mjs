@@ -15,6 +15,10 @@ import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import test from "node:test";
 
+import { loadLocalEnvironment } from "../scripts/load-local-env.mjs";
+
+loadLocalEnvironment();
+
 const execFileAsync = promisify(execFile);
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,10 +40,12 @@ test(
         join(projectRoot, "scripts", "test-migrations.mjs"),
         join(temporaryRoot, "scripts", "test-migrations.mjs"),
       );
-      await cp(
-        join(projectRoot, "scripts", "migration-journal.mjs"),
-        join(temporaryRoot, "scripts", "migration-journal.mjs"),
-      );
+      for (const helper of ["migration-journal.mjs", "local-development.mjs", "load-local-env.mjs"]) {
+        await cp(
+          join(projectRoot, "scripts", helper),
+          join(temporaryRoot, "scripts", helper),
+        );
+      }
       await cp(join(projectRoot, "drizzle"), join(temporaryRoot, "drizzle"), {
         recursive: true,
       });

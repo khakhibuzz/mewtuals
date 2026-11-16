@@ -270,12 +270,12 @@ describe("public-only PWA metadata", () => {
         expect.objectContaining({
           src: "/icons/mewtuals-192.png",
           sizes: "192x192",
-          purpose: "any maskable",
+          purpose: "maskable",
         }),
         expect.objectContaining({
           src: "/icons/mewtuals-512.png",
           sizes: "512x512",
-          purpose: "any maskable",
+          purpose: "maskable",
         }),
       ]),
     );

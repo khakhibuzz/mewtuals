@@ -3,27 +3,19 @@ import { userInfo } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { localDatabasePort } from "./local-development.mjs";
+import { loadLocalEnvironment } from "./load-local-env.mjs";
+
+loadLocalEnvironment();
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = join(projectRoot, ".local-postgres");
 const dataDir = join(runtimeDir, "data");
 const logFile = join(runtimeDir, "postgres.log");
 const host = "127.0.0.1";
-const port = localDatabasePort(process.env.MEWTUALS_LOCAL_DATABASE_PORT);
+const port = localDatabasePort();
 const databaseNames = ["mewtuals", "mewtuals_test"];
 const primaryDatabaseName = databaseNames[0];
-
-function localDatabasePort(value) {
-  const candidate = value ?? "55432";
-  if (!/^\d{1,5}$/.test(candidate)) {
-    throw new Error("MEWTUALS_LOCAL_DATABASE_PORT must be a valid TCP port.");
-  }
-  const parsed = Number(candidate);
-  if (parsed < 1024 || parsed > 65535) {
-    throw new Error("MEWTUALS_LOCAL_DATABASE_PORT must be between 1024 and 65535.");
-  }
-  return candidate;
-}
 
 function run(command, args, { capture = false, allowFailure = false } = {}) {
   const result = spawnSync(command, args, {
@@ -115,6 +107,9 @@ function locatePostgres16() {
     return pathCandidate;
   }
 
+  const linuxCandidate = postgres16BinDir("/usr/lib/postgresql/16/bin");
+  if (linuxCandidate) return linuxCandidate;
+
   const brew = pathFor("brew");
   if (brew) {
     const prefix = run(brew, ["--prefix", "postgresql@16"], {
@@ -132,7 +127,7 @@ function locatePostgres16() {
   }
 
   throw new Error(
-    "PostgreSQL 16 was not found on PATH or via `brew --prefix postgresql@16`.",
+    "PostgreSQL 16 was not found. Install it using the README instructions and expose its bin directory on PATH.",
   );
 }
 
@@ -305,6 +300,10 @@ function ensureDatabase(binDir, databaseName) {
 }
 
 function start(binDir) {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    throw new Error("PostgreSQL local setup must run as a normal user, not root.");
+  }
+
   let reusedDataDirectory;
   const ownServerRunning = isRunning(binDir);
   let identity = runningServerIdentity(binDir);

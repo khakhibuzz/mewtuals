@@ -1,17 +1,6 @@
 import type { MetadataRoute } from "next";
 
-type MewtualsManifestIcon = Omit<
-  NonNullable<MetadataRoute.Manifest["icons"]>[number],
-  "purpose"
-> & {
-  purpose: "any maskable";
-};
-
-type MewtualsManifest = Omit<MetadataRoute.Manifest, "icons"> & {
-  icons: MewtualsManifestIcon[];
-};
-
-export default function manifest(): MewtualsManifest {
+export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Mewtuals",
     short_name: "Mewtuals",
@@ -20,19 +9,13 @@ export default function manifest(): MewtualsManifest {
     display: "standalone",
     background_color: "#f3f0e9",
     theme_color: "#11110f",
-    icons: [
-      {
-        src: "/icons/mewtuals-192.png",
-        sizes: "192x192",
+    icons: [192, 512].flatMap((size) =>
+      (["any", "maskable"] as const).map((purpose) => ({
+        src: `/icons/mewtuals-${size}.png`,
+        sizes: `${size}x${size}`,
         type: "image/png",
-        purpose: "any maskable",
-      },
-      {
-        src: "/icons/mewtuals-512.png",
-        sizes: "512x512",
-        type: "image/png",
-        purpose: "any maskable",
-      },
-    ],
+        purpose,
+      })),
+    ),
   };
 }
