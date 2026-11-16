@@ -4,12 +4,12 @@ import { ProductShell } from "../../components/product/ProductShell";
 export default function NetworkJoinPage() {
   return (
     <ProductShell
-      eyebrow="Join Mewtuals"
+      eyebrow="Join or log in"
       title="Find the right partnership moment."
-      intro="A private, curated network for media and distribution partnerships. Start with your email; we will understand the rest together."
-      headerAction={{ href: "/login", label: "Log in" }}
+      intro="Enter your email and we will send a private, single-use link. Members continue to their dashboard; new members start their profile."
+      headerAction={false}
     >
-      <MagicLinkForm mode="join" />
+      <MagicLinkForm />
     </ProductShell>
   );
 }

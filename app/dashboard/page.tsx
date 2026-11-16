@@ -26,7 +26,7 @@ const subtypeLabels: Record<string, string> = {
 
 export default async function DashboardPage() {
   const session = await getCurrentSession();
-  if (!session) redirect("/login");
+  if (!session) redirect("/network/join");
 
   const onboardingState = await getOnboardingService().state(session.user.id);
   const resolution = resolveProtectedPage(

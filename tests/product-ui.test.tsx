@@ -95,10 +95,10 @@ describe("product onboarding forms", () => {
         ),
       ),
     );
-    render(<MagicLinkForm mode="join" />);
+    render(<MagicLinkForm />);
 
     await user.type(screen.getByRole("textbox", { name: "Email address" }), "member@example.com");
-    await user.click(screen.getByRole("button", { name: "Join Mewtuals" }));
+    await user.click(screen.getByRole("button", { name: "Continue with email" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent("a link is on its way");
     expect(screen.getByRole("link", { name: "Open local sign-in link" })).toHaveAttribute(
@@ -255,7 +255,7 @@ describe("product onboarding forms", () => {
     );
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
       "href",
-      "/login",
+      "/network/join",
     );
     vi.unstubAllGlobals();
   });

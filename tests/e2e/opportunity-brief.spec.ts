@@ -155,7 +155,7 @@ test("isolated public intake and protected operations meet the automated respons
   expect(publicErrors).toEqual([]);
 
   await page.goto("/admin/opportunity-briefs");
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/network\/join$/);
 
   const admin = await authenticateDedicatedAdmin(browser, runId);
   try {
@@ -362,7 +362,7 @@ test("isolated public intake and protected operations meet the automated respons
     page.getByRole("heading", { name: "Find the right partnership moment." }),
   ).toBeVisible();
   await page.getByLabel("Email address").fill(memberEmail);
-  await page.getByRole("button", { name: "Join Mewtuals" }).click();
+  await page.getByRole("button", { name: "Continue with email" }).click();
   await expect.poll(() => memberEntryMagicLinkCalls).toBe(1);
   const localSignInLink = page.getByRole("link", {
     name: "Open local sign-in link",
@@ -374,7 +374,8 @@ test("isolated public intake and protected operations meet the automated respons
 
   await page.goto("/login");
   await waitForProductHydration(page);
-  await expect(page.getByRole("heading", { name: "Welcome back." })).toBeVisible();
+  await expect(page).toHaveURL(/\/network\/join$/);
+  await expect(page.getByRole("heading", { name: "Find the right partnership moment." })).toBeVisible();
   expect(publicErrors).toEqual([]);
 });
 

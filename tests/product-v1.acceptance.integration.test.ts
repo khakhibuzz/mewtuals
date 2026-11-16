@@ -119,7 +119,7 @@ describe("Mewtuals product v1 acceptance", () => {
     });
 
     expect(resolveProtectedPage(null, "/dashboard", "/dashboard")).toEqual({
-      redirectTo: "/login",
+      redirectTo: "/network/join",
     });
     await expect(
       requestAuth.requestMagicLink({

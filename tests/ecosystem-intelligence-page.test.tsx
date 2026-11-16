@@ -99,7 +99,7 @@ describe("Ecosystem Intelligence administrator page", () => {
   it("redirects signed-out visitors to login", async () => {
     vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: null });
     await expect(EcosystemIntelligenceAdminPage({ searchParams: Promise.resolve({}) }))
-      .rejects.toThrow("redirect:/login");
+      .rejects.toThrow("redirect:/network/join");
   });
 
   it("redirects signed-in non-administrators to the member dashboard", async () => {

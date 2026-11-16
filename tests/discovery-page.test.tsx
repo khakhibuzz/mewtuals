@@ -56,9 +56,9 @@ describe("discovery administrator page", () => {
     vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: null });
 
     await expect(DiscoveryAdminPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
-      "redirect:/login",
+      "redirect:/network/join",
     );
-    expect(redirectMock).toHaveBeenCalledWith("/login");
+    expect(redirectMock).toHaveBeenCalledWith("/network/join");
   });
 
   it("redirects signed-in non-administrators to the member dashboard", async () => {

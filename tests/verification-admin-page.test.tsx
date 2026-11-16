@@ -30,7 +30,7 @@ describe("verification administrator page", () => {
   it("redirects signed-out visitors before constructing the service", async () => {
     vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: null });
 
-    await expect(VerificationAdminPage()).rejects.toThrow("redirect:/login");
+    await expect(VerificationAdminPage()).rejects.toThrow("redirect:/network/join");
     expect(getVerificationService).not.toHaveBeenCalled();
   });
 

@@ -314,7 +314,7 @@ describe("Global Radar signal detail page", () => {
     await expect(GlobalRadarSignalPage({
       params: Promise.resolve({ signalId: "invalid" }),
       searchParams: Promise.resolve({ returnTo: "https://evil.example" }),
-    })).rejects.toThrow("redirect:/login");
+    })).rejects.toThrow("redirect:/network/join");
     expect(getGlobalRadarApplication).not.toHaveBeenCalled();
   });
 

@@ -38,8 +38,9 @@ The public landing page remains available without an account. The standalone
 application form is directly shareable at `/apply` but intentionally absent
 from the landing-page navigation. `/join` is the public, no-account Opportunity
 Brief request; `/share` sends event visitors there with
-`source=bengaluru-meetup`. Invited members enter through `/network/join`, and
-returning members use `/login`. Allowlisted operators manage public requests at
+`source=bengaluru-meetup`. New and returning members share one email entry at `/network/join`;
+legacy `/login` bookmarks redirect there. Verified links continue to the dashboard
+or the next unfinished onboarding step. Allowlisted operators manage public requests at
 `/admin/opportunity-briefs`.
 
 ## Local setup

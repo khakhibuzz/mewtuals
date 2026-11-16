@@ -1,10 +1,15 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import ApplyPage from "../app/apply/page";
 import JoinPage, { parseOpportunityBriefTracking } from "../app/join/page";
 import LoginPage from "../app/login/page";
 import NetworkJoinPage from "../app/network/join/page";
+
+const { redirectMock } = vi.hoisted(() => ({
+  redirectMock: vi.fn(() => { throw new Error("redirect"); }),
+}));
+vi.mock("next/navigation", () => ({ redirect: redirectMock }));
 
 describe("public product entry pages", () => {
   it("presents public opportunity-brief acquisition without an account gate", async () => {
@@ -12,14 +17,16 @@ describe("public product entry pages", () => {
     expect(screen.getByRole("heading", { name: "Find who you should collaborate with next." })).toBeVisible();
     expect(screen.getByText("Share your company or creator profile. Mewtuals will research it and send you three partnership directions worth exploring. No account required.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Get my opportunity brief" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
+    expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/network/join");
   });
 
-  it("preserves the former member-creation experience at /network/join", () => {
+  it("shares one email entry for new and returning members at /network/join", () => {
     render(<NetworkJoinPage />);
     expect(screen.getByRole("heading", { name: "Find the right partnership moment." })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Join Mewtuals" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
+    expect(screen.getByRole("button", { name: "Continue with email" })).toBeVisible();
+    expect(screen.queryByRole("link", { name: "Log in" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+    expect(screen.getByText("Join or log in")).toBeVisible();
   });
 
   it("accepts only bounded server-parsed source and UTM query values", () => {
@@ -54,11 +61,9 @@ describe("public product entry pages", () => {
     ).toEqual({ utm: {} });
   });
 
-  it("gives returning members a distinct sign-in entry", () => {
-    render(<LoginPage />);
-    expect(screen.getByRole("heading", { name: "Welcome back." })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Send sign-in link" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "Join Mewtuals" })).toHaveAttribute("href", "/join");
+  it("redirects legacy login bookmarks to the shared member entry", () => {
+    expect(() => LoginPage()).toThrow("redirect");
+    expect(redirectMock).toHaveBeenCalledWith("/network/join");
   });
 
   it("keeps the application form on a directly shareable page", () => {

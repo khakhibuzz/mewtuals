@@ -1,6 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import * as verifyRoute from "../app/auth/verify/route";
+
+const { verifyMagicLink, nextPath } = vi.hoisted(() => ({
+  verifyMagicLink: vi.fn(),
+  nextPath: vi.fn(),
+}));
+vi.mock("../db/repositories/auth-repository", () => ({ createAuthRepository: vi.fn() }));
+vi.mock("../app/server/auth-service", () => ({ createAuthService: () => ({ verifyMagicLink }) }));
+vi.mock("../app/server/email", () => ({ createEmailSender: vi.fn() }));
+vi.mock("../app/server/env", () => ({ readServerEnvironment: () => ({ environment: "test" }) }));
+vi.mock("../app/server/onboarding", () => ({ getOnboardingService: () => ({ nextPath }) }));
 
 type VerificationRoute = {
   GET(request: Request): Promise<Response>;
@@ -11,6 +21,61 @@ const route = verifyRoute as VerificationRoute;
 const validToken = "a".repeat(43);
 
 describe("magic-link verification route", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function consume(token = validToken) {
+    return route.POST!(new Request("http://localhost:4000/auth/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: "http://localhost:4000" },
+      body: new URLSearchParams({ token }),
+    }));
+  }
+
+  it.each([
+    "/onboarding/identity",
+    "/onboarding/source",
+    "/onboarding/profile",
+    "/onboarding/verification",
+    "/dashboard",
+  ])(
+    "continues a verified email to its server-owned next step %s", async (path) => {
+      verifyMagicLink.mockResolvedValue({ user: { id: "member-1" }, token: "session-token" });
+      nextPath.mockResolvedValue(path);
+      const response = await consume();
+      expect(response.status).toBe(303);
+      expect(nextPath).toHaveBeenCalledWith("member-1");
+      expect(response.headers.get("location")).toBe(`http://localhost:4000${path}`);
+      expect(response.headers.get("set-cookie")).toContain("session-token");
+    },
+  );
+
+  it("preserves sign-in when the onboarding destination lookup fails", async () => {
+    verifyMagicLink.mockResolvedValue({ user: { id: "member-1" }, token: "session-token" });
+    nextPath.mockRejectedValue(new Error("sensitive database details"));
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await consume();
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("http://localhost:4000/onboarding/identity");
+    expect(response.headers.get("set-cookie")).toContain("session-token");
+    expect(logError).toHaveBeenCalledWith("Unable to resolve the post-sign-in destination; retrying through onboarding.");
+  });
+
+  it.each(["malformed", validToken])("returns invalid or expired links to the shared entry", async (token) => {
+    verifyMagicLink.mockResolvedValue(null);
+    const response = await consume(token);
+    expect(response.headers.get("location")).toBe("http://localhost:4000/network/join?error=invalid-link");
+    expect(nextPath).not.toHaveBeenCalled();
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
   it("keeps GET non-mutating by rendering a no-store POST confirmation", async () => {
     const response = await route.GET(
       new Request(
@@ -37,6 +102,8 @@ describe("magic-link verification route", () => {
     expect(html).toContain("min-height: 44px");
     expect(html).toContain("clamp(2rem, 11vw, 3rem)");
     expect(response.headers.get("set-cookie")).toBeNull();
+    expect(verifyMagicLink).not.toHaveBeenCalled();
+    expect(nextPath).not.toHaveBeenCalled();
   });
 
   it("does not reflect malformed token content into the confirmation page", async () => {
@@ -52,6 +119,7 @@ describe("magic-link verification route", () => {
     expect(html).not.toContain(unsafeToken);
     expect(html).not.toContain("<script");
     expect(html).not.toContain('name="token"');
+    expect(html).toContain('href="/network/join"');
     expect(html).toContain("Request a fresh sign-in link");
   });
 

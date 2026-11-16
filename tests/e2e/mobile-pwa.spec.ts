@@ -143,7 +143,7 @@ test("mobile member and administrator journey stays responsive and private offli
   ).toBeVisible();
   await auditResponsiveState(page, "member join");
   await page.getByLabel("Email address").fill(memberEmail);
-  await page.getByRole("button", { name: "Join Mewtuals" }).click();
+  await page.getByRole("button", { name: "Continue with email" }).click();
   await expect(
     page.getByRole("link", { name: "Open local sign-in link" }),
   ).toBeVisible();
@@ -151,7 +151,8 @@ test("mobile member and administrator journey stays responsive and private offli
 
   await page.goto("/login");
   await waitForProductHydration(page);
-  await expect(page.getByRole("heading", { name: "Welcome back." })).toBeVisible();
+  await expect(page).toHaveURL(/\/network\/join$/);
+  await expect(page.getByRole("heading", { name: "Find the right partnership moment." })).toBeVisible();
   await auditResponsiveState(page, "login");
 
   await page.goto("/auth/verify?token=invalid");
@@ -489,10 +490,10 @@ async function provePublicOnlyOfflineBoundary(
   ).toBeFocused();
   await auditResponsiveState(page, "opportunity brief confirmation");
   await page.getByRole("link", { name: "Log in" }).click();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/network\/join$/);
   await waitForProductHydration(page);
   await expect(
-    page.getByRole("heading", { name: "Welcome back." }),
+    page.getByRole("heading", { name: "Find the right partnership moment." }),
   ).toBeVisible();
   await page.goto(`${PWA_BASE_URL}/`);
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
@@ -601,6 +602,15 @@ async function provePublicOnlyOfflineBoundary(
   await expect(page.getByText(memberEmail ?? "")).toHaveCount(0);
   await expect(page.getByText(submittedBriefProfile)).toHaveCount(0);
   await auditResponsiveState(page, "offline opportunity brief fallback");
+
+  for (const entry of ["/network/join", "/login"]) {
+    await page.goto(`${PWA_BASE_URL}${entry}`);
+    await expect(
+      page.getByRole("heading", { name: "Get online to see your partnerships." }),
+    ).toBeVisible();
+    await expect(page.getByLabel("Email address", { exact: true })).toHaveCount(0);
+    await auditResponsiveState(page, `offline member entry ${entry}`);
+  }
 
   // The built Vinext server proves the public PWA boundary above. Authenticated
   // local Postgres RSC routes are exercised on the development server below.

@@ -189,7 +189,7 @@ export function safeGlobalRadarReturnTo(
 
 export async function loadAuthorizedGlobalRadarAdmin() {
   const { database, session } = await loadAdminPageContext();
-  if (!session) redirect("/login");
+  if (!session) redirect("/network/join");
   const actor = { userId: session.user.id, email: session.user.email };
   const application = getGlobalRadarApplication({ database });
   // The invalid identifier is a no-I/O authorization probe: every admin method

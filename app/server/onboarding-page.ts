@@ -8,7 +8,7 @@ import { getCurrentSession } from "./session";
 
 export async function loadOnboardingPage(requestedPath: OnboardingPath) {
   const session = await getCurrentSession();
-  if (!session) redirect("/login");
+  if (!session) redirect("/network/join");
 
   const service = getOnboardingService();
   const state = await service.state(session.user.id);

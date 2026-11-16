@@ -56,7 +56,7 @@ export default async function JoinPage({ searchParams }: JoinPageProps = {}) {
       eyebrow="Opportunity brief"
       title="Find who you should collaborate with next."
       intro="Share your company or creator profile. Mewtuals will research it and send you three partnership directions worth exploring. No account required."
-      headerAction={{ href: "/login", label: "Log in" }}
+      headerAction={{ href: "/network/join", label: "Log in" }}
     >
       <OpportunityBriefForm tracking={tracking} />
     </ProductShell>

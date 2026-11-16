@@ -320,7 +320,7 @@ describe("Global Radar pages", () => {
 
     await expect(
       DirectDemandPage({ searchParams: Promise.resolve({ unknown: "private" }) }),
-    ).rejects.toThrow("redirect:/login");
+    ).rejects.toThrow("redirect:/network/join");
     expect(getGlobalRadarApplication).not.toHaveBeenCalled();
   });
 

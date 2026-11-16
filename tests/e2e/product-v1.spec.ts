@@ -41,7 +41,7 @@ async function requestAndConfirmMagicLink(page: Page, mode: "join" | "login") {
   await page.getByLabel("Email address").fill(memberEmail);
   await page
     .getByRole("button", {
-      name: mode === "join" ? "Join Mewtuals" : "Send sign-in link",
+      name: "Continue with email",
     })
     .click();
 
@@ -85,7 +85,7 @@ test("fresh member completes and retains the product-v1 journey", async ({
   page.on("pageerror", (error) => browserErrors.push(error.message));
 
   await page.goto("/dashboard");
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/network\/join$/);
 
   await requestAndConfirmMagicLink(page, "join");
   await expect(page).toHaveURL(/\/onboarding\/identity$/);
@@ -163,9 +163,9 @@ test("fresh member completes and retains the product-v1 journey", async ({
   ).toHaveText("Mewtuals is reviewing the relationship");
 
   await page.getByRole("button", { name: "Log out" }).click();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/network\/join$/);
   await page.goto("/dashboard");
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/network\/join$/);
 
   await ageMemberMagicLinks();
   await requestAndConfirmMagicLink(page, "login");

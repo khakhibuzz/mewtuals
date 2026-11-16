@@ -132,7 +132,7 @@ export default async function DiscoveryAdminPage({
   searchParams,
 }: DiscoveryAdminPageProps) {
   const { database, session } = await loadAdminPageContext();
-  if (!session) redirect("/login");
+  if (!session) redirect("/network/join");
 
   const filters = discoveryFilters(await searchParams);
   const result = await getDiscoveryService(database).getAdminSummary(

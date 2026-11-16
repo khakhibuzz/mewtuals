@@ -13,7 +13,7 @@ const session = {
 describe("protected onboarding adapters", () => {
   it("redirects signed-out pages to login and signed-in users to their ordered gate", () => {
     expect(resolveProtectedPage(null, "/onboarding/identity", "/onboarding/identity")).toEqual({
-      redirectTo: "/login",
+      redirectTo: "/network/join",
     });
     expect(
       resolveProtectedPage(session, "/onboarding/profile", "/onboarding/source"),
@@ -22,7 +22,7 @@ describe("protected onboarding adapters", () => {
       resolveProtectedPage(session, "/onboarding/source", "/onboarding/source"),
     ).toEqual({ userId: "user" });
     expect(resolveProtectedPage(null, "/dashboard", "/dashboard")).toEqual({
-      redirectTo: "/login",
+      redirectTo: "/network/join",
     });
     expect(
       resolveProtectedPage(session, "/dashboard", "/onboarding/profile"),

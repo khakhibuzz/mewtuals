@@ -49,7 +49,7 @@ export default async function OpportunityBriefAdminPage({
   searchParams,
 }: OpportunityBriefAdminPageProps) {
   const { database, session } = await loadAdminPageContext();
-  if (!session) redirect("/login");
+  if (!session) redirect("/network/join");
 
   const service = getOpportunityBriefService(database);
   const actor = { userId: session.user.id, email: session.user.email };

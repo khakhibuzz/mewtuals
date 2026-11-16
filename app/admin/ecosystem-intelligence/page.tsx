@@ -52,7 +52,7 @@ export default async function EcosystemIntelligenceAdminPage({
   searchParams,
 }: EcosystemIntelligenceAdminPageProps) {
   const { database, session } = await loadAdminPageContext();
-  if (!session) redirect("/login");
+  if (!session) redirect("/network/join");
 
   const incoming = pageSearchParams(await searchParams);
   const service = getEcosystemIntelligenceService(database);

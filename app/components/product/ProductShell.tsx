@@ -10,7 +10,8 @@ type ProductShellProps = {
   title: string;
   intro?: string;
   children: ReactNode;
-  headerAction?: { href: string; label: string };
+  /** Omit for logout; false hides the action on the public member entry. */
+  headerAction?: { href: string; label: string } | false;
   headerLinks?: readonly {
     href: string;
     label: string;
@@ -56,7 +57,7 @@ export function ProductShell({
           <Link className={styles.headerLink} href={headerAction.href}>
             {headerAction.label}
           </Link>
-        ) : (
+        ) : headerAction === false ? null : (
           <LogoutButton />
         )}
       </header>

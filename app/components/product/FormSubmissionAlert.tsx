@@ -17,7 +17,7 @@ export function FormSubmissionAlert({
       {sessionExpired ? (
         <>
           {" "}
-          <Link href="/login">Sign in</Link>
+          <Link href="/network/join">Sign in</Link>
         </>
       ) : null}
     </p>

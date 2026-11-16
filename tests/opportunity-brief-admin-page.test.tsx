@@ -54,7 +54,7 @@ describe("Opportunity Brief administrator page", () => {
     vi.mocked(loadAdminPageContext).mockResolvedValue({ database, session: null });
 
     await expect(OpportunityBriefAdminPage({ searchParams: Promise.resolve({}) })).rejects.toThrow(
-      "redirect:/login",
+      "redirect:/network/join",
     );
   });
 
