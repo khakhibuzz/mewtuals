@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
+import { JSDOM } from "jsdom";
 
 async function render(pathname = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -65,6 +66,42 @@ test("server-renders the sparse Physical AI landing page", async () => {
   assert.doesNotMatch(html, />How it works<|>For startups<|>For creators<|>Log in</);
   assert.doesNotMatch(html, /id="how-it-works"|id="for-startups"|Illustrative case study/);
   assert.doesNotMatch(html, /codex-preview|Codex is working|react-loading-skeleton/i);
+  assert.doesNotMatch(html, /<a\b[^>]*href="\/robotics-data(?:[/?#][^"]*)?"/);
+});
+
+test("server-renders the unlisted robotics data landing page", async () => {
+  const response = await render("/robotics-data");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+
+  const html = await response.text();
+  assert.match(html, /<title>Mewtuals Data — Real-world data for robotics<\/title>/);
+  const headings = [...html.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>/g)];
+  assert.equal(headings.length, 1);
+  assert.equal(
+    headings[0][1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(),
+    "Real work. Better robot data.",
+  );
+  assert.match(
+    html,
+    /<meta\b(?=[^>]*name="robots")(?=[^>]*content="noindex,\s*nofollow")[^>]*>/,
+  );
+  const { document } = new JSDOM(html).window;
+  for (const decoration of document.querySelectorAll('[aria-hidden="true"]')) {
+    decoration.remove();
+  }
+  for (const label of ["Build your collection pilot", "Let’s talk"]) {
+    const pilotLink = [...document.querySelectorAll("a")].find(
+      (link) => link.textContent.replace(/\s+/g, " ").trim() === label,
+    );
+    assert.ok(pilotLink, `${label} must be server-rendered.`);
+    assert.equal(pilotLink.getAttribute("href"), "#pilot");
+  }
+  assert.match(
+    document.querySelector("#pilot")?.textContent ?? "",
+    /To discuss a data pilot, reply to the person who shared this page\. Tell us the task you want to capture\./,
+  );
+  assert.equal(document.querySelector('a[href="/apply"]'), null);
 });
 
 test("server-renders the standalone application route with the shared public header", async () => {

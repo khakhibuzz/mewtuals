@@ -97,6 +97,7 @@ test("mobile member and administrator journey stays responsive and private offli
     "For companies",
     "Join Mewtuals",
   ]);
+  await expect(page.locator('a[href^="/robotics-data"]')).toHaveCount(0);
 
   await page.getByRole("button", { name: "Open navigation" }).click();
   await page.getByRole("link", { name: "For companies" }).click();
@@ -117,6 +118,31 @@ test("mobile member and administrator journey stays responsive and private offli
   ).toBeVisible();
   await auditResponsiveState(page, "ecosystem page", { desktop: true });
 
+  const roboticsResponse = await page.goto("/robotics-data");
+  expect(roboticsResponse?.status()).toBe(200);
+  await expect(page).toHaveTitle(
+    "Mewtuals Data — Real-world data for robotics",
+  );
+  await expect(
+    page.getByRole("heading", {
+      level: 1,
+      name: "Real work. Better robot data.",
+    }),
+  ).toBeVisible();
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+    "content",
+    /noindex,\s*nofollow/,
+  );
+  await auditResponsiveState(page, "robotics data landing", { desktop: true });
+  const dataPilotLink = page.getByRole("link", { name: "Build your collection pilot" });
+  await expect(dataPilotLink).toHaveAttribute("href", "#pilot");
+  await dataPilotLink.click();
+  await expect(page).toHaveURL(/\/robotics-data#pilot$/);
+  await expect(
+    page.locator("#pilot").getByText(
+      "To discuss a data pilot, reply to the person who shared this page. Tell us the task you want to capture.",
+    ),
+  ).toBeVisible();
   await page.goto("/apply");
   await expect(
     page.getByRole("heading", { name: "Put Mewtuals on your company’s side." }),
@@ -494,6 +520,10 @@ async function provePublicOnlyOfflineBoundary(
   await expect(
     page.getByRole("heading", { name: "Welcome back." }),
   ).toBeVisible();
+  await page.goto(`${PWA_BASE_URL}/robotics-data`);
+  await expect(
+    page.getByRole("heading", { name: "Real work. Better robot data." }),
+  ).toBeVisible();
   await page.goto(`${PWA_BASE_URL}/`);
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
   await verifyLandingKeyboardInteractions(page);
@@ -536,6 +566,7 @@ async function provePublicOnlyOfflineBoundary(
         "/login",
         "/network/join",
         "/onboarding/",
+        "/robotics-data",
       ].some((prefix) => pathname === prefix || pathname.startsWith(prefix)),
     ),
   ).toEqual([]);
@@ -590,6 +621,17 @@ async function provePublicOnlyOfflineBoundary(
   ).toHaveCount(0);
   await expect(page.getByLabel("Company URL")).toHaveCount(0);
   await auditResponsiveState(page, "offline application fallback");
+
+  await page.goto(`${PWA_BASE_URL}/robotics-data`);
+  await expect(
+    page.getByRole("heading", {
+      name: "Get online to see your partnerships.",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Real work. Better robot data." }),
+  ).toHaveCount(0);
+  await auditResponsiveState(page, "offline robotics data fallback");
 
   await page.goto(`${PWA_BASE_URL}/join?source=bengaluru-meetup`);
   await expect(
