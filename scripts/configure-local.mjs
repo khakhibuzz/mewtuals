@@ -8,9 +8,9 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 try {
   loadLocalEnvironment();
-  const created = configureLocalEnvironment(projectRoot);
-  console.log(created
-    ? "Created ignored local Node and Worker configuration with a new session secret."
+  const updated = configureLocalEnvironment(projectRoot);
+  console.log(updated
+    ? "Configured ignored local Node and Worker development settings."
     : "Reusing existing generated local configuration.");
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);

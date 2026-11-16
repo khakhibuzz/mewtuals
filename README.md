@@ -70,11 +70,13 @@ npm run dev:4000
 Open [http://localhost:4000](http://localhost:4000).
 
 `setup:local` generates ignored `.env.local` and `.dev.vars` files with matching
-settings and a random session secret, initializes a checkout-owned cluster in
+settings and independent random session, Discovery, and Radar worker secrets,
+initializes a checkout-owned cluster in
 `.local-postgres`, then applies migrations and seeds four opportunities. It
 creates separate `mewtuals` and `mewtuals_test` databases. Repeating setup preserves
-the generated secret and existing user records; it refuses to overwrite manually
-created or mismatched configuration.
+the generated secrets and existing user records. For matching files from older
+generated setup, it adds missing worker secrets without changing existing values;
+it refuses to overwrite manually created or mismatched configuration.
 
 The database listens only on `127.0.0.1:55432`, using trust authentication for
 local development. Never use this configuration for public deployment. Stop the

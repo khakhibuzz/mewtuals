@@ -31,28 +31,34 @@ function createLauncherFixture({
   initialised = false,
   ownServerRunning = false,
   configuredPort,
+  externalWorktree = false,
 }: {
   initialised?: boolean;
   ownServerRunning?: boolean;
   configuredPort?: string;
+  externalWorktree?: boolean;
 } = {}): LauncherFixture {
   const projectRoot = realpathSync(
     mkdtempSync(join(tmpdir(), "mewtuals-postgres-launcher-")),
   );
   fixtureDirectories.push(projectRoot);
+  const repositoryRoot = externalWorktree
+    ? realpathSync(mkdtempSync(join(tmpdir(), "mewtuals-postgres-repository-")))
+    : projectRoot;
+  if (externalWorktree) fixtureDirectories.push(repositoryRoot);
 
   const scriptsDir = join(projectRoot, "scripts");
   const binDir = join(projectRoot, "fake-bin");
   const ownDataDir = join(projectRoot, ".local-postgres", "data");
   const siblingDataDir = join(
-    projectRoot,
+    repositoryRoot,
     ".worktrees",
     "sibling",
     ".local-postgres",
     "data",
   );
   const foreignDataDir = join(projectRoot, "foreign", "data");
-  const commonGitDir = join(projectRoot, ".git");
+  const commonGitDir = join(repositoryRoot, ".git");
   const stateFile = join(projectRoot, "postgres-state");
   const eventsFile = join(projectRoot, "events.log");
 
@@ -246,14 +252,38 @@ describe("local PostgreSQL launcher", () => {
     expect(fixture.events()).toEqual(["pg_ctl status", "psql identity"]);
   });
 
-  it("rejects a foreign fixed endpoint before database setup", () => {
-    const fixture = createLauncherFixture();
+  it.each([false, true])("rejects a foreign fixed endpoint before database setup (external worktree: %s)", (externalWorktree) => {
+    const fixture = createLauncherFixture({ externalWorktree });
 
     const result = fixture.run("start", fixture.foreignDataDir);
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("Refusing to reuse PostgreSQL");
     expect(fixture.events()).toEqual(["psql identity"]);
+  });
+
+  it("starts and reuses its own cluster outside the repository's worktree directory", () => {
+    const fixture = createLauncherFixture({ externalWorktree: true, configuredPort: "55439" });
+
+    const firstStart = fixture.run("start");
+    expect(firstStart.status, String(firstStart.stderr)).toBe(0);
+    const repeatedStart = fixture.run("start");
+    expect(repeatedStart.status, String(repeatedStart.stderr)).toBe(0);
+    expect(fixture.run("stop").status).toBe(0);
+    expect(fixture.events()).toEqual([
+      "psql identity",
+      "initdb",
+      "pg_ctl start",
+      "psql identity",
+      "psql database",
+      "psql database",
+      "pg_ctl status",
+      "psql identity",
+      "psql database",
+      "psql database",
+      "pg_ctl status",
+      "pg_ctl stop",
+    ]);
   });
 
   it("identity-validates a self-started endpoint and stops only its own cluster", () => {

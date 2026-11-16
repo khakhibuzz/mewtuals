@@ -22,6 +22,7 @@ export function createCacheName(workerTemplate: string): string {
 }
 
 export const WORKER_TEMPLATE = String.raw`
+// Refresh the cached manifest after splitting icon purposes into separate entries.
 const CACHE_NAME = "${CACHE_NAME_PLACEHOLDER}";
 const PUBLIC_ASSET_PATHS = ${JSON.stringify(PUBLIC_ASSET_PATHS)};
 

@@ -760,6 +760,47 @@ describe("service worker cache behavior", () => {
     );
   });
 
+  it("stages the split icon-purpose manifest separately until the new worker activates", async () => {
+    const priorCacheName = "mewtuals-tqv2ye";
+    const priorManifest = JSON.stringify({
+      ...manifest(),
+      icons: [192, 512].map((size) => ({
+        src: `/icons/mewtuals-${size}.png`,
+        sizes: `${size}x${size}`,
+        type: "image/png",
+        purpose: "any maskable",
+      })),
+    });
+    const currentManifest = JSON.stringify(manifest());
+    const priorCache = new FakeCache();
+    await priorCache.put("/manifest.webmanifest", new Response(priorManifest));
+    const caches = new Map([[priorCacheName, priorCache]]);
+    const worker = createWorkerHarness({
+      initialCaches: caches,
+      fetchResponse: (pathname, request) =>
+        pathname === "/manifest.webmanifest"
+          ? new Response(currentManifest)
+          : publicShellResponder(pathname, request),
+    });
+
+    await worker.dispatchLifecycle("install");
+
+    await expect(
+      priorCache.match("/manifest.webmanifest").then((response) => response?.text()),
+    ).resolves.toBe(priorManifest);
+    await expect(
+      worker.cache().match("/manifest.webmanifest").then((response) => response?.text()),
+    ).resolves.toBe(currentManifest);
+    expect(caches.has(priorCacheName)).toBe(true);
+
+    await worker.dispatchLifecycle("activate");
+
+    expect(caches.has(priorCacheName)).toBe(false);
+    await expect(
+      worker.cache().match("/manifest.webmanifest").then((response) => response?.text()),
+    ).resolves.toBe(currentManifest);
+  });
+
   it("preserves a prior revision cache when a new worker install fails", async () => {
     const priorCacheName = createCacheName(`${WORKER_TEMPLATE}\n// prior revision`);
     const priorCache = new FakeCache();

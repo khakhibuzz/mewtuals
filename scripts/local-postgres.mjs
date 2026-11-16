@@ -224,6 +224,7 @@ function runningServerIdentity(binDir) {
 
 function isRepositoryOwnedDataDirectory(candidate) {
   const root = repositoryRoot();
+  if (existsSync(dataDir) && candidate === realpathSync(dataDir)) return true;
   if (candidate === resolve(root, ".local-postgres", "data")) return true;
 
   const worktreesRoot = resolve(root, ".worktrees");
