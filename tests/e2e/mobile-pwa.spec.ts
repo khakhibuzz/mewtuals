@@ -138,11 +138,12 @@ test("mobile member and administrator journey stays responsive and private offli
   await expect(dataPilotLink).toHaveAttribute("href", "#pilot");
   await dataPilotLink.click();
   await expect(page).toHaveURL(/\/robotics-data#pilot$/);
-  await expect(
-    page.locator("#pilot").getByText(
-      "To discuss a data pilot, reply to the person who shared this page. Tell us the task you want to capture.",
-    ),
-  ).toBeVisible();
+  const emailLink = page.getByRole("link", { name: "Discuss a data pilot" });
+  await expect(emailLink).toBeVisible();
+  await expect(emailLink).toHaveAttribute(
+    "href",
+    "mailto:keshav@mewtuals.com?subject=Robotics%20data%20collection%20pilot",
+  );
   await page.goto("/apply");
   await expect(
     page.getByRole("heading", { name: "Put Mewtuals on your company’s side." }),

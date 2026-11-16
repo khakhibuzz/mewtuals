@@ -60,7 +60,7 @@
 .pilot { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12%; padding-block: 74px 88px; border-top: 1px solid var(--line); scroll-margin-top: 32px; }
 .pilot h2 { margin-top: 23px; }
 .pilotInvitation > p:not(.eyebrow) { max-width: 395px; margin-top: 23px; color: var(--ink-soft); font-size: 15px; line-height: 1.7; }
-.pilotInvitation > p.contact { padding-left: 18px; border-left: 2px solid var(--data-accent); color: var(--ink); }
+.pilotInvitation > p.contact { margin-top: 14px; font-size: 12px; }
 .steps { list-style: none; padding: 0; margin: 0; }
 .steps li { display: grid; grid-template-columns: 26px 1fr; gap: 22px; padding-block: 23px; border-bottom: 1px solid var(--line); }
 .steps li:first-child { padding-top: 0; }

@@ -92,7 +92,8 @@ export default function RoboticsDataPage() {
             <p className={styles.eyebrow}>Start with one useful dataset</p>
             <h2 id="pilot-heading">Your next dataset<br />starts with a conversation.</h2>
             <p>Looking for a collection partner? Let’s find out what a focused pilot could look like for your team.</p>
-            <p className={styles.contact}>To discuss a data pilot, reply to the person who shared this page. Tell us the task you want to capture.</p>
+            <a className={styles.primaryLink} href="mailto:keshav@mewtuals.com?subject=Robotics%20data%20collection%20pilot">Discuss a data pilot <Arrow /></a>
+            <p className={styles.contact}>keshav@mewtuals.com</p>
           </div>
           <ol className={styles.steps}>
             {pilotSteps.map((step, index) => (

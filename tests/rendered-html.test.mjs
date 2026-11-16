@@ -97,10 +97,13 @@ test("server-renders the unlisted robotics data landing page", async () => {
     assert.ok(pilotLink, `${label} must be server-rendered.`);
     assert.equal(pilotLink.getAttribute("href"), "#pilot");
   }
-  assert.match(
-    document.querySelector("#pilot")?.textContent ?? "",
-    /To discuss a data pilot, reply to the person who shared this page\. Tell us the task you want to capture\./,
-  );
+  const emailLink = document.querySelector('#pilot a[href^="mailto:"]');
+  assert.ok(emailLink, "The pilot section must offer a direct email enquiry.");
+  assert.equal(emailLink.textContent.trim(), "Discuss a data pilot");
+  const emailUrl = new URL(emailLink.getAttribute("href"));
+  assert.equal(emailUrl.pathname, "keshav@mewtuals.com");
+  assert.equal(emailUrl.searchParams.get("subject"), "Robotics data collection pilot");
+  assert.doesNotMatch(document.querySelector("#pilot")?.textContent ?? "", /reply to the person/);
   assert.equal(document.querySelector('a[href="/apply"]'), null);
 });
 
