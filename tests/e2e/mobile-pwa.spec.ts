@@ -98,6 +98,7 @@ test("mobile member and administrator journey stays responsive and private offli
     "Join Mewtuals",
   ]);
   await expect(page.locator('a[href^="/robotics-data"]')).toHaveCount(0);
+  await expect(page.locator('a[href^="/factory-partners"]')).toHaveCount(0);
 
   await page.getByRole("button", { name: "Open navigation" }).click();
   await page.getByRole("link", { name: "For companies" }).click();
@@ -144,6 +145,13 @@ test("mobile member and administrator journey stays responsive and private offli
     "href",
     "mailto:keshav@mewtuals.com?subject=Robotics%20data%20collection%20pilot",
   );
+  const factoryResponse = await page.goto("/factory-partners");
+  expect(factoryResponse?.status()).toBe(200);
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, nofollow");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await auditResponsiveState(page, "factory partner landing", { desktop: true });
+  const factoryContact = page.getByRole("main").locator('a[href^="mailto:keshav@mewtuals.com?"]');
+  await expect(factoryContact.first()).toBeVisible();
   await page.goto("/apply");
   await expect(
     page.getByRole("heading", { name: "Put Mewtuals on your company’s side." }),
@@ -525,6 +533,8 @@ async function provePublicOnlyOfflineBoundary(
   await expect(
     page.getByRole("heading", { name: "Real work. Better robot data." }),
   ).toBeVisible();
+  await page.goto(`${PWA_BASE_URL}/factory-partners`);
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await page.goto(`${PWA_BASE_URL}/`);
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
   await verifyLandingKeyboardInteractions(page);
@@ -568,6 +578,7 @@ async function provePublicOnlyOfflineBoundary(
         "/network/join",
         "/onboarding/",
         "/robotics-data",
+        "/factory-partners",
       ].some((prefix) => pathname === prefix || pathname.startsWith(prefix)),
     ),
   ).toEqual([]);
@@ -633,6 +644,12 @@ async function provePublicOnlyOfflineBoundary(
     page.getByRole("heading", { name: "Real work. Better robot data." }),
   ).toHaveCount(0);
   await auditResponsiveState(page, "offline robotics data fallback");
+
+  await page.goto(`${PWA_BASE_URL}/factory-partners`);
+  await expect(
+    page.getByRole("heading", { name: "Get online to see your partnerships." }),
+  ).toBeVisible();
+  await expect(page.getByRole("main").locator('a[href^="mailto:keshav@mewtuals.com"]')).toHaveCount(0);
 
   await page.goto(`${PWA_BASE_URL}/join?source=bengaluru-meetup`);
   await expect(

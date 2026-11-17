@@ -67,6 +67,7 @@ test("server-renders the sparse Physical AI landing page", async () => {
   assert.doesNotMatch(html, /id="how-it-works"|id="for-startups"|Illustrative case study/);
   assert.doesNotMatch(html, /codex-preview|Codex is working|react-loading-skeleton/i);
   assert.doesNotMatch(html, /<a\b[^>]*href="\/robotics-data(?:[/?#][^"]*)?"/);
+  assert.doesNotMatch(html, /<a\b[^>]*href="\/factory-partners(?:[/?#][^"]*)?"/);
 });
 
 test("server-renders the unlisted robotics data landing page", async () => {
@@ -105,6 +106,21 @@ test("server-renders the unlisted robotics data landing page", async () => {
   assert.equal(emailUrl.searchParams.get("subject"), "Robotics data collection pilot");
   assert.doesNotMatch(document.querySelector("#pilot")?.textContent ?? "", /reply to the person/);
   assert.equal(document.querySelector('a[href="/apply"]'), null);
+});
+
+test("serves a directly shareable factory partner page with a pilot contact", async () => {
+  const response = await render("/factory-partners");
+  assert.equal(response.status, 200);
+  const { document } = new JSDOM(await response.text()).window;
+  assert.equal(document.querySelector('meta[name="robots"]')?.content, "noindex, nofollow");
+  const main = document.querySelector("main");
+  assert.ok(main);
+  assert.equal(main.querySelectorAll("h1").length, 1);
+  assert.match(main.textContent, /stereo camera headset/i);
+  assert.match(main.textContent, /consent from participating workers/i);
+  assert.match(main.textContent, /IIT Ropar/);
+  assert.ok(main.querySelector('a[href^="mailto:keshav@mewtuals.com?"]'));
+  assert.equal(main.querySelector('a[href="/apply"]'), null);
 });
 
 test("server-renders the standalone application route with the shared public header", async () => {
