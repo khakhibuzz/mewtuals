@@ -120,6 +120,10 @@ test("serves a directly shareable factory partner page with a pilot contact", as
   assert.match(main.textContent, /consent from participating workers/i);
   assert.match(main.textContent, /IIT Ropar/);
   assert.ok(main.querySelector('a[href^="mailto:keshav@mewtuals.com?"]'));
+  const whatsapp = main.querySelector('#contact a[href="https://wa.me/918872052031"]');
+  assert.ok(whatsapp);
+  assert.equal(whatsapp.getAttribute("aria-label"), "WhatsApp Keshav Garg at +91 8872052031");
+  assert.ok(whatsapp.querySelector('svg[aria-hidden="true"]'));
   const linkedIn = main.querySelector('a[href="https://www.linkedin.com/in/keshav-garg/"]');
   assert.match(linkedIn?.textContent ?? "", /LinkedIn/);
   const outreach = document.querySelector("footer ul");

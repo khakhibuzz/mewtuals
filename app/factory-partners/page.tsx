@@ -1,3 +1,4 @@
+import { WhatsappLogo } from "@phosphor-icons/react/dist/ssr";
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
@@ -183,7 +184,17 @@ export default function FactoryPartnersPage() {
           <div className={styles.contactInvitation}>
             <p className={styles.contactPrompt}>Could a pilot fit your factory?</p>
             <p>Tell Keshav about your site and the work your team does. We can discuss a suitable task, your constraints and what a paid pilot would involve.</p>
-            <a className={styles.primaryLink} href={contactHref}>Talk to Keshav Garg <Arrow /></a>
+            <div className={styles.contactActions}>
+              <a className={styles.primaryLink} href={contactHref}>Talk to Keshav Garg <Arrow /></a>
+              <a
+                className={styles.whatsappLink}
+                href="https://wa.me/918872052031"
+                aria-label="WhatsApp Keshav Garg at +91 8872052031"
+                title="WhatsApp Keshav Garg at +91 8872052031"
+              >
+                <WhatsappLogo size={28} aria-hidden="true" focusable="false" />
+              </a>
+            </div>
             <p className={styles.email}>keshav@mewtuals.com</p>
           </div>
         </section>

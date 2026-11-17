@@ -72,6 +72,10 @@
 .contactInvitation { align-self: center; }
 .contactPrompt { font-size: 23px; line-height: 1.3; font-weight: 450; letter-spacing: -0.65px; }
 .contactInvitation > p:nth-child(2) { max-width: 430px; margin-top: 16px; color: var(--ink-soft); font-size: 15px; line-height: 1.75; }
+.contactActions { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; margin-top: 28px; }
+.contactActions .primaryLink { margin-top: 0; }
+.whatsappLink { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 54px; min-height: 54px; color: #fff; background: #187a40; }
+.whatsappLink:hover { background: #126032; }
 .contactInvitation .email { margin-top: 14px; color: var(--ink-soft); font-size: 12px; overflow-wrap: anywhere; }
 .footer { padding-block: 34px max(30px, env(safe-area-inset-bottom)); color: var(--ink-soft); }
 .terms { max-width: 880px; }

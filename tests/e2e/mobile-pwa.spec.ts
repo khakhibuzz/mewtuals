@@ -152,6 +152,11 @@ test("mobile member and administrator journey stays responsive and private offli
   await auditResponsiveState(page, "factory partner landing", { desktop: true });
   const factoryContact = page.getByRole("main").locator('a[href^="mailto:keshav@mewtuals.com?"]');
   await expect(factoryContact.first()).toBeVisible();
+  const whatsappContact = page.getByRole("link", { name: "WhatsApp Keshav Garg at +91 8872052031" });
+  await expect(whatsappContact).toBeVisible();
+  await expect(whatsappContact).toHaveAttribute("href", "https://wa.me/918872052031");
+  await whatsappContact.focus();
+  await expect(whatsappContact).toBeFocused();
   await page.goto("/apply");
   await expect(
     page.getByRole("heading", { name: "Put Mewtuals on your company’s side." }),
