@@ -120,6 +120,12 @@ test("serves a directly shareable factory partner page with a pilot contact", as
   assert.match(main.textContent, /consent from participating workers/i);
   assert.match(main.textContent, /IIT Ropar/);
   assert.ok(main.querySelector('a[href^="mailto:keshav@mewtuals.com?"]'));
+  const linkedIn = main.querySelector('a[href="https://www.linkedin.com/in/keshav-garg/"]');
+  assert.match(linkedIn?.textContent ?? "", /LinkedIn/);
+  const outreach = document.querySelector("footer ul");
+  assert.ok(outreach);
+  assert.ok([...outreach.querySelectorAll("li")].some((item) => item.textContent.trim() === "Generalist"));
+  assert.match(document.querySelector("footer")?.textContent ?? "", /outreach does not imply a partnership/i);
   assert.equal(main.querySelector('a[href="/apply"]'), null);
 });
 

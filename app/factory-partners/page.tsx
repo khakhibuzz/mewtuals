@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import styles from "./factory-partners.module.css";
+import { contactedOrganizations } from "./outreach";
 
 const title = "Mewtuals — Factory pilots for robot training";
 const description =
@@ -175,6 +176,9 @@ export default function FactoryPartnersPage() {
             <p className={styles.eyebrow}>The people behind Mewtuals</p>
             <h2 id="contact-heading">Started by<br />IIT Ropar graduates.</h2>
             <p>Keshav Garg is your point of contact for factory pilots.</p>
+            <a className={styles.profileLink} href="https://www.linkedin.com/in/keshav-garg/">
+              Keshav Garg on LinkedIn <Arrow />
+            </a>
           </div>
           <div className={styles.contactInvitation}>
             <p className={styles.contactPrompt}>Could a pilot fit your factory?</p>
@@ -189,7 +193,11 @@ export default function FactoryPartnersPage() {
         <div className={styles.terms}>
           <h2>Terms &amp; Conditions</h2>
           <p>Participation, payment, recording permissions, access, use and retention are subject to written pilot terms agreed before recording. This page describes a proposed collection pilot; it does not confirm an active collection at your site.</p>
-          <p>We have contacted Generalist, a robotics research lab, about our collection offering. Outreach does not imply a partnership, endorsement, or access to recordings.</p>
+          <h3 className={styles.outreachHeading}>Robotics outreach</h3>
+          <p>We’ve reached out to these organizations about data collection for robot training. Outreach does not imply a partnership, endorsement, or access to recordings.</p>
+          <ul className={styles.outreachList}>
+            {contactedOrganizations.map((name) => <li key={name}>{name}</li>)}
+          </ul>
         </div>
         <div className={styles.footerLine}>
           <span>Mewtuals / Factory pilots</span>
