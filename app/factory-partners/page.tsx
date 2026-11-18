@@ -188,7 +188,7 @@ export default function FactoryPartnersPage() {
               <a className={styles.primaryLink} href={contactHref}>Talk to Keshav Garg <Arrow /></a>
               <a
                 className={styles.whatsappLink}
-                href="https://wa.me/918872052031"
+                href="https://wa.me/918872052031?text=Hi%20Keshav%2C%20I%E2%80%99m%20interested%20in%20discussing%20a%20factory%20pilot."
                 aria-label="WhatsApp Keshav Garg at +91 8872052031"
                 title="WhatsApp Keshav Garg at +91 8872052031"
               >

@@ -154,7 +154,7 @@ test("mobile member and administrator journey stays responsive and private offli
   await expect(factoryContact.first()).toBeVisible();
   const whatsappContact = page.getByRole("link", { name: "WhatsApp Keshav Garg at +91 8872052031" });
   await expect(whatsappContact).toBeVisible();
-  await expect(whatsappContact).toHaveAttribute("href", "https://wa.me/918872052031");
+  await expect(whatsappContact).toHaveAttribute("href", "https://wa.me/918872052031?text=Hi%20Keshav%2C%20I%E2%80%99m%20interested%20in%20discussing%20a%20factory%20pilot.");
   await whatsappContact.focus();
   await expect(whatsappContact).toBeFocused();
   await page.goto("/apply");
