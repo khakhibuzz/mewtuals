@@ -1,0 +1,38 @@
+{
+  "date": "2026-11-16",
+  "route": "/robotics-data",
+  "project_id": "appgprj_6a56979ca26c8191b26abf2a5cd9dc51",
+  "base_live_commit": "fea44686b3d9bac9159a1ef2ad417d0410c761ec",
+  "release_commit": "f0ed341f6b694509ff569805a13c88032abfdf63",
+  "github_branch": "codex/robotics-data-landing",
+  "github_and_sites_source_heads_verified": true,
+  "version_number": 16,
+  "version_id": "appgprj_6a56979ca26c8191b26abf2a5cd9dc51~appgver_130e8ed509e88191a73b70dfc76e496b",
+  "deployment_id": "appgdep_6afada80bddc8191bad098506e48173a",
+  "deployment_status": "succeeded",
+  "prepared_archive_sha256": "4310836871b482a8ea5d054feaa8aa795389c52471019c1dfe7f92e00ec4b3d9",
+  "release_scope": "New route, scoped CSS, rendered-HTML and mobile/PWA tests only. No existing production routes, dependencies, schema, hosting bindings or service-worker changes.",
+  "verification": {
+    "development_unit_tests": 1922,
+    "release_unit_tests": 1884,
+    "rendered_html_tests": 4,
+    "database_tests": 336,
+    "acceptance_tests": 61,
+    "migrations": "Forward compatibility, fresh migrations and populated upgrade paths passed.",
+    "release_browser_tests": "7 of 7 passed, including member/admin journeys and robotics-data responsive and offline coverage.",
+    "responsive_widths": [320, 390, 767, 1440],
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "diff_check": "passed",
+    "live_http": "HTTP 200 for /, /robotics-data and /apply on both mewtuals.com and www.mewtuals.com.",
+    "domains": "Both custom domains report active routing and active SSL.",
+    "discoverability": "Live robotics route renders noindex,nofollow. Both homepages have no link to the route. Unlisted, not authenticated.",
+    "contact": "Pilot section asks recipients to reply to the person who shared the page; no unverified mailbox or prototype form used."
+  },
+  "local_verification_limits": [
+    "The broader development checkout browser suite did not pass against its pre-existing app database, which has historical migration-journal drift. A documented migration attempt rolled back without changing that database.",
+    "Final browser verification used the exact scoped release checkout with its own ignored local configuration and a fresh disposable PostgreSQL database. Its complete seven-test suite passed.",
+    "Database/service/schema code is identical between the scoped release base and the checkout used for the database and acceptance gates."
+  ]
+}

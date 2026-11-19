@@ -23,6 +23,11 @@ import type {
   OpportunityBriefRepository,
   SubmitRepositoryInput,
 } from "../../app/server/opportunity-brief-service";
+import {
+  findFormSubmission,
+  insertFormSubmission,
+  lockFormSubmission,
+} from "./form-submission-repository";
 import type { MewtualsDatabase } from "../client";
 import { getDb } from "../client";
 import {
@@ -227,6 +232,27 @@ export function createOpportunityBriefRepository(
   return {
     async submit(input) {
       return database.transaction(async (transaction) => {
+        if (input.notification) {
+          if (input.notification.form !== "join") throw new Error("Expected an Opportunity Brief notification.");
+          await lockFormSubmission(transaction, input.notification.id);
+          const notification = await findFormSubmission(transaction, input.notification.id);
+          if (notification) {
+            if (notification.form !== "join" || notification.payloadHash !== input.notification.payloadHash || !notification.requestId || !notification.status) {
+              return { outcome: "idempotency_conflict" as const };
+            }
+            const request = await findAdminRequest(transaction, notification.requestId);
+            if (!request) return { outcome: "idempotency_conflict" as const };
+            return {
+              outcome: "accepted" as const,
+              requestId: notification.requestId,
+              status: notification.status,
+              linkedCandidateId: request.linkedCandidateId,
+              persistence: "merged" as const,
+              acknowledgement: { status: request.acknowledgementStatus, delivery: null },
+              notification,
+            };
+          }
+        }
         await takeAdvisoryLock(
           transaction,
           REQUESTER_LOCK_NAMESPACE,
@@ -345,8 +371,13 @@ export function createOpportunityBriefRepository(
           createdAt: input.submittedAt,
         });
 
+        const notification = input.notification
+          ? await insertFormSubmission(transaction, input.notification, input.requesterHash, request)
+          : undefined;
+
         return {
           outcome: "accepted" as const,
+          ...(notification ? { notification } : {}),
           requestId: request.id,
           status: request.status,
           linkedCandidateId: request.linkedCandidateId,

@@ -23,6 +23,7 @@ import {
   discoveryRuns,
   magicLinks,
   opportunityBriefRequests,
+  publicFormSubmissions,
   users,
 } from "../../db/schema";
 import { loadLocalEnvironment } from "../../scripts/load-local-env.mjs";
@@ -48,6 +49,7 @@ const database = getDb();
 const opportunityBriefRepository = createOpportunityBriefRepository(database);
 const createdCandidateIds = new Set<string>();
 const createdRequestIds = new Set<string>();
+const createdSubmissionIds = new Set<string>();
 const createdRunIds = new Set<string>();
 const disposableEmails = new Set<string>([ADMIN_EMAIL]);
 const runPhoneNumbers = new Set<string>();
@@ -56,8 +58,20 @@ let profileHost: string | undefined;
 
 test.use({ viewport: PRIMARY_VIEWPORT });
 
-test.beforeEach(async () => {
+test.beforeEach(async ({ page }) => {
   await removeDisposableAccount(ADMIN_EMAIL);
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() !== "POST" ||
+      url.origin !== BASE_URL ||
+      !["/api/applications", "/api/opportunity-briefs"].includes(url.pathname)
+    ) return;
+    const submissionId = request.headers()["idempotency-key"];
+    if (submissionId && /^[a-f0-9-]{36}$/i.test(submissionId)) {
+      createdSubmissionIds.add(submissionId);
+    }
+  });
 });
 
 test.afterEach(async () => {
@@ -66,6 +80,80 @@ test.afterEach(async () => {
 
 test.afterAll(async () => {
   await closeDb();
+});
+
+test("application retries preserve one saved owner notification after a lost confirmation", async ({ page }) => {
+  const runId = randomUUID();
+  const companyUrl = `https://application-${runId}.example/`;
+  const workEmail = `application-${runId}@example.test`;
+  const phone = uniqueTestPhone(runId, "8");
+  const attemptKeys: string[] = [];
+  const retryMessage = "Your details were saved, but we couldn’t confirm notification yet. Try again.";
+
+  await page.route("**/api/applications", async (route) => {
+    const request = route.request();
+    const key = request.headers()["idempotency-key"];
+    expect(key).toMatch(/^[a-f0-9-]{36}$/i);
+    attemptKeys.push(key);
+    createdSubmissionIds.add(key);
+    expect(request.postDataJSON()).toEqual({ companyUrl, workEmail, phone, website: "" });
+    if (attemptKeys.length === 1) {
+      // The server has committed and accepted notification delivery, but the
+      // browser loses that confirmation. Its retry must reuse the same record.
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ ok: true });
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: retryMessage }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/apply");
+  await expect(page.getByLabel("Company URL")).toBeEnabled();
+  await page.getByLabel("Company URL").fill(companyUrl);
+  await page.getByLabel("Work email").fill(workEmail);
+  await page.getByLabel("Phone number").fill(phone);
+  await page.getByRole("button", { name: "Apply for representation" }).click();
+
+  const failure = page.getByRole("alert");
+  await expect(failure).toHaveText(retryMessage);
+  await expect(failure).toBeFocused();
+  await expect(page.getByLabel("Company URL")).toHaveValue(companyUrl);
+  await expect(page.getByLabel("Work email")).toHaveValue(workEmail);
+  await expect(page.getByLabel("Phone number")).toHaveValue(phone);
+  await auditMobileState(page, "application retry after lost confirmation");
+
+  const [saved] = await database.select().from(publicFormSubmissions)
+    .where(eq(publicFormSubmissions.id, attemptKeys[0]));
+  expect(saved).toMatchObject({
+    form: "apply",
+    requestId: null,
+    payload: { companyUrl, workEmail, phone },
+    message: { to: "keshav@mewtuals.com", replyTo: workEmail },
+    attemptCount: 1,
+  });
+  expect(saved.acceptedAt).not.toBeNull();
+  expect(saved.providerMessageId).toBeTruthy();
+  for (const value of [companyUrl, workEmail, phone, "/apply"]) {
+    expect(saved.message.text).toContain(value);
+  }
+
+  await page.getByRole("button", { name: "Apply for representation" }).click();
+
+  await expect(page.getByRole("heading", { name: "Application received" })).toBeFocused();
+  await expect(page.getByText("Your application has been sent to Keshav. We’ll be in touch.")).toBeVisible();
+  await auditMobileState(page, "application accepted confirmation");
+  expect(attemptKeys).toEqual([attemptKeys[0], attemptKeys[0]]);
+  const records = await database.select().from(publicFormSubmissions)
+    .where(eq(publicFormSubmissions.id, attemptKeys[0]));
+  expect(records).toHaveLength(1);
+  expect(records[0].attemptCount).toBe(1);
+  expect(records[0].providerMessageId).toBe(saved.providerMessageId);
 });
 
 test("isolated public intake and protected operations meet the automated response SLA without regressing member entry", async ({
@@ -147,6 +235,31 @@ test("isolated public intake and protected operations meet the automated respons
     acknowledgementStatus: "not_requested",
     source,
   });
+  const ownerNotifications = await database.select().from(publicFormSubmissions)
+    .where(eq(publicFormSubmissions.requestId, storedPublicRequest.id));
+  expect(ownerNotifications).toHaveLength(1);
+  const ownerNotification = ownerNotifications[0];
+  createdSubmissionIds.add(ownerNotification.id);
+  expect(ownerNotification).toMatchObject({
+    form: "join",
+    payload: {
+      participantType: "company",
+      profileUrl: publicProfileUrl,
+      phoneNumber: publicPhoneNumber,
+      openToText: "Creator distribution and a measurable co-marketing pilot",
+      source,
+      utm: { source: "meetup", campaign: "task-7-browser" },
+    },
+    message: { to: "keshav@mewtuals.com" },
+    attemptCount: 1,
+  });
+  expect(ownerNotification.message.replyTo).toBeUndefined();
+  expect(ownerNotification.acceptedAt).not.toBeNull();
+  expect(ownerNotification.providerMessageId).toBeTruthy();
+  for (const value of [publicProfileUrl, publicPhoneNumber, source, "task-7-browser", "/join"]) {
+    expect(ownerNotification.message.text).toContain(value);
+  }
+
   const confirmationText = await confirmation.innerText();
   expect(confirmationText).not.toContain(storedPublicRequest.id);
   expect(confirmationText.toLowerCase()).not.toMatch(
@@ -599,6 +712,15 @@ function deferred<Value>() {
 }
 
 async function cleanupBrowserRows() {
+  const submissionIds = [...createdSubmissionIds];
+  if (submissionIds.length > 0) {
+    await database.delete(publicFormSubmissions)
+      .where(inArray(publicFormSubmissions.id, submissionIds));
+    const remaining = await database.select({ id: publicFormSubmissions.id })
+      .from(publicFormSubmissions)
+      .where(inArray(publicFormSubmissions.id, submissionIds));
+    expect(remaining).toHaveLength(0);
+  }
   const phoneNumbers = [...runPhoneNumbers];
   if (profileHost && activeRunSource && phoneNumbers.length > 0) {
     const ownedRequests = await database
@@ -661,6 +783,7 @@ async function cleanupBrowserRows() {
   }
   createdCandidateIds.clear();
   createdRequestIds.clear();
+  createdSubmissionIds.clear();
   createdRunIds.clear();
   disposableEmails.clear();
   disposableEmails.add(ADMIN_EMAIL);

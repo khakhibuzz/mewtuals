@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { applicationInputSchema } from "../app/domain/application";
 import {
-  prototypeSubmitter,
   validateApplication,
   validateCompanyUrl,
   validatePhone,
@@ -107,14 +107,57 @@ describe("validateApplication", () => {
   });
 });
 
-describe("prototypeSubmitter", () => {
-  it("keeps the submission boundary asynchronous and side-effect free", async () => {
-    await expect(
-      prototypeSubmitter({
-        companyUrl: "https://argide.ai/",
-        workEmail: "founder@argide.ai",
-        phone: "+919876543210",
-      }),
-    ).resolves.toBeUndefined();
+describe("applicationInputSchema", () => {
+  const validInput = {
+    companyUrl: "argide.ai",
+    workEmail: " FOUNDER@ARGIDE.AI ",
+    phone: "+91 98765 43210",
+  };
+
+  it("normalizes a bounded runtime input and defaults the honeypot", () => {
+    expect(applicationInputSchema.parse(validInput)).toEqual({
+      companyUrl: "https://argide.ai/",
+      workEmail: "founder@argide.ai",
+      phone: "+919876543210",
+      website: "",
+    });
+  });
+
+  it.each([
+    null,
+    [],
+    { ...validInput, companyUrl: 123 },
+    { ...validInput, companyUrl: "https://example.com/" + "a".repeat(2_048) },
+    { ...validInput, workEmail: "a".repeat(321) },
+    { ...validInput, phone: "1".repeat(81) },
+    { ...validInput, website: "spam" },
+    { ...validInput, recipient: "other@example.com" },
+  ])("rejects unsafe runtime input %j", (input) => {
+    expect(applicationInputSchema.safeParse(input).success).toBe(false);
+  });
+
+  it("rejects work emails the notification transport cannot accept", () => {
+    const parsed = applicationInputSchema.safeParse({
+      ...validInput,
+      workEmail: " A..B@EXAMPLE.COM ",
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error("Expected an invalid email");
+    expect(parsed.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ["workEmail"], message: "Enter a valid work email." }),
+    ]));
+  });
+
+  it("retains field-specific normalization errors", () => {
+    const parsed = applicationInputSchema.safeParse({
+      companyUrl: "",
+      workEmail: "",
+      phone: "",
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) throw new Error("Expected invalid input");
+    expect(
+      parsed.error.issues.map((issue) => [issue.path[0], issue.message]),
+    ).toContainEqual(["companyUrl", "Company URL is required."]);
   });
 });

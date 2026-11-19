@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { OpportunityBriefForm } from "../app/components/product/OpportunityBriefForm";
@@ -44,6 +45,15 @@ async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {
 describe("public Opportunity Brief form", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("keeps private form controls inactive before hydration and avoids GET submission", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(<OpportunityBriefForm tracking={tracking} />);
+    const controls = container.querySelectorAll("input, textarea, button[type=submit]");
+    expect(controls.length).toBeGreaterThan(3);
+    for (const control of controls) expect(control).toBeDisabled();
+    expect(container.querySelector("form")).toHaveAttribute("method", "post");
   });
 
   it("shows accessible participant choices, field semantics, and exact action copy", () => {
@@ -225,7 +235,7 @@ describe("public Opportunity Brief form", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledWith("/api/opportunity-briefs", expect.objectContaining({
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: expect.objectContaining({ "Content-Type": "application/json", "Idempotency-Key": expect.any(String) }),
     }));
     const request = (fetch.mock.calls[0] as unknown[] | undefined)?.[1] as
       | RequestInit
@@ -247,6 +257,32 @@ describe("public Opportunity Brief form", () => {
         String((call as unknown[])[0]).includes("auth"),
       ),
     ).toBe(false);
+  });
+
+  it("keeps the same attempt identity after an owner notification failure", async () => {
+    const user = userEvent.setup();
+    const deliveryError = "Your details were saved, but we couldn’t notify Keshav yet. Try again.";
+    const fetch = vi.fn()
+      .mockImplementationOnce(async () => new Response(
+        JSON.stringify({ ok: false, error: deliveryError }), { status: 503 },
+      ))
+      .mockImplementationOnce(async () => successfulResponse());
+    vi.stubGlobal("fetch", fetch);
+    render(<OpportunityBriefForm tracking={tracking} />);
+    await fillRequiredFields(user);
+
+    await user.click(screen.getByRole("button", { name: "Get my opportunity brief" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your details were saved");
+    expect(screen.getByLabelText("Public profile URL")).toHaveValue("https://example.com/Founder");
+
+    await user.click(screen.getByRole("button", { name: "Get my opportunity brief" }));
+    await screen.findByRole("heading", { name: "You’re on our research list." });
+
+    const first = fetch.mock.calls[0][1];
+    const second = fetch.mock.calls[1][1];
+    expect(first.headers["Idempotency-Key"]).toMatch(/^[a-f0-9-]{36}$/);
+    expect(second.headers["Idempotency-Key"]).toBe(first.headers["Idempotency-Key"]);
   });
 
   it("uses WhatsApp as the sole contact and confirms the normalized current value", async () => {

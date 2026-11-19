@@ -97,6 +97,8 @@ test("mobile member and administrator journey stays responsive and private offli
     "For companies",
     "Join Mewtuals",
   ]);
+  await expect(page.locator('a[href^="/robotics-data"]')).toHaveCount(0);
+  await expect(page.locator('a[href^="/factory-partners"]')).toHaveCount(0);
 
   await page.getByRole("button", { name: "Open navigation" }).click();
   await page.getByRole("link", { name: "For companies" }).click();
@@ -117,6 +119,44 @@ test("mobile member and administrator journey stays responsive and private offli
   ).toBeVisible();
   await auditResponsiveState(page, "ecosystem page", { desktop: true });
 
+  const roboticsResponse = await page.goto("/robotics-data");
+  expect(roboticsResponse?.status()).toBe(200);
+  await expect(page).toHaveTitle(
+    "Mewtuals Data — Real-world data for robotics",
+  );
+  await expect(
+    page.getByRole("heading", {
+      level: 1,
+      name: "Real work. Better robot data.",
+    }),
+  ).toBeVisible();
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute(
+    "content",
+    /noindex,\s*nofollow/,
+  );
+  await auditResponsiveState(page, "robotics data landing", { desktop: true });
+  const dataPilotLink = page.getByRole("link", { name: "Build your collection pilot" });
+  await expect(dataPilotLink).toHaveAttribute("href", "#pilot");
+  await dataPilotLink.click();
+  await expect(page).toHaveURL(/\/robotics-data#pilot$/);
+  const emailLink = page.getByRole("link", { name: "Discuss a data pilot" });
+  await expect(emailLink).toBeVisible();
+  await expect(emailLink).toHaveAttribute(
+    "href",
+    "mailto:keshav@mewtuals.com?subject=Robotics%20data%20collection%20pilot",
+  );
+  const factoryResponse = await page.goto("/factory-partners");
+  expect(factoryResponse?.status()).toBe(200);
+  await expect(page.locator('meta[name="robots"]')).toHaveAttribute("content", "noindex, nofollow");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await auditResponsiveState(page, "factory partner landing", { desktop: true });
+  const factoryContact = page.getByRole("main").locator('a[href^="mailto:keshav@mewtuals.com?"]');
+  await expect(factoryContact.first()).toBeVisible();
+  const whatsappContact = page.getByRole("link", { name: "WhatsApp Keshav Garg at +91 8872052031" });
+  await expect(whatsappContact).toBeVisible();
+  await expect(whatsappContact).toHaveAttribute("href", "https://wa.me/918872052031?text=Hi%20Keshav%2C%20I%E2%80%99m%20interested%20in%20discussing%20a%20factory%20pilot.");
+  await whatsappContact.focus();
+  await expect(whatsappContact).toBeFocused();
   await page.goto("/apply");
   await expect(
     page.getByRole("heading", { name: "Put Mewtuals on your company’s side." }),
@@ -495,6 +535,12 @@ async function provePublicOnlyOfflineBoundary(
   await expect(
     page.getByRole("heading", { name: "Find the right partnership moment." }),
   ).toBeVisible();
+  await page.goto(`${PWA_BASE_URL}/robotics-data`);
+  await expect(
+    page.getByRole("heading", { name: "Real work. Better robot data." }),
+  ).toBeVisible();
+  await page.goto(`${PWA_BASE_URL}/factory-partners`);
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await page.goto(`${PWA_BASE_URL}/`);
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
   await verifyLandingKeyboardInteractions(page);
@@ -537,6 +583,8 @@ async function provePublicOnlyOfflineBoundary(
         "/login",
         "/network/join",
         "/onboarding/",
+        "/robotics-data",
+        "/factory-partners",
       ].some((prefix) => pathname === prefix || pathname.startsWith(prefix)),
     ),
   ).toEqual([]);
@@ -591,6 +639,23 @@ async function provePublicOnlyOfflineBoundary(
   ).toHaveCount(0);
   await expect(page.getByLabel("Company URL")).toHaveCount(0);
   await auditResponsiveState(page, "offline application fallback");
+
+  await page.goto(`${PWA_BASE_URL}/robotics-data`);
+  await expect(
+    page.getByRole("heading", {
+      name: "Get online to see your partnerships.",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Real work. Better robot data." }),
+  ).toHaveCount(0);
+  await auditResponsiveState(page, "offline robotics data fallback");
+
+  await page.goto(`${PWA_BASE_URL}/factory-partners`);
+  await expect(
+    page.getByRole("heading", { name: "Get online to see your partnerships." }),
+  ).toBeVisible();
+  await expect(page.getByRole("main").locator('a[href^="mailto:keshav@mewtuals.com"]')).toHaveCount(0);
 
   await page.goto(`${PWA_BASE_URL}/join?source=bengaluru-meetup`);
   await expect(

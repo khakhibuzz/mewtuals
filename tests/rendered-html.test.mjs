@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
+import { JSDOM } from "jsdom";
 
 async function render(pathname = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -65,6 +66,75 @@ test("server-renders the sparse Physical AI landing page", async () => {
   assert.doesNotMatch(html, />How it works<|>For startups<|>For creators<|>Log in</);
   assert.doesNotMatch(html, /id="how-it-works"|id="for-startups"|Illustrative case study/);
   assert.doesNotMatch(html, /codex-preview|Codex is working|react-loading-skeleton/i);
+  assert.doesNotMatch(html, /<a\b[^>]*href="\/robotics-data(?:[/?#][^"]*)?"/);
+  assert.doesNotMatch(html, /<a\b[^>]*href="\/factory-partners(?:[/?#][^"]*)?"/);
+});
+
+test("server-renders the unlisted robotics data landing page", async () => {
+  const response = await render("/robotics-data");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+
+  const html = await response.text();
+  assert.match(html, /<title>Mewtuals Data — Real-world data for robotics<\/title>/);
+  const headings = [...html.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>/g)];
+  assert.equal(headings.length, 1);
+  assert.equal(
+    headings[0][1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim(),
+    "Real work. Better robot data.",
+  );
+  assert.match(
+    html,
+    /<meta\b(?=[^>]*name="robots")(?=[^>]*content="noindex,\s*nofollow")[^>]*>/,
+  );
+  const { document } = new JSDOM(html).window;
+  for (const decoration of document.querySelectorAll('[aria-hidden="true"]')) {
+    decoration.remove();
+  }
+  for (const label of ["Build your collection pilot", "Let’s talk"]) {
+    const pilotLink = [...document.querySelectorAll("a")].find(
+      (link) => link.textContent.replace(/\s+/g, " ").trim() === label,
+    );
+    assert.ok(pilotLink, `${label} must be server-rendered.`);
+    assert.equal(pilotLink.getAttribute("href"), "#pilot");
+  }
+  const emailLink = document.querySelector('#pilot a[href^="mailto:"]');
+  assert.ok(emailLink, "The pilot section must offer a direct email enquiry.");
+  assert.equal(emailLink.textContent.trim(), "Discuss a data pilot");
+  const emailUrl = new URL(emailLink.getAttribute("href"));
+  assert.equal(emailUrl.pathname, "keshav@mewtuals.com");
+  assert.equal(emailUrl.searchParams.get("subject"), "Robotics data collection pilot");
+  assert.doesNotMatch(document.querySelector("#pilot")?.textContent ?? "", /reply to the person/);
+  assert.equal(document.querySelector('a[href="/apply"]'), null);
+});
+
+test("serves a directly shareable factory partner page with a pilot contact", async () => {
+  const response = await render("/factory-partners");
+  assert.equal(response.status, 200);
+  const { document } = new JSDOM(await response.text()).window;
+  assert.equal(document.querySelector('meta[name="robots"]')?.content, "noindex, nofollow");
+  const main = document.querySelector("main");
+  assert.ok(main);
+  assert.equal(main.querySelectorAll("h1").length, 1);
+  assert.match(main.textContent, /stereo camera headset/i);
+  assert.match(main.textContent, /consent from participating workers/i);
+  assert.match(main.textContent, /IIT Ropar/);
+  assert.ok(main.querySelector('a[href^="mailto:keshav@mewtuals.com?"]'));
+  const whatsapp = main.querySelector('#contact a[aria-label="WhatsApp Keshav Garg at +91 8872052031"]');
+  assert.ok(whatsapp);
+  const whatsappUrl = new URL(whatsapp.getAttribute("href"));
+  assert.equal(whatsappUrl.origin, "https://wa.me");
+  assert.equal(whatsappUrl.pathname, "/918872052031");
+  assert.equal(whatsappUrl.searchParams.get("text"), "Hi Keshav, I’m interested in discussing a factory pilot.");
+  assert.equal(whatsapp.getAttribute("aria-label"), "WhatsApp Keshav Garg at +91 8872052031");
+  assert.ok(whatsapp.querySelector('svg[aria-hidden="true"]'));
+  const linkedIn = main.querySelector('a[href="https://www.linkedin.com/in/keshav-garg/"]');
+  assert.match(linkedIn?.textContent ?? "", /LinkedIn/);
+  const outreach = document.querySelector("footer ul");
+  assert.ok(outreach);
+  assert.ok([...outreach.querySelectorAll("li")].some((item) => item.textContent.trim() === "Generalist"));
+  assert.match(document.querySelector("footer")?.textContent ?? "", /outreach does not imply a partnership/i);
+  assert.equal(main.querySelector('a[href="/apply"]'), null);
 });
 
 test("server-renders the standalone application route with the shared public header", async () => {

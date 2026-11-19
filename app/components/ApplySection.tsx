@@ -1,13 +1,22 @@
 "use client";
 
 import { FormEvent, type Ref, useEffect, useRef, useState } from "react";
-import {
+import type {
   ApplicationErrors,
   ApplicationInput,
   ApplicationSubmitter,
-  prototypeSubmitter,
-  validateApplication,
 } from "../lib/application";
+import { applicationInputSchema } from "../domain/application";
+import { createFormSubmissionRequest } from "../lib/form-submission-request";
+import { useHydrated } from "../lib/use-hydrated";
+
+type ApplicationResponse = {
+  ok?: boolean;
+  error?: string;
+  errors?: ApplicationErrors;
+};
+
+const SUBMISSION_ERROR = "We could not send your application. Please try again.";
 
 type ApplySectionProps = {
   submitApplication?: ApplicationSubmitter;
@@ -20,9 +29,16 @@ const EMPTY_APPLICATION: ApplicationInput = {
 };
 
 export function ApplySection({
-  submitApplication = prototypeSubmitter,
+  submitApplication,
 }: ApplySectionProps) {
+  const hydrated = useHydrated();
   const [values, setValues] = useState<ApplicationInput>(EMPTY_APPLICATION);
+  const [website, setWebsite] = useState("");
+  const [errorMessage, setErrorMessage] = useState(SUBMISSION_ERROR);
+  const [errorFocusVersion, setErrorFocusVersion] = useState(0);
+  const submissionRequest = useRef(
+    createFormSubmissionRequest("/api/applications"),
+  );
   const [errors, setErrors] = useState<ApplicationErrors>({});
   const [status, setStatus] = useState<
     "idle" | "submitting" | "success" | "error"
@@ -39,6 +55,14 @@ export function ApplySection({
     companyUrlRef.current?.focus();
   }, [status]);
 
+  useEffect(() => {
+    if (status === "success") successHeadingRef.current?.focus();
+  }, [status]);
+
+  useEffect(() => {
+    if (errorFocusVersion > 0) errorSummaryRef.current?.focus();
+  }, [errorFocusVersion]);
+
   function updateField(field: keyof ApplicationInput, value: string) {
     setValues((current) => ({ ...current, [field]: value }));
     setErrors((current) => {
@@ -51,30 +75,61 @@ export function ApplySection({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const result = validateApplication(values);
+    const result = applicationInputSchema.safeParse({ ...values, website });
 
-    if (!result.ok) {
-      setErrors(result.errors);
+    if (!result.success) {
+      const fieldErrors: ApplicationErrors = {};
+      for (const issue of result.error.issues) {
+        const field = issue.path[0];
+        if (field === "companyUrl" || field === "workEmail" || field === "phone") {
+          fieldErrors[field] ??= issue.message;
+        }
+      }
+      if (website) {
+        setErrorMessage("Please review your application.");
+        setStatus("error");
+        setErrorFocusVersion((current) => current + 1);
+        return;
+      }
+      setErrors(fieldErrors);
       setStatus("idle");
-      queueMicrotask(() => errorSummaryRef.current?.focus());
+      setErrorFocusVersion((current) => current + 1);
       return;
     }
 
     setErrors({});
     setStatus("submitting");
     try {
-      await submitApplication(result.value);
+      if (submitApplication) {
+        await submitApplication({
+          companyUrl: result.data.companyUrl,
+          workEmail: result.data.workEmail,
+          phone: result.data.phone,
+        });
+      } else {
+        const response = await submissionRequest.current.send(result.data);
+        const outcome = (await response.json().catch(() => ({}))) as ApplicationResponse;
+        if (!response.ok || outcome.ok !== true) {
+          setErrors(outcome.errors ?? {});
+          setErrorMessage(typeof outcome.error === "string" ? outcome.error : SUBMISSION_ERROR);
+          setStatus("error");
+          setErrorFocusVersion((current) => current + 1);
+          return;
+        }
+      }
       setStatus("success");
-      queueMicrotask(() => successHeadingRef.current?.focus());
     } catch {
+      setErrorMessage(SUBMISSION_ERROR);
       setStatus("error");
-      queueMicrotask(() => errorSummaryRef.current?.focus());
+      setErrorFocusVersion((current) => current + 1);
     }
   }
 
   function resetApplication() {
     focusAfterResetRef.current = true;
     setValues(EMPTY_APPLICATION);
+    setWebsite("");
+    submissionRequest.current.reset();
     setErrors({});
     setStatus("idle");
   }
@@ -83,11 +138,11 @@ export function ApplySection({
     return (
       <section className="apply-section site-section" id="apply">
         <div className="application-success">
-          <p className="section-label">Application ready</p>
+          <p className="section-label">Application</p>
           <h2 ref={successHeadingRef} tabIndex={-1}>
-            The introduction is the easy part. Understanding comes first.
+            Application received
           </h2>
-          <p>Prototype mode — your information was not sent.</p>
+          <p>Your application has been sent to Keshav. We’ll be in touch.</p>
           <div className="application-success-actions">
             <a className="primary-button" href="/join">
               Continue to Mewtuals
@@ -109,11 +164,11 @@ export function ApplySection({
         <p>No deck required. We start with the company itself.</p>
       </div>
 
-      <form className="application-form" noValidate onSubmit={handleSubmit}>
+      <form className="application-form" method="post" noValidate onSubmit={handleSubmit}>
         {(Object.keys(errors).length > 0 || status === "error") && (
           <div className="form-summary" ref={errorSummaryRef} role="alert" tabIndex={-1}>
             {status === "error" ? (
-              "The prototype could not prepare this application. Try again."
+              errorMessage
             ) : (
               <>
                 <p>Complete the three required details.</p>
@@ -128,6 +183,7 @@ export function ApplySection({
         )}
 
         <ApplicationField
+          disabled={!hydrated}
           autoComplete="url"
           error={errors.companyUrl}
           id="company-url"
@@ -139,6 +195,7 @@ export function ApplySection({
           value={values.companyUrl}
         />
         <ApplicationField
+          disabled={!hydrated}
           autoComplete="email"
           error={errors.workEmail}
           id="work-email"
@@ -149,6 +206,7 @@ export function ApplySection({
           value={values.workEmail}
         />
         <ApplicationField
+          disabled={!hydrated}
           autoComplete="tel"
           error={errors.phone}
           id="phone-number"
@@ -159,8 +217,18 @@ export function ApplySection({
           value={values.phone}
         />
 
-        <button className="primary-button" disabled={status === "submitting"} type="submit">
-          {status === "submitting" ? "Preparing…" : "Apply for representation"}
+        <input
+          aria-hidden="true"
+          autoComplete="off"
+          disabled={!hydrated}
+          hidden
+          name="website"
+          onChange={(event) => setWebsite(event.target.value)}
+          tabIndex={-1}
+          value={website}
+        />
+        <button className="primary-button" disabled={!hydrated || status === "submitting"} type="submit">
+          {status === "submitting" ? "Sending…" : "Apply for representation"}
         </button>
         <p className="form-note">Three details. A human review. No automated sequence.</p>
       </form>
@@ -169,6 +237,7 @@ export function ApplySection({
 }
 
 type ApplicationFieldProps = {
+  disabled: boolean;
   autoComplete: string;
   error?: string;
   id: string;
@@ -182,6 +251,7 @@ type ApplicationFieldProps = {
 
 function ApplicationField({
   autoComplete,
+  disabled,
   error,
   id,
   inputRef,
@@ -199,6 +269,7 @@ function ApplicationField({
         aria-describedby={error ? errorId : undefined}
         aria-invalid={error ? "true" : undefined}
         autoComplete={autoComplete}
+        disabled={disabled}
         id={id}
         ref={inputRef}
         name={id}
