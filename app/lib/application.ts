@@ -148,7 +148,3 @@ export function validateApplication(input: ApplicationInput): ApplicationResult 
     },
   };
 }
-
-export const prototypeSubmitter: ApplicationSubmitter = async () => {
-  await Promise.resolve();
-};

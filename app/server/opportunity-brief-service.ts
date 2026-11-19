@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { FormNotificationManager, NewFormSubmission, StoredFormSubmission } from "./form-notification-contracts";
 import { z } from "zod";
 
 import {
@@ -64,12 +66,15 @@ export type SubmitRepositoryInput = {
   requesterHash: string;
   submittedAt: Date;
   candidateIdentifier: CandidateIdentifier;
+  notification?: NewFormSubmission;
 };
 
 export type SubmitRepositoryResult =
   | { outcome: "rate_limited" }
+  | { outcome: "idempotency_conflict" }
   | {
       outcome: "accepted";
+      notification?: StoredFormSubmission;
       requestId: string;
       status: OpportunityBriefStatus;
       linkedCandidateId: string | null;
@@ -174,6 +179,7 @@ export interface OpportunityBriefRepository {
 type OpportunityBriefServiceDependencies = {
   repository: OpportunityBriefRepository;
   acknowledgementSender?: AcknowledgementSender;
+  ownerNotifications?: FormNotificationManager;
   adminEmails: readonly string[];
   now?: () => Date;
 };
@@ -182,7 +188,7 @@ type FieldErrors = Record<string, string>;
 
 export type PublicSubmissionFailure = {
   ok: false;
-  status: 400 | 429 | 500;
+  status: 400 | 409 | 429 | 500 | 503;
   error: string;
   errors?: FieldErrors;
 };
@@ -463,6 +469,7 @@ export function createOpportunityBriefService(
     async submit(
       rawInput: unknown,
       rawRequesterHash: string,
+      submissionId: string = randomUUID(),
     ): Promise<PublicSubmissionResult> {
       const parsed = opportunityBriefInputSchema.safeParse(rawInput);
       const requesterHash = requesterHashSchema.safeParse(rawRequesterHash);
@@ -479,7 +486,11 @@ export function createOpportunityBriefService(
         };
       }
 
+      if (!z.uuid().safeParse(submissionId).success) {
+        return { ok: false, status: 400, error: "Invalid submission identifier. Refresh this page and try again." };
+      }
       const input = parsed.data;
+      const submittedAt = currentTime();
       let persisted: SubmitRepositoryResult;
       try {
         persisted = await dependencies.repository.submit({
@@ -491,10 +502,21 @@ export function createOpportunityBriefService(
           source: input.source ?? null,
           utm: input.utm,
           requesterHash: requesterHash.data,
-          submittedAt: currentTime(),
+          submittedAt,
           candidateIdentifier: candidateIdentifierForProfileUrl(
             input.profileUrl,
           ),
+          ...(dependencies.ownerNotifications ? {
+            notification: dependencies.ownerNotifications.prepare("join", submissionId, {
+              participantType: input.participantType,
+              profileUrl: input.profileUrl,
+              email: input.email ?? null,
+              phoneNumber: input.phoneNumber ?? null,
+              openToText: input.openToText ?? null,
+              source: input.source ?? null,
+              utm: input.utm,
+            }, submittedAt),
+          } : {}),
         });
       } catch {
         return {
@@ -504,6 +526,9 @@ export function createOpportunityBriefService(
         };
       }
 
+      if (persisted.outcome === "idempotency_conflict") {
+        return { ok: false, status: 409, error: "This submission changed. Refresh the page and try again." };
+      }
       if (persisted.outcome === "rate_limited") {
         return {
           ok: false,
@@ -518,6 +543,18 @@ export function createOpportunityBriefService(
           input.profileUrl,
           persisted.acknowledgement.delivery,
         );
+      }
+
+      if (dependencies.ownerNotifications) {
+        if (!persisted.notification) {
+          return { ok: false, status: 503, error: "Your details are saved, but we couldn’t email Keshav yet. Please try again." };
+        }
+        try {
+          const delivery = await dependencies.ownerNotifications.deliver(persisted.notification);
+          if (!delivery.ok) return { ok: false, status: 503, error: delivery.error };
+        } catch {
+          return { ok: false, status: 503, error: "Your details are saved, but we couldn’t email Keshav yet. Please try again." };
+        }
       }
 
       return {

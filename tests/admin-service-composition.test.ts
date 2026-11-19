@@ -54,7 +54,8 @@ vi.mock("../app/server/verification-service", () => ({
 vi.mock("../app/server/discovery-config", () => ({
   readDiscoveryConfig: vi.fn(() => ({ workerSecret: "discovery-worker-secret" })),
 }));
-vi.mock("../app/server/env", () => ({
+vi.mock("../app/server/env", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../app/server/env")>(),
   readServerEnvironment: vi.fn(() => ({
     environment: "test",
     sessionSecret: "test-session-secret-that-is-longer-than-32-characters",

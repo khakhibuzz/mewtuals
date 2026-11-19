@@ -3,6 +3,8 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 
 import { opportunityBriefInputSchema } from "../../domain/opportunity-brief";
+import { createFormSubmissionRequest } from "../../lib/form-submission-request";
+import { useHydrated } from "../../lib/use-hydrated";
 import styles from "./product.module.css";
 
 export type OpportunityBriefTracking = {
@@ -68,12 +70,16 @@ export function OpportunityBriefForm({
 }: {
   tracking: OpportunityBriefTracking;
 }) {
+  const hydrated = useHydrated();
   const [values, setValues] = useState(initialValues);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [generalError, setGeneralError] = useState<string>();
   const [errorFocusVersion, setErrorFocusVersion] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [submission, setSubmission] = useState<Submission>();
+  const submissionRequest = useRef(
+    createFormSubmissionRequest("/api/opportunity-briefs"),
+  );
   const errorSummary = useRef<HTMLDivElement>(null);
   const successHeading = useRef<HTMLHeadingElement>(null);
 
@@ -110,11 +116,7 @@ export function OpportunityBriefForm({
 
     setSubmitting(true);
     try {
-      const response = await fetch("/api/opportunity-briefs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const response = await submissionRequest.current.send(body);
       const result = (await response.json().catch(() => ({}))) as PublicResult;
       if (!response.ok || !result.ok) {
         setErrors(result.ok ? {} : (result.errors ?? {}));
@@ -183,11 +185,12 @@ export function OpportunityBriefForm({
     errors[field] ? `${field}-error` : undefined;
 
   return (
-    <form className={styles.form} onSubmit={submit} noValidate>
+    <form className={styles.form} method="post" onSubmit={submit} noValidate>
       <fieldset className={styles.choices}>
         <legend className={styles.legend}>I’m joining as</legend>
         <label className={styles.choice}>
           <input
+            disabled={!hydrated}
             type="radio"
             name="participantType"
             value="company"
@@ -198,6 +201,7 @@ export function OpportunityBriefForm({
         </label>
         <label className={styles.choice}>
           <input
+            disabled={!hydrated}
             type="radio"
             name="participantType"
             value="creator"
@@ -214,6 +218,7 @@ export function OpportunityBriefForm({
         error={errors.profileUrl}
       >
         <input
+          disabled={!hydrated}
           className={styles.input}
           id="profileUrl"
           name="profileUrl"
@@ -237,6 +242,7 @@ export function OpportunityBriefForm({
         error={errors.email}
       >
         <input
+          disabled={!hydrated}
           className={styles.input}
           id="email"
           name="email"
@@ -256,6 +262,7 @@ export function OpportunityBriefForm({
         error={errors.phoneNumber}
       >
         <input
+          disabled={!hydrated}
           className={styles.input}
           id="phoneNumber"
           name="phoneNumber"
@@ -275,6 +282,7 @@ export function OpportunityBriefForm({
         error={errors.openToText}
       >
         <textarea
+          disabled={!hydrated}
           className={styles.textarea}
           id="openToText"
           name="openToText"
@@ -289,6 +297,7 @@ export function OpportunityBriefForm({
       <div className={styles.honeypot} aria-hidden="true">
         <label htmlFor="website">Website</label>
         <input
+          disabled={!hydrated}
           id="website"
           name="website"
           type="text"
@@ -318,7 +327,7 @@ export function OpportunityBriefForm({
         </div>
       ) : null}
 
-      <button className={styles.button} type="submit" disabled={submitting}>
+      <button className={styles.button} type="submit" disabled={!hydrated || submitting}>
         {submitting ? "Submitting…" : "Get my opportunity brief"}
       </button>
       <p className={styles.opportunityTrustLine}>

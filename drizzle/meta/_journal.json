@@ -71,6 +71,13 @@
       "when": 1785486179122,
       "tag": "0009_global_demand_radar",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795089259490,
+      "tag": "0010_public_form_submissions",
+      "breakpoints": true
     }
   ]
 }

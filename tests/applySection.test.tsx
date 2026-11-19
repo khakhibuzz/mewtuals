@@ -1,9 +1,20 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { renderToString } from "react-dom/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApplySection } from "../app/components/ApplySection";
 
 describe("ApplySection", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("keeps private form controls inactive before hydration and avoids GET submission", () => {
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(<ApplySection />);
+    const controls = container.querySelectorAll("input, textarea, button[type=submit]");
+    expect(controls.length).toBeGreaterThan(3);
+    for (const control of controls) expect(control).toBeDisabled();
+    expect(container.querySelector("form")).toHaveAttribute("method", "post");
+  });
+
   it("asks only for the three definitive application details", () => {
     render(<ApplySection />);
 
@@ -79,11 +90,48 @@ describe("ApplySection", () => {
       });
     });
     expect(
-      screen.getByText("Prototype mode — your information was not sent."),
+      screen.getByText("Your application has been sent to Keshav. We’ll be in touch."),
     ).toBeInTheDocument();
   });
 
-  it("resets the prototype success state for another review", async () => {
+  it("posts real submissions and retains fields plus retry identity when notification fails", async () => {
+    const user = userEvent.setup();
+    const deliveryError = "Your details were saved, but we couldn’t notify Keshav yet. Try again.";
+    const fetch = vi.fn()
+      .mockImplementationOnce(async () => new Response(
+        JSON.stringify({ ok: false, error: deliveryError }), { status: 503 },
+      ))
+      .mockImplementationOnce(async () => new Response(
+        JSON.stringify({ ok: true }), { status: 200 },
+      ));
+    vi.stubGlobal("fetch", fetch);
+    render(<ApplySection />);
+    await user.type(screen.getByLabelText("Company URL"), "argide.ai");
+    await user.type(screen.getByLabelText("Work email"), "founder@argide.ai");
+    await user.type(screen.getByLabelText("Phone number"), "+919876543210");
+
+    await user.click(screen.getByRole("button", { name: "Apply for representation" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(deliveryError);
+    expect(screen.getByLabelText("Company URL")).toHaveValue("argide.ai");
+    expect(screen.queryByRole("heading", { name: "Application received" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Apply for representation" }));
+
+    expect(await screen.findByRole("heading", { name: "Application received" })).toHaveFocus();
+    expect(fetch.mock.calls[0][0]).toBe("/api/applications");
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
+      companyUrl: "https://argide.ai/",
+      workEmail: "founder@argide.ai",
+      phone: "+919876543210",
+      website: "",
+    });
+    expect(fetch.mock.calls[1][1].headers["Idempotency-Key"]).toBe(
+      fetch.mock.calls[0][1].headers["Idempotency-Key"],
+    );
+  });
+
+  it("resets the success state for another application", async () => {
     const user = userEvent.setup();
     render(<ApplySection submitApplication={vi.fn().mockResolvedValue(undefined)} />);
 

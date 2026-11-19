@@ -1,3 +1,4 @@
+import type { FormNotificationManager, FormNotificationOutcome, StoredFormSubmission } from "../app/server/form-notification-contracts";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
@@ -945,5 +946,61 @@ describe("opportunity brief public result types", () => {
       "request" extends keyof NonConflictAdminFailure ? true : false;
 
     expectTypeOf<HasAdminRequest>().toEqualTypeOf<false>();
+  });
+});
+
+
+describe("owner notification on public join", () => {
+  const submissionId = "00000000-0000-4000-8000-000000000505";
+  const notice: StoredFormSubmission = {
+    id: submissionId, form: "join", payloadHash: "a".repeat(64),
+    payload: { participantType: "company", profileUrl: "https://example.com/" },
+    message: { from: "login@mewtuals.com", to: "keshav@mewtuals.com", subject: "Join", text: "Test", html: "<p>Test</p>" },
+    createdAt: now, requesterHash: "requester", requestId, status: "submitted",
+    firstAttemptAt: null, acceptedAt: null, providerMessageId: null, lastError: null, attemptCount: 0,
+  };
+
+  function setup(outcome: FormNotificationOutcome) {
+    const repository = new MemoryRepository();
+    const ownerNotifications: FormNotificationManager = {
+      prepare: vi.fn(() => notice),
+      deliver: vi.fn(async () => outcome),
+    };
+    repository.submitResult = acceptedSubmitResult({ notification: notice });
+    const service = createOpportunityBriefService({
+      repository,
+      ownerNotifications,
+      acknowledgementSender: new MemorySender(),
+      adminEmails: [],
+      now: () => now,
+    });
+    return { repository, ownerNotifications, service };
+  }
+
+  it("persists the immutable owner notification before delivering it", async () => {
+    const { repository, ownerNotifications, service } = setup({ ok: true });
+    const result = await service.submit(submission(), "requester", submissionId);
+    expect(result.ok).toBe(true);
+    expect(repository.submissions[0]).toHaveProperty("notification", notice);
+    expect(ownerNotifications.prepare).toHaveBeenCalledWith("join", submissionId,
+      expect.objectContaining({email: "founder@example.com", phoneNumber: "+919876543210"}), now);
+    expect(ownerNotifications.deliver).toHaveBeenCalledWith(notice);
+    expect(repository.acknowledgements).toHaveLength(1);
+  });
+
+  it("retains the acknowledgement but refuses normal success if owner notification failed", async () => {
+    const { repository, service } = setup({ok:false, reconciliationNeeded:false, error:"Your details are saved, but we couldn’t email Keshav yet. Please try again."});
+    const result = await service.submit(submission(), "requester", submissionId);
+    expect(result).toMatchObject({ ok:false, status:503, error:expect.stringContaining("saved") });
+    expect(repository.acknowledgements).toHaveLength(1);
+  });
+
+  it("rejects an idempotency conflict without sending either email", async () => {
+    const { repository, ownerNotifications, service } = setup({ok:true});
+    repository.submitResult = {outcome:"idempotency_conflict"};
+    const result = await service.submit(submission(), "requester", submissionId);
+    expect(result).toMatchObject({ok:false,status:409});
+    expect(ownerNotifications.deliver).not.toHaveBeenCalled();
+    expect(repository.acknowledgements).toHaveLength(0);
   });
 });

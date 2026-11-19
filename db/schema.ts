@@ -16,6 +16,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type { OpportunityBriefSourceMetadata } from "../app/domain/opportunity-brief";
+import type { FormKind, FormNotificationMessage, FormSubmissionPayload } from "../app/server/form-notification-contracts";
 
 export const profileStatusEnum = pgEnum("profile_status", [
   "draft",
@@ -967,5 +968,41 @@ export const opportunityBriefSubmissionAttempts = pgTable(
     index("opportunity_brief_submission_attempts_request_id_idx").on(
       table.requestId,
     ),
+  ],
+);
+
+
+export const publicFormSubmissions = pgTable(
+  "public_form_submissions",
+  {
+    id: uuid("id").primaryKey(),
+    form: text("form").$type<FormKind>().notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    payload: jsonb("payload").$type<FormSubmissionPayload>().notNull(),
+    message: jsonb("message").$type<FormNotificationMessage>().notNull(),
+    requesterHash: text("requester_hash").notNull(),
+    requestId: uuid("request_id"),
+    status: opportunityBriefStatusEnum("request_status"),
+    createdAt: createdAt(),
+    firstAttemptAt: timestamp("first_attempt_at", { withTimezone: true }),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    providerMessageId: text("provider_message_id"),
+    lastError: text("last_error"),
+    attemptCount: integer("attempt_count").default(0).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "public_form_submissions_request_fk",
+      columns: [table.requestId],
+      foreignColumns: [opportunityBriefRequests.id],
+    }).onDelete("set null"),
+    index("public_form_submissions_requester_created_at_idx").on(table.requesterHash, table.createdAt),
+    index("public_form_submissions_pending_created_at_idx")
+      .on(table.createdAt).where(sql`${table.acceptedAt} is null`),
+    check("public_form_submissions_form_check", sql`${table.form} in ('apply', 'join')`),
+    check("public_form_submissions_payload_hash_check", sql`${table.payloadHash} ~ '^[a-f0-9]{64}$'`),
+    check("public_form_submissions_attempt_count_check", sql`${table.attemptCount} >= 0`),
+    check("public_form_submissions_error_length_check", sql`length(${table.lastError}) <= 1000`),
+    check("public_form_submissions_acceptance_check", sql`(${table.acceptedAt} is null) = (${table.providerMessageId} is null)`),
   ],
 );

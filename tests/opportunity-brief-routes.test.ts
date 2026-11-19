@@ -276,7 +276,7 @@ describe("opportunity brief public route", () => {
     if (!accepted.ok) throw new Error("Expected an accepted fixture.");
 
     expect(response.status).toBe(200);
-    expect(submit).toHaveBeenCalledWith(validBody, expect.any(String));
+    expect(submit).toHaveBeenCalledWith(validBody, expect.any(String), expect.any(String));
     expect(requesterHash).toMatch(/^[a-f0-9]{64}$/);
     expect(requesterHash).not.toContain("203.0.113.42");
     expect(result).toEqual({
@@ -312,5 +312,22 @@ describe("opportunity brief public route", () => {
       error: "We could not save your request. Please try again.",
     });
     expect(JSON.stringify(result)).not.toMatch(/postgres|requester_hash|secret/i);
+  });
+});
+
+
+describe("public submission retry key", () => {
+  it("forwards a valid caller retry id to the service", async () => {
+    const {handler,submit}=createHandler();
+    const key="b1ff1525-4d36-4ed1-a152-4f0ab8e8cb78";
+    const response=await handler(jsonRequest(undefined,{"Idempotency-Key":key}));
+    expect(response.status).toBe(200);
+    expect(submit).toHaveBeenCalledWith(validBody,expect.any(String),key);
+  });
+  it("rejects malformed retry ids before persistence", async () => {
+    const {handler,submit}=createHandler();
+    const response=await handler(jsonRequest(undefined,{"Idempotency-Key":"unsafe-key"}));
+    expect(response.status).toBe(400);
+    expect(submit).not.toHaveBeenCalled();
   });
 });
